@@ -1,4 +1,5 @@
 #include "TopBar.h"
+#include "../../data/SongLyrics.h"
 
 #include "../../PluginProcessor.h"
 #include "../../data/Localization.h"
@@ -261,8 +262,9 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
         &phonePadsButton}) {
     addAndMakeVisible(*btn);
   }
+  tabletMoreButton.setComponentID("topbar-more");
   addChildComponent(songPickerButton);
-  for (auto *button : {&waveformViewButton, &sectionsViewButton, &helpButton}) {
+  for (auto *button : {&waveformViewButton, &sectionsViewButton, &helpButton, &lyricsButton}) {
     addChildComponent(*button);
     button->setComponentID(button->getName());
     button->setMouseCursor(juce::MouseCursor::PointingHandCursor);
@@ -275,6 +277,12 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
   sectionsViewButton.onClick = [this] { selectTimelineView(true); };
   helpButton.setButtonText("?");
   helpButton.onClick = [this] { if (onLearningRequested) onLearningRequested(); };
+  lyricsButton.onClick = [this] {
+    if (songLyricsAvailable()) {
+      auto open = onSongLyrics;
+      if (open) open();
+    }
+  };
   refreshTimelineMenu();
   phonePadsButton.setVisible(false);
   windowModeButton.setVisible(shouldShowWindowModeButton());
@@ -535,8 +543,10 @@ void TopBar::setLiveModeControls(std::function<void()> toggle,
 
 void TopBar::refreshTimelineMenu() {
   const bool available = timelineControlsAvailable();
-  if (available != lastTimelineControlsAvailable) {
+  const bool lyricsAvailable = songLyricsAvailable();
+  if (available != lastTimelineControlsAvailable || lyricsAvailable != lastSongLyricsAvailable) {
     lastTimelineControlsAvailable = available;
+    lastSongLyricsAvailable = lyricsAvailable;
     resized();
   }
   const bool sections = liveModeState && liveModeState();
@@ -557,6 +567,9 @@ void TopBar::refreshTimelineMenu() {
     }
     button->setEnabled(enabled);
   }
+  setButtonTextIfChanged(lyricsButton, L10n::tr("Letra", "Lyrics"));
+  lyricsButton.setTitle(L10n::tr("Letra y acordes", "Lyrics and chords"));
+  lyricsButton.setTooltip(L10n::tr("Leer la letra y los acordes de esta canción", "Read this song's lyrics and chords"));
   helpButton.setTitle(L10n::tr("Ayuda", "Help"));
   helpButton.setTooltip(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"));
   if (refreshMorePopover) refreshMorePopover();
@@ -584,6 +597,16 @@ void TopBar::setOnPhonePads(std::function<void(juce::Component &)> cb) {
 
 void TopBar::setOnPhonePractice(std::function<void()> cb) {
   onPhonePractice = std::move(cb);
+}
+
+void TopBar::setOnSongLyrics(std::function<void()> cb) {
+  onSongLyrics = std::move(cb);
+  refreshTimelineMenu();
+}
+
+bool TopBar::songLyricsAvailable() const {
+  const auto *song = songProvider ? songProvider() : nullptr;
+  return onSongLyrics && !session.isRemote() && song != nullptr && hasSongLyrics(song->lyrics);
 }
 
 void TopBar::setOnLearningRequested(std::function<void()> cb) {
@@ -1079,6 +1102,10 @@ void TopBar::resized() {
   const int timelineWidth = showTimeline ? waveformViewWidth + sectionsViewWidth : 0;
   setVisibleIfChanged(waveformViewButton, desktopProfile && showTimeline);
   setVisibleIfChanged(sectionsViewButton, desktopProfile && showTimeline);
+  const bool showDesktopLyrics = desktopProfile && songLyricsAvailable();
+  constexpr int lyricsWidth = 62;
+  setVisibleIfChanged(lyricsButton, showDesktopLyrics);
+  if (!showDesktopLyrics) lyricsButton.setBounds({});
   setVisibleIfChanged(helpButton, desktopProfile);
   if (!desktopProfile) {
     waveformViewButton.setBounds({}); sectionsViewButton.setBounds({}); helpButton.setBounds({});
@@ -1105,6 +1132,7 @@ void TopBar::resized() {
       controlsW += square + gap;
     controlsW += gap + square;
     if (desktopProfile && showTimeline) controlsW += gap + timelineWidth;
+    if (showDesktopLyrics) controlsW += gap + lyricsWidth;
     if (showWindowButton) controlsW += gap + square;
     if (showDesktopExtras) controlsW += 2 * (gap + square);
     if (usageVisible)
@@ -1173,6 +1201,7 @@ void TopBar::resized() {
             .withWidth(static_cast<float>(waveformViewWidth)).withHeight(static_cast<float>(square)));
         addItem(sectionsViewButton, sectionsViewWidth);
       }
+      if (showDesktopLyrics) addItem(lyricsButton, lyricsWidth);
       addItem(helpButton, square, !usageVisible);
     } else {
       addItem(tabletMoreButton, square, !usageVisible);
@@ -1500,6 +1529,7 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
                 const bool midiActive, std::function<void()> onMidi,
                 std::function<void()> onSettings,
                 std::function<void()> onPractice, const bool showPractice,
+                std::function<void()> onLyrics, const bool showLyrics,
                 std::function<void()> onLearning,
                 std::function<void()> onWindow, const bool showWindow)
         : sectionsButton(L10n::tr("Vista de secciones", "Sections view"), SvgIconName::Music, std::move(onSections)),
@@ -1509,11 +1539,13 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
                          SvgIconName::Settings, std::move(onSettings)),
           practiceButton(L10n::tr("Ensayo", "Practice"),
                          SvgIconName::AudioWaveform, std::move(onPractice)),
+          lyricsButton(L10n::tr("Letra y acordes", "Lyrics and chords"),
+                       SvgIconName::Music, std::move(onLyrics)),
           learningButton(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"),
                          SvgIconName::Music, std::move(onLearning)),
           songWindowButton(L10n::tr("Ventana de canción", "Song window"),
                            SvgIconName::Clock, std::move(onWindow)),
-          hasPractice(showPractice), hasWindow(showWindow) {
+          hasPractice(showPractice), hasLyrics(showLyrics), hasWindow(showWindow) {
       sectionsButton.setComponentID("timeline-sections");
       for (auto *option : {&sectionsButton}) {
         option->setClickingTogglesState(true);
@@ -1525,6 +1557,9 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
       midiButton.setToggleState(midiActive, juce::dontSendNotification);
       addChildComponent(midiButton);
       addChildComponent(settingsButton);
+      lyricsButton.setComponentID("song-lyrics");
+      lyricsButton.setTitle(L10n::tr("Letra y acordes", "Lyrics and chords"));
+      addChildComponent(lyricsButton);
       addAndMakeVisible(learningButton);
       if (hasPractice)
         addAndMakeVisible(practiceButton);
@@ -1549,16 +1584,16 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
       }
     }
 
-    void updatePrimaryActions(bool showMidi, bool showSettings, bool active, bool showPractice, bool showWindow, bool showTimeline) {
+    void updatePrimaryActions(bool showMidi, bool showSettings, bool active, bool showPractice, bool showLyrics, bool showWindow, bool showTimeline) {
       const bool layoutChanged = getWidth() == 0 || midiButton.isVisible() != showMidi || settingsButton.isVisible() != showSettings ||
-                                 hasPractice != showPractice || hasWindow != showWindow || sectionsButton.isVisible() != showTimeline;
+                                 hasPractice != showPractice || hasLyrics != showLyrics || hasWindow != showWindow || sectionsButton.isVisible() != showTimeline;
       midiButton.setToggleState(active, juce::dontSendNotification);
       if (!layoutChanged) return;
-      hasPractice = showPractice; hasWindow = showWindow;
-      practiceButton.setVisible(hasPractice); songWindowButton.setVisible(hasWindow);
+      hasPractice = showPractice; hasLyrics = showLyrics; hasWindow = showWindow;
+      practiceButton.setVisible(hasPractice); lyricsButton.setVisible(hasLyrics); songWindowButton.setVisible(hasWindow);
       midiButton.setVisible(showMidi); settingsButton.setVisible(showSettings);
       sectionsButton.setVisible(showTimeline);
-      const int rows = 1 + (showTimeline ? 1 : 0) + (showMidi ? 1 : 0) + (showSettings ? 1 : 0) + (hasPractice ? 1 : 0) + (hasWindow ? 1 : 0);
+      const int rows = 1 + (showTimeline ? 1 : 0) + (showMidi ? 1 : 0) + (showSettings ? 1 : 0) + (hasPractice ? 1 : 0) + (hasLyrics ? 1 : 0) + (hasWindow ? 1 : 0);
       setSize(getWidth() > 0 ? getWidth() : 300, rows * 48 + 8);
       resized();
     }
@@ -1575,6 +1610,10 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
         practiceButton.setBounds(area.removeFromTop(rowHeight));
         area.removeFromTop(4);
       }
+      if (hasLyrics) {
+        lyricsButton.setBounds(area.removeFromTop(rowHeight));
+        area.removeFromTop(4);
+      } else lyricsButton.setBounds({});
       learningButton.setBounds(area.removeFromTop(rowHeight));
       if (hasWindow) {
         area.removeFromTop(4);
@@ -1587,9 +1626,11 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
     ActionButton midiButton;
     ActionButton settingsButton;
     ActionButton practiceButton;
+    ActionButton lyricsButton;
     ActionButton learningButton;
     ActionButton songWindowButton;
     bool hasPractice = false;
+    bool hasLyrics = false;
     bool hasWindow = false;
   };
 
@@ -1600,6 +1641,11 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
       [safe] { if (safe) safe->openSettingsPanel(); }, [safe] {
         if (safe && safe->onPhonePractice) safe->onPhonePractice();
       }, minimalPhoneMode && onPhonePractice != nullptr, [safe] {
+        if (safe && safe->songLyricsAvailable()) {
+          auto open = safe->onSongLyrics;
+          if (open) open();
+        }
+      }, songLyricsAvailable(), [safe] {
         if (safe && safe->onLearningRequested) safe->onLearningRequested();
       }, [safe] { if (safe) safe->showSongWindowPopover(); }, !timeDisplay.isVisible());
   const auto panelSafe = juce::Component::SafePointer<MorePopover>(panel.get());
@@ -1610,12 +1656,15 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
           safe->timelineControlsAvailable() && safe->onLiveModeToggle && (!safe->liveModeEnabled || safe->liveModeEnabled()));
     const bool timelineVisibilityChanged = safe && panelSafe &&
         panelSafe->findChildWithID("timeline-sections")->isVisible() != safe->timelineControlsAvailable();
-    if (!desktopMenu && initialized && !timelineVisibilityChanged) return;
+    const bool lyricsVisibilityChanged = safe && panelSafe &&
+        panelSafe->findChildWithID("song-lyrics")->isVisible() != safe->songLyricsAvailable();
+    if (!desktopMenu && initialized && !timelineVisibilityChanged && !lyricsVisibilityChanged) return;
     if (safe && panelSafe) {
       initialized = true;
       const auto actions = safe->morePrimaryActions();
       panelSafe->updatePrimaryActions(actions.first, actions.second, safe->midiLearnActive,
           safe->timelineControlsAvailable() && safe->minimalPhoneMode && safe->onPhonePractice != nullptr,
+          safe->songLyricsAvailable(),
           safe->timelineControlsAvailable() && !safe->timeDisplay.isVisible(), safe->timelineControlsAvailable());
     }
   };

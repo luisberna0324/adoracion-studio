@@ -179,3 +179,46 @@ en paquete/sidecar por compatibilidad con el prototipo `11f804d`; la creación
 simplificada no la añade ni la aplica como un control distinto del pad global.
 Los campos históricos `clickEnabled`/`padEnabled` no reemplazan los ajustes
 habituales del reproductor. El botón nuevo guarda cero compases y arreglo vacío.
+
+
+## Letra y acordes para músicos
+
+`ImportedSongData::lyrics` es contenido musical opcional, independiente de
+`SongArrangementSnapshot`, el motor, la guía de audio y las integraciones de
+proyección. Se guarda como `song.lyrics` con `schemaVersion: 1` y bloques
+`{id, label, lines}`; cada línea tiene `{id, text, chords}` y cada acorde
+`{id, position, symbol}`. `position` cuenta caracteres Unicode como los índices
+de `juce::String` y del editor JUCE, no bytes UTF-8 ni unidades UTF-16. Puede
+anclarse desde `0` hasta el final de la línea. Los IDs no se regeneran al guardar.
+La disposición visual calcula las posiciones a partir del texto real; no usa
+espacios manuales para alinear acordes ni altera las secciones de reproducción.
+
+`SongLyrics` normaliza saltos CRLF/CR a LF al pegar texto. Una modificación de
+texto del bloque aplica su reemplazo contiguo, desplaza anclas posteriores y
+reasigna líneas al insertar/quitar saltos sin cambiar IDs de acordes. Un acorde
+cuyo texto se elimina se conserva al inicio del rango borrado hasta que el
+músico lo quite explícitamente. Las líneas nuevas reciben identidad nueva;
+al unir líneas conserva la identidad disponible de la primera. El recorrido
+Unicode del texto/diff usa buffers UTF32 lineales, fuera del hilo de audio.
+
+El codec compartido de `SongLibraryStore` conserva este documento en
+`songs.json`, en el manifiesto de `.pwproj` y en el contenido descargado de
+Cloud. `updateSongMetadata` lo actualiza tanto en canciones legacy como en
+proyectos. No se coloca en el sidecar ni en `ProjectSongSettings`: las versiones
+manuales de mezcla continúan siendo sólo ajustes operativos. Vaciar la letra
+sin acordes elimina el campo; canciones antiguas sin `lyrics` abren igual y
+las canciones en blanco pueden incluirlo sin necesitar stems.
+
+El decoder rechaza atómicamente tipos/versión no admitidos, IDs repetidos o
+vacíos, anclas fuera de la línea y saltos incrustados en una línea/etiqueta/
+acorde. Limita a 256 bloques, 16384 líneas, 8192 acordes y 262144 caracteres
+de letra por documento; etiquetas hasta 128 caracteres y símbolos hasta 32.
+Abrir una canción ignora sólo el documento inválido y conserva el audio y
+los demás metadatos. Guardar Biblioteca o un paquete con un documento inválido
+falla antes de reemplazar el archivo anterior. Un documento vacío no impide
+crear una canción.
+
+Verificación: `song_lyrics` cubre offsets Unicode, codec, pegado y anclas al
+editar/dividir/unir líneas. `song_project_creation` añade roundtrips reales de
+Biblioteca, paquete portable, edición y borrado en proyectos/legacy, canción
+en blanco, rechazo sin pérdida y reconstrucción Cloud local sin red.

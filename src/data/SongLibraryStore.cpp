@@ -1691,6 +1691,7 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
     updated.timeSignature = song.timeSignature;
     updated.artworkSource = song.artworkSource;
     updated.artworkPath = song.artworkPath;
+    updated.lyrics = song.lyrics;
     return updateSong(std::move(updated), errorMessage);
   }
   auto updated = previousSong;
@@ -1703,6 +1704,7 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
                          ? song.fileType.trim()
                          : previousSong.fileType;
   updated.artworkSource = song.artworkSource.trim();
+  updated.lyrics = song.lyrics;
   if (updated.artworkSource.isEmpty())
     updated.artworkPath.clear();
   followEditedBaseTempoInDefaultMap(updated, previousSong);
@@ -2513,8 +2515,12 @@ LibraryState SongLibraryStore::loadLibrary() {
 bool SongLibraryStore::saveLibrary(const LibraryState &library) {
   juce::Array<juce::var> songVars;
   songVars.ensureStorageAllocated(static_cast<int>(library.songs.size()));
-  for (const auto &song : library.songs)
+  for (const auto &song : library.songs) {
+    if (song.lyrics.has_value() &&
+        !isValidSongLyricsDocument(*song.lyrics))
+      return false;
     songVars.add(songToVar(song));
+  }
 
   juce::Array<juce::var> setlistVars;
   setlistVars.ensureStorageAllocated(
@@ -2925,6 +2931,8 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("stems", juce::var(stemVars));
   obj->setProperty("arrangement", arrangementToVar(song.arrangement));
   obj->setProperty("tempoMap", tempoMapToVar(song.tempoMap));
+  if (hasSongLyrics(song.lyrics))
+    obj->setProperty("lyrics", songLyricsToVar(*song.lyrics));
   return juce::var(obj);
 }
 
@@ -2947,6 +2955,8 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   song.artworkSource = obj->getProperty("artworkSource").toString();
   song.projectPath = obj->getProperty("projectPath").toString();
   song.createdMs = static_cast<juce::int64>(obj->getProperty("createdMs"));
+  if (obj->hasProperty("lyrics"))
+    song.lyrics = songLyricsFromVar(obj->getProperty("lyrics"));
 
   if (const auto *blank = obj->getProperty("blankSong").getDynamicObject()) {
     song.blankSong = true;

@@ -50,6 +50,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
   if (mode == previousMode) return;
   learningRemoteAction.disconnected();
   if (songLoadBusy || projectSaveBusy || mixExportBusy) { remoteConnectionStatus = L10n::tr("Espera a que termine la carga", "Wait for loading to finish"); refreshRemoteSettings(); return; }
+  closeSongLyrics(false);
   auto &p = static_cast<MTControlsAudioProcessor &>(processor);
   if (p.isSectionAutomationEditing()) p.finishSectionAutomationEditing(false);
   p.setSectionAutomationRemoteOwned(false);

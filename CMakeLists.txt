@@ -706,6 +706,30 @@ if(MTCONTROLS_BUILD_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
             "$<TARGET_FILE:MTControlsMacAppStoreTests>")
     endif()
+    juce_add_console_app(MTControlsSongLyricsTests PRODUCT_NAME "Song Lyrics Tests")
+    target_sources(MTControlsSongLyricsTests PRIVATE
+        tests/song_lyrics_tests.cpp src/data/SongLyrics.cpp)
+    target_include_directories(MTControlsSongLyricsTests PRIVATE src)
+    target_link_libraries(MTControlsSongLyricsTests PRIVATE juce::juce_core)
+    add_test(NAME song_lyrics COMMAND "$<TARGET_FILE:MTControlsSongLyricsTests>")
+
+    juce_add_console_app(MTControlsSongLyricsPanelTests PRODUCT_NAME "Song Lyrics Panel Tests")
+    target_sources(MTControlsSongLyricsPanelTests PRIVATE
+        tests/song_lyrics_panel_tests.cpp src/data/AppSettings.cpp)
+    target_include_directories(MTControlsSongLyricsPanelTests PRIVATE src)
+    target_compile_definitions(MTControlsSongLyricsPanelTests PRIVATE
+        JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsSongLyricsPanelTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsSongLyricsPanelTests)
+    add_test(NAME song_lyrics_panel COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSongLyricsPanelTests>")
+    if(MSVC)
+        target_compile_options(MTControlsSongLyricsTests PRIVATE /utf-8)
+        target_compile_options(MTControlsSongLyricsPanelTests PRIVATE /utf-8)
+    endif()
+
     juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
     target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
         src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
@@ -1302,6 +1326,8 @@ target_sources(MTControls
         src/data/ProjectStore.h
         src/data/SongData.cpp
         src/data/SongData.h
+        src/data/SongLyrics.cpp
+        src/data/SongLyrics.h
         src/data/SongLibraryStore.cpp
         src/data/PortableFlacConversion.cpp
         src/data/PortableFlacConversion.h
@@ -1309,6 +1335,7 @@ target_sources(MTControls
         src/data/MobileImportStaging.h
         src/data/SongLibraryStore.h
         src/LearningGuideIntegration.cpp
+        src/LyricsChordsIntegration.cpp
         src/DemoSongIntegration.cpp
         src/data/DemoSongService.cpp
         src/data/DemoSongService.h
@@ -1356,6 +1383,8 @@ target_sources(MTControls
         src/ui/panels/TeamsPanel.h
         src/ui/panels/SongImportWizardComponent.cpp
         src/ui/panels/SongImportWizardComponent.h
+        src/ui/panels/SongLyricsPanel.cpp
+        src/ui/panels/SongLyricsPanel.h
         src/ui/panels/SongListPanel.cpp
         src/ui/panels/SongListPanel.h
         src/ui/panels/TopBar.cpp

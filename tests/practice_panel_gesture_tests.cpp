@@ -215,6 +215,8 @@ struct PracticePanelGestureTestAccess {
     return panel.playPauseButton;
   }
 
+  static juce::Button &lyricsButton(PracticePanel &panel) { return panel.lyricsButton; }
+
   static juce::Button &closeButton(PracticePanel &panel) {
     return panel.closeButton;
   }
@@ -361,6 +363,8 @@ struct Fixture {
   juce::Range<double> range{0.0, 120.0};
   int closeCalls = 0;
   int helpCalls = 0;
+  int lyricsCalls = 0;
+  bool lyricsAvailable = false;
   bool playing = false;
   bool connected = true;
   bool remote = false;
@@ -572,6 +576,8 @@ struct Fixture {
     };
     sources.close = [this] { ++closeCalls; };
     sources.showHelp = [this] { ++helpCalls; };
+    sources.canShowSongLyrics = [this] { return lyricsAvailable; };
+    sources.showSongLyrics = [this] { ++lyricsCalls; };
     sources.playPause = [this] { ++playPauseCalls; playing = !playing; };
     sources.stop = [this] {
       ++stopCalls;
@@ -1580,6 +1586,46 @@ void testRestoreKeyboardAndContext() {
     expect(fixture.listeningChanges.empty(),
            "disconnected, stale-context and modified R cannot reset a different mix");
   }
+}
+
+void testLyricsAccessPreservesPracticePlayback() {
+  Fixture fixture;
+  auto &button = PracticePanelGestureTestAccess::lyricsButton(*fixture.panel);
+  expect(!button.isVisible(), "Practice hides reading when the song has no lyrics");
+  fixture.lyricsAvailable = true;
+  fixture.playing = true;
+  const auto position = fixture.position;
+  const auto card = PracticePanelGestureTestAccess::card(*fixture.panel);
+  for (const int width : {320, 390, 768}) {
+    fixture.panel->setSize(width, 844);
+    PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+    const auto close = PracticePanelGestureTestAccess::closeButton(*fixture.panel).getBounds();
+    expect(button.isVisible() && button.getWidth() == 44 && button.getHeight() == 44 &&
+               fixture.panel->getLocalBounds().contains(button.getBounds()) &&
+               !button.getBounds().intersects(close),
+           "lyrics retains a distinct 44-point header target beside Close");
+  }
+  fixture.panel->setSize(390, 844);
+  expect(PracticePanelGestureTestAccess::card(*fixture.panel) == card,
+         "adding header reading leaves the original waveform area unchanged");
+  button.onClick();
+  expect(fixture.lyricsCalls == 1 && fixture.playing && fixture.position == position &&
+             fixture.playPauseCalls == 0 && fixture.stopCalls == 0 && fixture.seeks.empty() &&
+             fixture.listeningChanges.empty() && fixture.releaseLoopCalls == 0,
+         "reading lyrics neither changes playback nor releases loop/listening ownership");
+  fixture.remote = true;
+  PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+  expect(!button.isVisible(), "remote Practice does not imply remote lyric synchronization");
+  button.onClick();
+  expect(fixture.lyricsCalls == 1, "a stale remote action cannot open local lyrics");
+  fixture.remote = false;
+  fixture.songId = "another-song";
+  button.onClick();
+  expect(fixture.lyricsCalls == 1, "a queued action cannot open lyrics from another song context");
+  fixture.songId = "practice-song";
+  fixture.lyricsAvailable = false;
+  PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+  expect(!button.isVisible(), "removing lyrics also removes the Practice entry");
 }
 
 void testSharedTransportLayout() {
@@ -3457,6 +3503,7 @@ int main() {
   testHelpCallbackLifetime();
   testRestoreGestureTargetsActiveInstrument();
   testRestoreKeyboardAndContext();
+  testLyricsAccessPreservesPracticePlayback();
   testSharedTransportLayout();
   testAccompanimentIndependentControls();
   testAccompanimentAsyncConfirmationAndTimeout();

@@ -54,6 +54,20 @@ al actualizar la dependencia. Android reutiliza la actualizacion del IME de JUCE
 Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/uikit/uiresponder/reloadinputviews()),
 [Android keyboard visibility](https://developer.android.com/develop/ui/views/touch-and-input/keyboard-input/visibility).
 
+## Letra y acordes opcionales
+
+Detalles ofrece «Agregar letra y acordes»; al tener un documento cambia a
+«Editar letra y acordes». Abre el editor nativo amplio con una copia del
+borrador. Listo aplica sus cambios al asistente y Cancelar conserva el anterior.
+Se puede pegar letra normal, organizar bloques y anclar acordes a palabras.
+El texto y sus acordes se conservan al navegar entre pasos y solo se persisten
+al guardar la canción. Crear una canción sin letra sigue siendo válido.
+
+La edición carga `ImportedSongData::lyrics`, permite modificarlo o retirarlo y
+lo copia al resultado también en canciones en blanco. Se usa la transacción de
+proyecto existente. No se añade un paso obligatorio, otro proyecto, un nuevo
+modelo de secciones ni una llamada a FreeShow. Ver [Letra y acordes](../ui/LyricsChords.md).
+
 ## Guardar
 
 1. Validar titulo y archivos incluidos existentes. WAV, AIFF, FLAC y MP3 deben

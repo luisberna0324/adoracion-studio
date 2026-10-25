@@ -1,4 +1,5 @@
 #include "data/ProjectStore.h"
+#include "data/CloudProjectArchive.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/ArrangementSourceMapping.h"
 #include "network/RemoteStateCodec.h"
@@ -1146,11 +1147,157 @@ void testColdProjectExtractionProgress(const Fixtures &fixtures) {
 
 } // namespace
 
+
+void testLyricsPersistence(const Fixtures &fixtures) {
+  auto document = ProjectDocument{};
+  document.song.id = juce::Uuid().toString();
+  document.song.projectId = document.song.id;
+  document.song.title = "Lyrics fixture";
+  document.song.bpm = 120;
+  document.song.key = "C";
+  document.song.timeSignature = "4/4";
+  document.song.createdMs = 1700000001000;
+  document.song.lyrics = lyricsFromPlainText(juce::String::fromUTF8(u8"Aquí 🎹 cantamos\nJuntos otra vez"));
+  auto &verse = document.song.lyrics->blocks.front();
+  verse.label = "Verso 1";
+  verse.lines.front().chords = {{"lyrics-g", 0, "G"}, {"lyrics-d", 7, "D/F#"}};
+  auto chorus = lyricsFromPlainText("Coro de prueba").blocks.front();
+  chorus.label = "Coro";
+  chorus.lines.front().chords = {{"lyrics-am", 0, "Am7"}};
+  document.song.lyrics->blocks.push_back(chorus);
+  const auto canonical = [](const auto &lyrics) {
+    return lyrics ? juce::JSON::toString(songLyricsToVar(*lyrics), true) : juce::String();
+  };
+  const auto originalLyrics = canonical(document.song.lyrics);
+  const auto source = fixtures.directory.getChildFile("lyrics-source.flac");
+  writeFlac(source);
+  ImportedStemData stem;
+  stem.stemId = "lyrics-stem"; stem.sourcePath = source.getFullPathName();
+  stem.displayName = "Piano"; stem.category = "Keys"; stem.include = true;
+  stem.durationSec = static_cast<double>(sampleCount) / sampleRate;
+  stem.sampleRate = static_cast<int>(sampleRate); stem.channels = 1;
+  document.song.stems.push_back(stem);
+  document.settings.tempoBpm = 115;
+  document.settings.pitchSemitones = -2;
+  document.settings.mix.master.volume = 0.37f;
+  // Match a real saved song: its included stems have mix entries and its
+  // playback window is explicit. Missing entries/default window are normally
+  // reconciled by the existing metadata edit flow, unrelated to lyric edits.
+  StemMixSnapshot lyricStemMix;
+  lyricStemMix.stemId = stem.stemId;
+  lyricStemMix.volume = 0.42f;
+  lyricStemMix.gain = 1.13f;
+  lyricStemMix.mute = true;
+  lyricStemMix.solo = true;
+  lyricStemMix.outputChannel = 2;
+  document.settings.mix.stems.push_back(lyricStemMix);
+  document.settings.window.startSec = 0.01;
+  document.settings.window.endSec = 0.11;
+  document.settings.window.fadeOutSec = 0.02;
+  document.settings.windowCustomized = true;
+  const auto archive = fixtures.directory.getChildFile("lyrics-project.pwproj");
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error), "lyrics save in a real portable project");
+  ProjectDocument reopened;
+  expect(ProjectStore::open(archive, reopened, &error) &&
+             canonical(reopened.song.lyrics) == originalLyrics,
+         "portable project reopen preserves block/line/chord identities and Unicode anchors");
+  expect(ProjectStore::settingsJsonEqual(reopened.settings, document.settings) &&
+             ProjectStore::serializeSettings(reopened.settings).getProperty("lyrics", {}).isVoid(),
+         "lyrics are song content and never enter performance settings or their versions");
+  expect(SongLibraryStore::registerProjectSong(reopened.song), "lyrics project registers in Biblioteca");
+  const auto songId = reopened.song.id;
+  auto findSong = [&](const juce::String &id) {
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto found = std::find_if(songs.begin(), songs.end(), [&](const auto &song) { return song.id == id; });
+    expect(found != songs.end(), "lyrics test song remains registered");
+    return *found;
+  };
+  auto registered = findSong(songId);
+  expect(canonical(registered.lyrics) == originalLyrics,
+         "library reload retains portable lyrics independently of setlist settings");
+  bool changed = false;
+  auto oldPayload = SongLibraryStore::songDataToVar(registered);
+  oldPayload.getDynamicObject()->removeProperty("lyrics");
+  expect(!SongLibraryStore::songDataFromVar(oldPayload, changed).lyrics,
+         "old library metadata without lyrics stays backward compatible");
+
+  CloudUploadRequest upload;
+  expect(CloudProjectArchive::buildUpload(archive, "lyrics-cloud-song", 0, upload, &error),
+         "cloud upload preparation accepts a project containing lyrics without network");
+  const auto firstManifestHash = upload.descriptor.settings.sha256;
+  const auto firstAudioHash = upload.descriptor.stems.front().sha256;
+  CloudDownloadResult downloaded;
+  downloaded.descriptor = upload.descriptor;
+  for (const auto &object : upload.objects)
+    downloaded.objects.push_back({object.reference, object.file});
+  ImportedSongData cached;
+  std::vector<float> bins;
+  expect(CloudProjectArchive::materializeCachedSong(downloaded, cached, bins, &error) &&
+             canonical(cached.lyrics) == originalLyrics && cached.projectPath.isEmpty(),
+         "ordinary cloud cached download retains all lyrics without a duplicate portable package");
+  ImportedSongData portable;
+  expect(CloudProjectArchive::rebuildProject(downloaded,
+             fixtures.directory.getChildFile("lyrics-cloud-rebuilt.pwproj"), portable, &error) &&
+             canonical(portable.lyrics) == originalLyrics,
+         "cloud-to-portable reconstruction roundtrips lyrics and chords");
+
+  auto edited = registered;
+  replaceLyricsBlockText(edited.lyrics->blocks.front(),
+                        juce::String::fromUTF8(u8"Hoy Aquí 🎹 cantamos\nJuntos otra vez"));
+  expect(SongLibraryStore::updateSongMetadata(edited, &error),
+         "metadata-only editing persists new lyrics in project-backed songs");
+  const auto editedLyrics = canonical(edited.lyrics);
+  registered = findSong(songId);
+  expect(canonical(registered.lyrics) == editedLyrics,
+         "lyrics edit survives library reload");
+  expect(ProjectStore::open(archive, reopened, &error),
+         "lyrics-edited project reopens");
+  expect(canonical(reopened.song.lyrics) == editedLyrics,
+         "lyrics edit survives portable project reopen");
+  if (!ProjectStore::settingsJsonEqual(reopened.settings, document.settings))
+    std::cerr << "Lyrics settings before: "
+              << juce::JSON::toString(ProjectStore::serializeSettings(document.settings), true) << '\n'
+              << "Lyrics settings after: "
+              << juce::JSON::toString(ProjectStore::serializeSettings(reopened.settings), true) << '\n';
+  expect(ProjectStore::settingsJsonEqual(reopened.settings, document.settings),
+         "lyrics edit preserves the existing complete performance settings");
+  CloudUploadRequest changedUpload;
+  expect(CloudProjectArchive::buildUpload(archive, "lyrics-cloud-song", 1, changedUpload, &error) &&
+             changedUpload.descriptor.settings.sha256 != firstManifestHash &&
+             changedUpload.descriptor.stems.front().sha256 == firstAudioHash,
+         "lyrics-only edit changes portable cloud content hash without changing audio blobs");
+
+  auto invalid = reopened;
+  invalid.song.lyrics->blocks.front().lines.front().chords.front().position = 1000000;
+  juce::MemoryBlock before, after;
+  expect(archive.loadFileAsData(before) && !ProjectStore::save(invalid, archive, &error) &&
+             error.isNotEmpty() && archive.loadFileAsData(after) && before == after,
+         "invalid chord anchors reject before replacing the existing project");
+  registered.lyrics.reset();
+  expect(SongLibraryStore::updateSongMetadata(registered, &error) &&
+             !findSong(songId).lyrics && ProjectStore::open(archive, reopened, &error) &&
+             !reopened.song.lyrics,
+         "explicitly removing lyrics is persisted and does not return after reopening");
+  CloudProjectArchive::cleanupUploadStaging(upload.stagingDirectory);
+  CloudProjectArchive::cleanupUploadStaging(changedUpload.stagingDirectory);
+
+  auto legacy = document.song;
+  legacy.id = juce::Uuid().toString(); legacy.projectId.clear(); legacy.projectPath.clear();
+  expect(SongLibraryStore::appendSong(legacy, &error), "legacy song with lyrics imports normally");
+  legacy = findSong(legacy.id);
+  legacy.lyrics->blocks.front().label = "Verso editado";
+  expect(SongLibraryStore::updateSongMetadata(legacy, &error) &&
+             canonical(findSong(legacy.id).lyrics) == canonical(legacy.lyrics),
+         "legacy metadata-only edits persist lyrics rather than restoring the old document");
+}
+
 void testBlankSongPersistence(const Fixtures &fixtures) {
   ImportedSongData song;
   song.id = juce::Uuid().toString(); song.title = "Blank fixture";
   song.blankSong = true; song.bpm = 120; song.key = "D"; song.timeSignature = "4/4";
   song.blankSongBars = 20; song.blankPadEnabled = true; song.blankClickEnabled = false;
+  song.lyrics = lyricsFromPlainText("Letra para practicar sin pistas");
   expect(estimateSongLengthSeconds(song) == 0.0, "historical bar counts never impose a duration on blank playback");
   for (const auto &meter : {"3/4", "6/8"}) {
     song.timeSignature = meter;
@@ -1174,6 +1321,7 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
            "blank project contains neither generated silent audio nor fabricated waveform");
   ProjectDocument reopened;
   expect(ProjectStore::open(archive, reopened, &error), "blank project reopens");
+  expect(hasSongLyrics(reopened.song.lyrics), "blank songs preserve optional musician lyrics");
   expect(reopened.song.blankSong && reopened.song.stems.empty() && reopened.waveformBins.empty() &&
       reopened.song.blankSongBars == 20 && reopened.song.blankPadEnabled && !reopened.song.blankClickEnabled &&
       reopened.settings.blankPadEnabled == true && reopened.song.arrangement.parts[1].id == "blank-verse",
@@ -1221,6 +1369,7 @@ int main() {
     runRoundtripAndFailureChecks(fixtures);
     testAutomaticLegacyStemStorage(fixtures);
     testColdProjectExtractionProgress(fixtures);
+    testLyricsPersistence(fixtures);
     testBlankSongPersistence(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

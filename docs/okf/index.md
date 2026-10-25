@@ -51,6 +51,7 @@ docs/okf/
 | [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
 | [integrations/LyricsControllers](integrations/LyricsControllers.md) | Integración con software de letras |
+| [ui/LyricsChords](ui/LyricsChords.md) | Letra y acordes para músicos |
 | [release/AppStore](release/AppStore.md) | Preflight de firma, privacidad y revision de App Store |
 
 ## Uso Rápido

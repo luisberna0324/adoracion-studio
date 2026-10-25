@@ -39,6 +39,7 @@ public:
   void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
   void setOnPhonePads(std::function<void(juce::Component &)> cb);
   void setOnPhonePractice(std::function<void()> cb);
+  void setOnSongLyrics(std::function<void()> cb);
   void setOnLearningRequested(std::function<void()> cb);
   juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   void triggerPhonePadsPopover();
@@ -111,7 +112,7 @@ private:
     explicit DesktopTextButton(const juce::String &name) : juce::Button(name) {}
     void paintButton(juce::Graphics &, bool, bool) override;
   } waveformViewButton{"timeline-waveform"}, sectionsViewButton{"timeline-sections"},
-      helpButton{"learning-help"};
+      helpButton{"learning-help"}, lyricsButton{"song-lyrics"};
   // The parent paints the song card; this button supplies touch/keyboard access.
   class SongPickerButton final : public juce::Button {
   public:
@@ -138,6 +139,7 @@ private:
   std::function<void(juce::Component &)> onPhoneLibrary;
   std::function<void(juce::Component &)> onPhonePads;
   std::function<void()> onPhonePractice;
+  std::function<void()> onSongLyrics;
   std::function<void()> onLearningRequested;
   std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
@@ -156,6 +158,8 @@ private:
     const auto *song = songProvider ? songProvider() : nullptr;
     return song == nullptr || !song->blankSong || !song->stems.empty();
   }
+  bool songLyricsAvailable() const;
+  bool lastSongLyricsAvailable = false;
   bool lastTimelineControlsAvailable = true;
   MTControlsAudioProcessor &processor;
   PlaybackSession localSession;

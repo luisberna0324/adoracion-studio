@@ -1,4 +1,5 @@
 #include "ui/panels/SongImportWizardComponent.h"
+#include "ui/panels/SongLyricsPanel.h"
 #include "ui/panels/SongListPanel.h"
 #include "data/SongProjectCreation.h"
 #include "data/ProjectStore.h"
@@ -137,6 +138,52 @@ struct SongImportWizardTestAccess {
   using Wizard = SongImportWizardComponent;
   using Step = Wizard::Step;
 
+  static void setLyricsThroughEditor(Wizard &wizard, const juce::String &text, bool apply = true) {
+    expect(wizard.lyricsButton.isVisible() && wizard.lyricsButton.isEnabled(),
+           "Details exposes the optional lyrics action");
+    wizard.lyricsButton.onClick();
+    expect(wizard.lyricsPanel != nullptr, "real lyrics action opens the dedicated editor");
+    auto &panel = *wizard.lyricsPanel;
+    juce::TextEditor *body = nullptr;
+    juce::Button *done = nullptr, *close = nullptr;
+    for (auto *child : panel.getChildren()) {
+      if (child->getName() == "lyricsText") body = dynamic_cast<juce::TextEditor *>(child);
+      if (child->getName() == "lyricsDone") done = dynamic_cast<juce::Button *>(child);
+      if (child->getName() == "songLyricsClose") close = dynamic_cast<juce::Button *>(child);
+    }
+    expect(body != nullptr && done != nullptr && close != nullptr,
+           "lyrics editor exposes native text and explicit apply/cancel actions");
+    body->setText(text, true);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(40);
+    (apply ? done : close)->onClick();
+    pumpUntil([&] { return wizard.lyricsPanel == nullptr; }, "lyrics editor closes after its callback returns");
+  }
+
+  static void testLyricsDraftFlow() {
+    Wizard wizard([](ImportedSongData, juce::String &, const SongImportProgressFn &) { return false; });
+    wizard.setEmbeddedLibraryPage(true); wizard.setSize(390, 760); fillMetadata(wizard);
+    const juce::String text("Verso de prueba\nTexto propio para practicar");
+    setLyricsThroughEditor(wizard, text);
+    expect(hasSongLyrics(wizard.buildSongData().lyrics) &&
+               lyricsBlockText(wizard.buildSongData().lyrics->blocks.front()) == text,
+           "Done transfers structured lyrics into the song draft");
+    for (auto step : {Step::Stems, Step::Mapping, Step::Review, Step::Metadata}) wizard.changeStep(step);
+    expect(lyricsBlockText(wizard.buildSongData().lyrics->blocks.front()) == text,
+           "optional lyrics survive normal wizard navigation");
+    setLyricsThroughEditor(wizard, "Uncommitted replacement", false);
+    expect(lyricsBlockText(wizard.buildSongData().lyrics->blocks.front()) == text,
+           "cancelling lyric changes preserves the earlier song draft");
+    for (int width : {320, 390, 768, 1200}) {
+      wizard.setSize(width, 760);
+      expectInside(wizard.lyricsButton, wizard.metadataContent.getLocalBounds(),
+                   "optional lyric action fits the scrollable details at every width");
+      expect(!wizard.lyricsButton.getBounds().intersects(wizard.blankSongMetadataAction->getBounds()),
+             "lyrics and blank-song actions do not overlap");
+    }
+    setLyricsThroughEditor(wizard, {});
+    expect(!wizard.buildSongData().lyrics, "clearing optional lyrics removes them from the draft");
+  }
+
   static void testBlankCreation(const AudioFixtures &files) {
     int dismissed = 0, destinations = 0;
     juce::String saveError;
@@ -150,6 +197,7 @@ struct SongImportWizardTestAccess {
     wizard.setEmbeddedLibraryPage(true);
     wizard.setOnDismissRequested([&] { ++dismissed; });
     fillMetadata(wizard);
+    setLyricsThroughEditor(wizard, "Demo en blanco con letra propia");
     auto &action = *wizard.blankSongMetadataAction;
     expect(action.getButtonText() == L10n::tr("Crear canción en blanco", "Create blank song") &&
         action.getDescription() == L10n::tr("Empieza sin pistas de audio y usa el clic y los pads.",
@@ -203,6 +251,9 @@ struct SongImportWizardTestAccess {
         reopened.settings.clickDynMix.metronomeEnabled == ClickDynMixSnapshot{}.metronomeEnabled &&
         !reopened.settings.blankPadEnabled.has_value(),
         "direct action saves an empty portable project with ordinary accompaniment defaults");
+    expect(hasSongLyrics(reopened.song.lyrics) &&
+               lyricsBlockText(reopened.song.lyrics->blocks.front()) == "Demo en blanco con letra propia",
+           "blank-song shortcut also packages the optional lyric draft");
 
     ImportedSongData draft;
     int attempts = 0;
@@ -568,6 +619,7 @@ struct SongImportWizardTestAccess {
     wizard.setSize(860, 640);
     wizard.setOnDismissRequested([&] { ++dismissed; });
     fillMetadata(wizard);
+    setLyricsThroughEditor(wizard, juce::String::fromUTF8(u8"Verso portable de ejemplo\nOtro renglón original"));
     wizard.goToNextStep();
     expect(wizard.currentStep == Step::Stems, "Detalles advances to Archivos");
     wizard.handleSelectedStemFiles({source}, false);
@@ -626,6 +678,9 @@ struct SongImportWizardTestAccess {
     expect(reopened.song.title == "Wizard fixture" && reopened.song.stems.size() == 1 &&
                reopened.song.stems.front().displayName == "Preserved piano",
            "reopened package retains draft metadata and mapping");
+    expect(hasSongLyrics(reopened.song.lyrics) &&
+               lyricsBlockText(reopened.song.lyrics->blocks.front()).startsWith("Verso portable"),
+           "created audio project reopens with the optional lyric document");
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
     const auto reader = std::unique_ptr<juce::AudioFormatReader>(formats.createReaderFor(
@@ -675,6 +730,8 @@ struct SongImportWizardTestAccess {
             return SongLibraryStore::updateSongMetadata(std::move(draft), &error);
           });
       wizard.setOnDismissRequested([&] { ++dismissed; });
+      expect(hasSongLyrics(wizard.buildSongData().lyrics), "normal song edit preloads persisted lyrics");
+      setLyricsThroughEditor(wizard, "Letra actualizada: " + title);
       wizard.songTitleEditor.setText(title, juce::dontSendNotification);
       wizard.bpmEditor.setText(bpm, juce::dontSendNotification);
       wizard.selectedArtworkUrl = "manual:" + cover.getFullPathName();
@@ -715,6 +772,9 @@ struct SongImportWizardTestAccess {
                  packagedArtwork.isValid() &&
                  packagedArtwork.getPixelAt(4, 4) == artwork.getPixelAt(4, 4),
              "portable manifest and embedded artwork match the library");
+      expect(hasSongLyrics(reopened.song.lyrics) &&
+                 lyricsBlockText(reopened.song.lyrics->blocks.front()) == "Letra actualizada: " + title,
+             "quick and full song editing persist lyrics in the same portable project");
       if (!quickSave)
         expect(reopened.song.stems.front().displayName == "Edited piano",
                "full edit persists the mapped stem name inside the project");
@@ -1019,6 +1079,7 @@ int main() {
   });
   expect(searchRejected && detailRejected, "retired catalog cannot return remote metadata");
   AudioFixtures fixtures;
+  SongImportWizardTestAccess::testLyricsDraftFlow();
   SongImportWizardTestAccess::testStepLayouts(fixtures);
   SongImportWizardTestAccess::testDesktopEditLayout();
   SongImportWizardTestAccess::testDraftNavigation(fixtures);
