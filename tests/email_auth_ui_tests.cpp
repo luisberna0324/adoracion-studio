@@ -333,6 +333,50 @@ void testLocalDemoAndProviderLayouts() {
   }
 }
 
+void testProviderBrandingAndResponsiveLayout() {
+  // Exercise the real provider screen in both Debug and Release. In particular,
+  // Release without Apple must not lose its logo because it has fewer actions.
+  for (const auto size : {juce::Point<int>{390, 700}, {390, 360}, {820, 1000}, {1200, 760}}) {
+    WelcomeModal welcome;
+    welcome.setAppleSignInAvailable(false);
+    show(welcome, size.x, size.y);
+    auto &logo = typed<juce::ImageComponent>(welcome);
+    auto &google = button(welcome, "Continuar con Google", "Continue with Google");
+    auto &emailAction = button(welcome, "Ingresar con correo", "Sign in with email");
+    const auto subtitleText = L10n::tr(u8"Accede a tu biblioteca y continúa con tu música.",
+                                      "Sign in to your library and get back to your music.");
+    auto *subtitle = find<juce::Label>(welcome, [&subtitleText](const auto &label) {
+      return label.getText() == subtitleText;
+    });
+    expect(subtitle != nullptr && logo.getImage().isValid(),
+           "welcome contains the bundled brand image and explanatory copy");
+    for (const bool withStatus : {false, true}) {
+      welcome.setStatusText(withStatus ? L10n::tr("No fue posible iniciar sesión. Inténtalo de nuevo.",
+                                                  "Sign in failed. Please try again.") : juce::String(), true);
+      if (size.y > 360) {
+        expect(effectivelyVisible(logo) && effectivelyVisible(*subtitle) &&
+                   logo.getHeight() > 0 && logo.getBottom() <= subtitle->getY() &&
+                   subtitle->getBottom() <= google.getY(),
+               "phone, tablet and desktop retain branding without Apple or a development action");
+      }
+      expect(google.getHeight() >= 48 && emailAction.getHeight() >= 48,
+             "provider actions keep their normal touch targets even in a compact card with status");
+      std::vector<juce::Component *> visible;
+      for (auto *child : welcome.getChildren()) {
+        if (!effectivelyVisible(*child)) continue;
+        expect(!child->getBounds().isEmpty() && welcome.getLocalBounds().contains(child->getBounds()),
+               "every visible provider control remains inside the welcome surface");
+        for (auto *previous : visible)
+          expect(!previous->getBounds().intersects(child->getBounds()),
+                 "branding, status and provider actions do not overlap");
+        visible.push_back(child);
+      }
+      expect(google.getBottom() < emailAction.getY(),
+             "provider and email actions remain separated with or without a status message");
+    }
+  }
+}
+
 void testCompactLayoutsAndReachability() {
   for (const auto size : {juce::Point<int>{390, 700}, {390, 360}, {820, 1000}, {1200, 760}}) {
     WelcomeModal welcome;
@@ -663,6 +707,7 @@ int main() {
              "production rejects direct test-login entry points");
     }
 #endif
+    testProviderBrandingAndResponsiveLayout();
     testCompactLayoutsAndReachability();
     testReauthenticationStatusAndHeight();
     testPasswordLinkSuccess();

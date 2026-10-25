@@ -483,17 +483,40 @@ void WelcomeModal::resized() {
   const int cardWidth = juce::jmax(1, juce::jmin(480, available.getWidth()));
   const int sidePadding = getWidth() < 600 ? 22 : 32;
   const bool hasStatus = status.getText().isNotEmpty();
-  const int preferred = emailMode ? 48 + 44 + 20 + emailForm.preferredHeight(cardWidth - sidePadding * 2) + (hasStatus ? 68 : 0)
-                                  : (DevelopmentFeatures::testLogin ? 436 : 378) + (appleButton ? 58 : 0) + (hasStatus ? 68 : 0);
+  const bool hasAppleAction = appleButton != nullptr && !inlineAppleLink;
+  const bool hasLocalAction = DevelopmentFeatures::testLogin && !inlineAppleLink;
+  const int headingGap = emailMode || inlineAppleLink ? 20 : 4;
+  const int statusHeight = hasStatus ? 56 : 0;
+  const int statusGap = hasStatus ? 12 : 0;
+  const int providerActionsHeight = 48 + (hasAppleAction ? 58 : 0) + 34 + 48 +
+                                    (hasLocalAction ? 58 : 0);
+  // The preferred card includes its actual content, including the branding.
+  // A separate fixed visibility threshold hid the logo in Release builds that
+  // had neither Apple nor the development-only action to increase the height.
+  const int providerPreferred = 28 * 2 + 58 + 18 + 44 + headingGap + 46 + 22 +
+                                statusHeight + statusGap + providerActionsHeight;
+  const int preferred = emailMode
+      ? 48 + 44 + 20 + emailForm.preferredHeight(cardWidth - sidePadding * 2) +
+            (hasStatus ? 68 : 0)
+      : providerPreferred;
   contentBounds = juce::Rectangle<int>(cardWidth,
-      juce::jmin(preferred, available.getHeight())).withCentre(available.getCentre());
+      juce::jmax(0, juce::jmin(preferred, available.getHeight()))).withCentre(available.getCentre());
   // Changing steps moves the card without resizing this component. Invalidate
   // the parent background too, so old borders don't survive between children.
   repaint();
-  auto area = contentBounds.reduced(sidePadding,
-                                    emailMode ? 24 : contentBounds.getHeight() < 380 ? 14 : 28);
-  logo.setVisible(!emailMode && contentBounds.getHeight() >= 380);
-  if (logo.isVisible()) {
+  const bool showBranding = !emailMode && contentBounds.getHeight() >= providerPreferred;
+  const int unbrandedHeight = 14 * 2 + 44 + headingGap + statusHeight + statusGap +
+                              providerActionsHeight;
+  // With all providers and a status message, a keyboard-height card needs
+  // tighter gaps and 44 px actions. Ordinary compact cards retain 48 px actions.
+  const bool denseProviders = !emailMode && !showBranding &&
+                             contentBounds.getHeight() < unbrandedHeight;
+  const int verticalPadding = emailMode ? 24 : showBranding ? 28 : denseProviders ? 12 : 14;
+  const int actionHeight = denseProviders ? 44 : 48;
+  const int actionGap = denseProviders ? 6 : 10;
+  auto area = contentBounds.reduced(sidePadding, verticalPadding);
+  logo.setVisible(showBranding);
+  if (showBranding) {
     logo.setBounds(area.removeFromTop(58));
     area.removeFromTop(18);
   }
@@ -503,40 +526,39 @@ void WelcomeModal::resized() {
     heading.removeFromRight(44);
     AuthUi::label(title, 22, true);
     title.setBounds(heading);
-    area.removeFromTop(20);
   } else {
     AuthUi::label(title, 28, true);
     title.setBounds(heading);
-    area.removeFromTop(4);
   }
-  subtitle.setVisible(!emailMode && contentBounds.getHeight() >= 380);
-  if (subtitle.isVisible()) {
+  area.removeFromTop(denseProviders ? 0 : headingGap);
+  subtitle.setVisible(showBranding);
+  if (showBranding) {
     subtitle.setBounds(area.removeFromTop(46));
     area.removeFromTop(22);
   }
   status.setVisible(hasStatus);
   if (hasStatus) {
-    status.setBounds(area.removeFromTop(56));
-    area.removeFromTop(12);
+    status.setBounds(area.removeFromTop(statusHeight));
+    area.removeFromTop(denseProviders ? 4 : statusGap);
   }
   if (checking) {
-    if (DevelopmentFeatures::testLogin) localDemoButton.setBounds(area.removeFromTop(48));
+    if (hasLocalAction) localDemoButton.setBounds(area.removeFromTop(actionHeight));
     return;
   }
   if (emailMode) {
     emailForm.setBounds(area);
     return;
   }
-  loginButton.setBounds(area.removeFromTop(48));
-  if (appleButton) {
-    area.removeFromTop(10);
-    appleButton->setBounds(area.removeFromTop(48));
+  loginButton.setBounds(area.removeFromTop(actionHeight));
+  if (hasAppleAction) {
+    area.removeFromTop(actionGap);
+    appleButton->setBounds(area.removeFromTop(actionHeight));
   }
-  separator.setBounds(area.removeFromTop(34));
-  emailButton.setBounds(area.removeFromTop(48));
-  if (DevelopmentFeatures::testLogin) {
-    area.removeFromTop(10);
-    localDemoButton.setBounds(area.removeFromTop(48));
+  separator.setBounds(area.removeFromTop(denseProviders ? 20 : 34));
+  emailButton.setBounds(area.removeFromTop(actionHeight));
+  if (hasLocalAction) {
+    area.removeFromTop(actionGap);
+    localDemoButton.setBounds(area.removeFromTop(actionHeight));
   }
 }
 

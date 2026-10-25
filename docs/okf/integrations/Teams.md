@@ -3,7 +3,7 @@ type: Integration Contract
 title: Teams — nube compartida
 description: Usuarios del equipo y descarga de canciones de la nube del propietario.
 tags: [teams, cloud, canciones, offline]
-timestamp: 2026-10-03T00:00:00Z
+timestamp: 2026-10-15T00:00:00Z
 ---
 
 # Teams
@@ -15,6 +15,15 @@ por cuenta: no se crean ni nombran equipos. Teams no tiene publicaciones,
 setlists compartidos, invitaciones ni roles de coordinación.
 
 ## Suscripción y permisos
+
+El cliente tiene disponible el soporte de Teams (`teamsFileSharingAvailable = true`).
+No descarta por una pausa global las canciones compartidas que devuelve el catálogo.
+Esto no concede acceso a todas las cuentas: el backend conserva la autorización
+de cada fuente, membresía y descarga. Los usuarios sin permiso ni membresía no
+obtienen canciones ajenas ni acciones de administración. Un miembro puede ver y
+descargar con `canManageSharedCloud:false`; esa capacidad solo habilita administrar.
+Las compilaciones anteriores que contienen la pausa fija necesitan actualizarse:
+cambiar una membresía en Firestore no modifica el código ya instalado.
 
 Administrar el acceso a la nube compartida requiere que el perfil de suscripción del usuario
 contenga `subscriptionFeatures.teams === true`, acceso Cloud vigente y correo
@@ -133,6 +142,12 @@ recuperación de audio, aislamiento entre cuentas y preservación de la selecci�
 activa. El harness usa componentes reales con metadatos ficticios. Transferir
 objetos R2 con dos cuentas reales e instalar en dispositivos constituyen
 comprobaciones separadas.
+
+`teams_panel` exige que el soporte compartido esté disponible y que listar o
+descargar sin credenciales devuelva `INVALID_REQUEST` antes de acceder a la red.
+Conserva los casos de propietario, miembro, capacidad inválida o revocada y
+confirmación de retirada. `teams_workspace` comprueba las filas compartidas en
+la Biblioteca normal y la ausencia de acciones de escritura sobre la nube ajena.
 
 ### Evidencia de la versión anterior al catálogo unificado — 2026-10-04 UTC
 
@@ -298,3 +313,17 @@ por decisión del usuario: se mantiene el envío inmediato con Resend y los fall
 quedan guardados, sin reintentos periódicos. Se verificó la eliminación. No se enviaron
 correos a integrantes reales para probar. Esta funcionalidad es del servidor y
 no requiere otra compilación de la app para recibir las notificaciones.
+
+## Retirada de la pausa del cliente — 2026-10-15
+
+- Soporte Teams disponible; se conserva la autorización del backend por
+  propietario, capacidad y membresía. No se modificaron cuentas ni contenido Cloud.
+- Compilación macOS Release arm64 del standalone y verificación estricta de su
+  firma local: aprobadas en `build/codex-modal-macos`.
+- CTest: 6/6 (`teams_local_store`, `teams_preparation`, `teams_panel`,
+  `teams_workspace`, `cloud_sync_index`, `settings_panel`). Pruebas del backend:
+  65/65 de Teams, catálogo y correo, con fixtures sin cuentas reales.
+- Biblioteca compartida y Configuración revisadas mediante capturas de componentes
+  reales con datos ficticios. No acredita una sesión en el dispositivo del miembro.
+- No se publicó ni instaló una nueva versión iOS/Android. Las compilaciones que
+  incluyen la pausa fija siguen necesitando una actualización para mostrar Teams.

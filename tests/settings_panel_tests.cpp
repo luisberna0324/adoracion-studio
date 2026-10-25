@@ -1,5 +1,6 @@
 #include "ui/panels/SettingsPanel.h"
 #include "data/ApplicationDataPaths.h"
+#include "data/Localization.h"
 #include "data/SongData.h"
 
 #include <cmath>
@@ -414,10 +415,11 @@ struct SettingsPanelTestAccess {
     expect(learningRequests == 2,
            "the desktop guide button shares the same learning request as the grouped row");
     expect(panel.teamsButton.isVisible() &&
-               panel.teamsHelp.getText().containsIgnoreCase("temporalmente deshabilitado") &&
-               panel.teamsHelp.getText().containsIgnoreCase("Cloud personal") &&
+               panel.teamsHelp.getText() == L10n::tr(
+                   "Consulta tu Team o administra el acceso a tu nube compartida.",
+                   "View your Team or manage access to your shared cloud.") &&
                panel.generalPage.getLocalBounds().contains(panel.teamsButton.getBounds()),
-           "enabled desktop profile exposes Teams with the current sharing availability help");
+           "authorized desktop profile exposes Teams with shared Cloud access help");
     panel.teamsButton.onClick();
     expect(teamsRequests == 2, "desktop Teams action uses the same enabled navigation guard");
     snapshot(panel, "settings-desktop");

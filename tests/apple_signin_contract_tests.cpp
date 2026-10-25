@@ -1,5 +1,8 @@
 #include "data/AppleSignInApi.h"
 #include "data/AppleLinkFlow.h"
+#if !JUCE_IOS && !JUCE_MAC
+#include <juce_gui_basics/juce_gui_basics.h>
+#endif
 #include <iostream>
 #include <stdexcept>
 
@@ -221,6 +224,12 @@ int main() {
     originsAndHeadersFailClosed();
     serverSessionPreservesUidAndDenials();
     errorsAndConfigurationRemainBounded();
+#if !JUCE_IOS && !JUCE_MAC
+    expect(!NativeAppleSignIn::isSupported(),
+           "non-Apple platforms never offer native Apple authorization");
+    expect(NativeAppleSignIn::createButton([] {}) == nullptr,
+           "shared sign-in UI cannot create an Apple action on non-Apple platforms");
+#endif
     expect(!NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::authorized), "authorized credential keeps session");
     expect(!NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::unavailable), "temporary OS errors do not sign out");
     expect(NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::revoked), "revoked credential requires fresh login");

@@ -1,5 +1,5 @@
 #pragma once
 
-// Temporary product-wide pause for the first public release. No stored Teams
-// records or locally downloaded projects are deleted by this switch.
-inline constexpr bool teamsFileSharingAvailable = false;
+// Client support is available; the backend still authorizes the owner's
+// subscription feature and each member's access on every request.
+inline constexpr bool teamsFileSharingAvailable = true;

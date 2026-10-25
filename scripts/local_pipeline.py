@@ -117,7 +117,7 @@ def main():
                 artifact(app,f'macos-Release-{version}-{sha[:12]}.app')
                 packages=out/'macos-packages';run(['bash','scripts/package_macos_pkg.sh','--version',version,'--standalone-dir',app.parent,'--output-dir',packages])
                 result['targets'][current]['artifacts'].append(str(packages/f'playworship-macos-installer-{version}.pkg'))
-                result['targets'][current]['distribution']='Local pkg only; not notarized, no certified distribution claim; Apple opt-in OFF/source production URL'
+                result['targets'][current]['distribution']='Local pkg only; not notarized, no certified distribution claim; native Apple compiled for macOS, real Apple login requires eligible signing/profile; source production URL'
             if current in ['ios-simulator','ios-device']:
                 tool('xcodebuild');device=current=='ios-device';build=repo/'build'/('local-pipeline-ios-device' if device else 'local-pipeline-ios-simulator')
                 extra=['-DCMAKE_SYSTEM_NAME=iOS','-DCMAKE_OSX_ARCHITECTURES=arm64','-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0',f'-DCMAKE_OSX_SYSROOT={"iphoneos" if device else "iphonesimulator"}','-DMTCONTROLS_APPLE_SIGN_IN_ENABLED=ON',f'-DMTCONTROLS_IOS_BUILD_NUMBER={cfg.get("ios_build_number",4)}']

@@ -27,11 +27,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 option(MTCONTROLS_BUILD_TESTS "Build the PlayWorship regression tests" OFF)
-option(MTCONTROLS_APPLE_SIGN_IN_ENABLED
-    "Enable native Apple sign-in when portal entitlements and backend are configured" OFF)
-if(MTCONTROLS_APPLE_SIGN_IN_ENABLED AND NOT APPLE)
-    message(FATAL_ERROR "Native Apple sign-in is available only on Apple platforms")
-endif()
+include(cmake/NativeAuthProviders.cmake)
+mtcontrols_configure_native_auth_providers()
 option(MTCONTROLS_MAC_APP_STORE
     "Build the sandboxed, helper-free Mac App Store variant (Xcode only)" OFF)
 set(MTCONTROLS_MAC_DEVELOPMENT_TEAM "" CACHE STRING
@@ -317,6 +314,9 @@ endif()
 
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
+    add_test(NAME native_auth_provider_policy
+        COMMAND "${CMAKE_COMMAND}" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_auth_provider_policy.cmake")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     juce_add_console_app(MTControlsAccountDeletionTests PRODUCT_NAME "Account Deletion Flow Tests")
     target_sources(MTControlsAccountDeletionTests PRIVATE tests/account_deletion_tests.cpp
