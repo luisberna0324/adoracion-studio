@@ -6,8 +6,8 @@
 
 namespace juce { class Component; }
 
-// The editor is currently offered only by the UIKit implementation. The song
-// document remains portable; other platforms can preserve it without an editor.
+// Native mobile editors use UIKit on iOS and EditText on Android. Desktop
+// platforms preserve the same portable song document without an editor.
 namespace NativeSongLyricsEditor {
 struct Options {
   juce::String title;

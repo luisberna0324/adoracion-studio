@@ -707,7 +707,8 @@ if(MTCONTROLS_BUILD_TESTS)
             "$<TARGET_FILE:MTControlsMacAppStoreTests>")
     endif()
     juce_add_console_app(MTControlsSongLyricsTests PRODUCT_NAME "Song Lyrics Range Tests")
-    target_sources(MTControlsSongLyricsTests PRIVATE tests/song_lyrics_tests.cpp src/data/SongLyrics.cpp)
+    target_sources(MTControlsSongLyricsTests PRIVATE tests/song_lyrics_tests.cpp src/data/SongLyrics.cpp
+        src/platform/NativeSongLyricsEditing.cpp)
     target_include_directories(MTControlsSongLyricsTests PRIVATE src)
     target_link_libraries(MTControlsSongLyricsTests PRIVATE juce::juce_core)
     if(MSVC)
@@ -1437,7 +1438,9 @@ target_sources(MTControls PRIVATE
     src/AppleSignInIntegration.cpp
     src/data/AppleSignInApi.cpp src/data/AppleSignInApi.h
     src/platform/NativeAppleSignIn.cpp src/platform/NativeAppleSignIn.h
-    src/platform/NativeSongLyricsEditor.cpp src/platform/NativeSongLyricsEditor.h)
+    src/platform/NativeSongLyricsEditor.cpp src/platform/NativeSongLyricsEditor.h
+    src/platform/NativeSongLyricsEditing.cpp src/platform/NativeSongLyricsEditing.h
+    src/platform/NativeSongLyricsEditor_android.cpp)
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(MTControls PRIVATE "-framework SystemConfiguration")

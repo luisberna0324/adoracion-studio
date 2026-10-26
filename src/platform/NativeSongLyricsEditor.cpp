@@ -99,6 +99,8 @@ juce::var presentationConfig(const Options &options) {
   colours->setProperty("secondary", "#" + UITheme::textSecondary.toDisplayString(false));
   colours->setProperty("accent", "#" + UITheme::accent.toDisplayString(false));
   colours->setProperty("pageBackground", "#" + UITheme::appBg.toDisplayString(false));
+  colours->setProperty("pageBackgroundTop", "#" + UITheme::appBgTop.toDisplayString(false));
+  colours->setProperty("pageBackgroundBottom", "#" + UITheme::appBgBottom.toDisplayString(false));
   colours->setProperty("cardBackground", "#" + UITheme::cardBg.toDisplayString(false));
   colours->setProperty("cardBorder", "#" + UITheme::cardBorder.toDisplayString(false));
   // Section headers retain a light pastel fill in every app theme.
@@ -110,7 +112,7 @@ juce::var presentationConfig(const Options &options) {
   return juce::var(config);
 }
 
-#if !JUCE_IOS
+#if !JUCE_IOS && !JUCE_ANDROID
 bool isAvailable() { return false; }
 std::unique_ptr<Handle> present(juce::Component &, Options, Save, std::function<void()>) {
   return {};

@@ -4,6 +4,7 @@
 #include <climits>
 #include <atomic>
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #if !__has_feature(objc_arc)
 #error NativeSongLyricsEditor.mm requires Objective-C ARC
 #endif
@@ -11,6 +12,7 @@
 #include <array>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <cmath>
 
 namespace {
@@ -63,6 +65,7 @@ UIViewController *presenterForOwner(juce::Component &owner) {
 @property(nonatomic) NSRange range;
 @property(nonatomic) NSRange paragraphRange;
 @property(nonatomic) BOOL completeBlock;
+@property(nonatomic) BOOL ownsTrailingEmptyLine;
 @end
 @implementation PlayWorshipLyricsSectionPresentation
 @end
@@ -86,6 +89,13 @@ bool isCompleteLyricsParagraphs(NSString *text, NSRange range) {
   const auto includingSeparator = enclosingLyricsParagraphs(text, range, false);
   return content.location != NSNotFound && range.location == content.location &&
       (NSMaxRange(range) == NSMaxRange(content) || NSMaxRange(range) == NSMaxRange(includingSeparator));
+}
+bool hasTrailingEmptyLyricsLine(NSString *text, NSRange range) {
+  if (range.length == 0 || NSMaxRange(range) > text.length) return false;
+  const NSUInteger end = NSMaxRange(range);
+  NSCharacterSet *newlines = NSCharacterSet.newlineCharacterSet;
+  return [newlines characterIsMember:[text characterAtIndex:end - 1]] &&
+      (end == text.length || [newlines characterIsMember:[text characterAtIndex:end]]);
 }
 // The portable model deliberately keeps insertion at exact fragment borders
 // outside that fragment. Whole-paragraph cards instead behave like native
@@ -163,6 +173,31 @@ bool hasBlankLyricsParagraphGap(NSString *text, NSRange previous, NSUInteger cur
   return [between rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet].location == NSNotFound &&
       [between rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location != NSNotFound;
 }
+// TextKit owns selection, composition and the viewport. Applying an identical
+// paragraph style still invalidates its layout/selection machinery, so collect
+// only real differences before touching the live text storage.
+void applyLyricsPresentationAttributes(NSTextStorage *storage, NSAttributedString *desired) {
+  NSMutableArray<NSDictionary *> *changes = [NSMutableArray new];
+  const NSRange all = NSMakeRange(0, storage.length);
+  for (NSAttributedStringKey key in @[NSFontAttributeName, NSForegroundColorAttributeName,
+                                     NSParagraphStyleAttributeName, NSBackgroundColorAttributeName]) {
+    [desired enumerateAttribute:key inRange:all options:0 usingBlock:^(id value, NSRange range, BOOL *) {
+      [storage enumerateAttribute:key inRange:range options:0 usingBlock:^(id current, NSRange actualRange, BOOL *) {
+        if (current == value || [current isEqual:value]) return;
+        [changes addObject:@{@"key":key, @"value":value ?: NSNull.null, @"range":[NSValue valueWithRange:actualRange]}];
+      }];
+    }];
+  }
+  if (changes.count == 0) return;
+  [storage beginEditing];
+  for (NSDictionary *change in changes) {
+    NSAttributedStringKey key = change[@"key"];
+    const NSRange range = [change[@"range"] rangeValue];
+    if (change[@"value"] == NSNull.null) [storage removeAttribute:key range:range];
+    else [storage addAttribute:key value:change[@"value"] range:range];
+  }
+  [storage endEditing];
+}
 UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
   CGFloat red = 0, green = 0, blue = 0, alpha = 1;
   if (![base getRed:&red green:&green blue:&blue alpha:&alpha]) return UIColor.secondarySystemBackgroundColor;
@@ -173,8 +208,6 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 
 @interface PlayWorshipLyricsLayoutManager : NSLayoutManager
 @property(nonatomic, strong) NSArray<PlayWorshipLyricsSectionPresentation *> *sections;
-@property(nonatomic, strong) UIColor *cardBackground;
-@property(nonatomic, strong) UIColor *cardBorder;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *cardFrames;
 @property(nonatomic) CGFloat lastContainerWidth;
 - (void)invalidateCardFrames;
@@ -186,6 +219,10 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
   return self;
 }
 - (void)invalidateCardFrames { [self.cardFrames removeAllObjects]; }
+- (void)invalidateLayoutForCharacterRange:(NSRange)range actualCharacterRange:(NSRangePointer)actualRange {
+  [self invalidateCardFrames];
+  [super invalidateLayoutForCharacterRange:range actualCharacterRange:actualRange];
+}
 - (CGRect)cardRectForSection:(PlayWorshipLyricsSectionPresentation *)section {
   NSTextContainer *container = self.textContainers.firstObject;
   if (container == nil || !section.completeBlock || section.range.length == 0) return CGRectNull;
@@ -194,14 +231,12 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
   }
   NSValue *cached = self.cardFrames[section.identifier];
   if (cached != nil) return cached.CGRectValue;
-  NSRange characters = section.range;
-  // Do not include a final paragraph separator's empty visual line in a card.
+  // During marked-text composition, metadata formatting is deferred while
+  // the live text may already be shorter than a card's previous range.
   NSString *text = self.textStorage.string;
-  while (characters.length > 0) {
-    const unichar last = [text characterAtIndex:NSMaxRange(characters) - 1];
-    if (last != '\n' && last != '\r' && last != 0x2029) break;
-    --characters.length;
-  }
+  NSRange characters = NSIntersectionRange(section.range, NSMakeRange(0, text.length));
+  // Owned blank paragraphs are editable content too. Dropping their trailing
+  // separators made the card stop at the last word while the caret moved on.
   if (characters.length == 0) return CGRectNull;
   const NSRange glyphs = [self glyphRangeForCharacterRange:characters actualCharacterRange:nullptr];
   [self ensureLayoutForGlyphRange:glyphs];
@@ -210,6 +245,23 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
     (void)line; (void)target; (void)range; (void)stop;
     used = CGRectIsNull(used) ? ink : CGRectUnion(used, ink);
   }];
+  if (section.ownsTrailingEmptyLine && NSMaxRange(section.range) <= text.length) {
+    const NSUInteger end = NSMaxRange(section.range);
+    UIFont *font = [self.textStorage attribute:NSFontAttributeName atIndex:end - 1 effectiveRange:nullptr]
+        ?: [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    CGRect empty = CGRectNull;
+    if (end == text.length && self.extraLineFragmentTextContainer == container) {
+      empty = self.extraLineFragmentUsedRect;
+      empty.size.height = std::ceil(font.lineHeight);
+    } else if (end < text.length) {
+      const NSUInteger glyph = [self glyphIndexForCharacterAtIndex:end];
+      [self ensureLayoutForGlyphRange:NSMakeRange(glyph, 1)];
+      const CGRect line = [self lineFragmentRectForGlyphAtIndex:glyph effectiveRange:nullptr];
+      const CGPoint baseline = [self locationForGlyphAtIndex:glyph];
+      empty = CGRectMake(0, CGRectGetMinY(line) + baseline.y - font.ascender, container.size.width, std::ceil(font.lineHeight));
+    }
+    if (!CGRectIsNull(empty)) used = CGRectIsNull(used) ? empty : CGRectUnion(used, empty);
+  }
   if (CGRectIsNull(used)) return CGRectNull;
   const CGFloat top = lyricsHeaderHeight() * 0.5 + 8;
   const CGRect card = CGRectMake(0, CGRectGetMinY(used) - top, container.size.width,
@@ -217,18 +269,33 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
   self.cardFrames[section.identifier] = [NSValue valueWithCGRect:card];
   return card;
 }
-- (void)drawBackgroundForGlyphRange:(NSRange)glyphs atPoint:(CGPoint)origin {
-  const NSRange visible = [self characterRangeForGlyphRange:glyphs actualGlyphRange:nullptr];
-  for (PlayWorshipLyricsSectionPresentation *section in self.sections) {
-    if (!section.completeBlock || NSIntersectionRange(section.range, visible).length == 0) continue;
-    const CGRect bounds = [self cardRectForSection:section];
-    if (CGRectIsNull(bounds)) continue;
-    UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:CGRectOffset(bounds, origin.x, origin.y) cornerRadius:16];
+
+@end
+
+// Card decoration lives behind UITextView, never in TextKit's drawing pass.
+// UIKit can therefore paint its own selection above the card fill on every OS.
+@interface PlayWorshipLyricsCardsBackground : UIView
+@property(nonatomic, copy) NSArray<NSValue *> *rectangles;
+@property(nonatomic, strong) UIColor *cardBackground;
+@property(nonatomic, strong) UIColor *cardBorder;
+@end
+@implementation PlayWorshipLyricsCardsBackground
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.userInteractionEnabled = NO; self.isAccessibilityElement = NO;
+    self.backgroundColor = UIColor.clearColor; self.opaque = NO;
+    self.clipsToBounds = YES; self.contentMode = UIViewContentModeRedraw;
+    self.rectangles = @[];
+  }
+  return self;
+}
+- (void)drawRect:(CGRect)rect {
+  (void)rect;
+  for (NSValue *value in self.rectangles) {
+    UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:value.CGRectValue cornerRadius:16];
     [self.cardBackground setFill]; [shape fill];
     [self.cardBorder setStroke]; shape.lineWidth = 1; [shape stroke];
   }
-  // Selection, marked-text backgrounds and inline legacy labels remain native.
-  [super drawBackgroundForGlyphRange:glyphs atPoint:origin];
 }
 @end
 
@@ -331,6 +398,24 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 }
 @end
 
+// UITextSelectionRect is the public abstract extension point for adjusting
+// geometry. Preserve UIKit's endpoints, writing direction and transforms.
+@interface PlayWorshipLyricsSelectionRect : UITextSelectionRect
+@property(nonatomic, strong) UITextSelectionRect *original;
+@property(nonatomic) CGRect textRect;
+@end
+@implementation PlayWorshipLyricsSelectionRect
+- (CGRect)rect { return self.textRect; }
+- (NSWritingDirection)writingDirection { return self.original.writingDirection; }
+- (BOOL)containsStart { return self.original.containsStart; }
+- (BOOL)containsEnd { return self.original.containsEnd; }
+- (BOOL)isVertical { return self.original.isVertical; }
+- (CGAffineTransform)transform {
+  if (@available(iOS 17.4, *)) return self.original.transform;
+  return CGAffineTransformIdentity;
+}
+@end
+
 @class PlayWorshipNativeLyricsController;
 @interface PlayWorshipNativeLyricsTextView : UITextView
 @property(nonatomic, weak) PlayWorshipNativeLyricsController *lyricsController;
@@ -365,8 +450,11 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 @property(nonatomic, strong) PlayWorshipNativeLyricsTextView *editor;
 @property(nonatomic, strong) UILabel *placeholder;
 @property(nonatomic, strong) UILabel *songLabel;
+@property(nonatomic, strong) CAGradientLayer *pageGradient;
+@property(nonatomic, strong) CAGradientLayer *accentGlow;
 @property(nonatomic, strong) UILabel *metadataLabel;
 @property(nonatomic, strong) UIView *headerOverlay;
+@property(nonatomic, strong) PlayWorshipLyricsCardsBackground *cardBackgrounds;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, PlayWorshipLyricsCardHeader *> *cardHeaders;
 @property(nonatomic, strong) NSArray<PlayWorshipLyricsSectionPresentation *> *sectionPresentations;
 @property(nonatomic, strong) PlayWorshipLyricsLayoutManager *lyricsLayout;
@@ -384,6 +472,11 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 - (void)applySection:(juce::String)kind range:(NSRange)range revision:(uint64_t)revision;
 - (void)saveFinished:(bool)success error:(juce::String)message;
 - (void)updateAppearance;
+- (void)applyNavigationAppearance;
+- (void)updateAppearancePreservingViewport:(BOOL)preserveViewport;
+- (void)updateTypingAttributes;
+- (void)textCompositionDidEnd;
+- (void)willReplaceLyricsTextInRange:(NSRange)range withText:(NSString *)text;
 - (void)refreshCardDecorations;
 - (void)updateActiveSectionForScroll;
 - (void)setActiveSection:(const juce::String &)identifier animated:(BOOL)animated;
@@ -467,11 +560,67 @@ private:
 }
 
 @implementation PlayWorshipNativeLyricsTextView
+// Native caret/selection geometry includes paragraph spacing reserved for
+// floating headers. Use the actual glyph baseline so handles stay text-sized.
+- (CGRect)lyricsLineRectForPosition:(UITextPosition *)position fallback:(CGRect)fallback {
+  const NSInteger offset = [self offsetFromPosition:self.beginningOfDocument toPosition:position];
+  const NSUInteger length = self.textStorage.length;
+  UIFont *font = self.font ?: [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+  if (offset >= 0 && static_cast<NSUInteger>(offset) <= length && length > 0) {
+    const NSUInteger index = static_cast<NSUInteger>(offset);
+    if (index == length && [NSCharacterSet.newlineCharacterSet characterIsMember:[self.text characterAtIndex:length - 1]] &&
+        self.layoutManager.extraLineFragmentTextContainer == self.textContainer) {
+      const CGRect line = self.layoutManager.extraLineFragmentUsedRect;
+      fallback.origin.y = self.textContainerInset.top + CGRectGetMinY(line);
+      fallback.size.height = std::ceil(font.lineHeight);
+      return fallback;
+    }
+    const NSUInteger character = std::min(index, length - 1);
+    UIFont *stored = [self.textStorage attribute:NSFontAttributeName atIndex:character effectiveRange:nullptr];
+    if (stored != nil) font = stored;
+    const NSUInteger glyph = [self.layoutManager glyphIndexForCharacterAtIndex:character];
+    if (glyph < self.layoutManager.numberOfGlyphs) {
+      const CGRect line = [self.layoutManager lineFragmentRectForGlyphAtIndex:glyph effectiveRange:nullptr];
+      const CGPoint location = [self.layoutManager locationForGlyphAtIndex:glyph];
+      fallback.origin.y = self.textContainerInset.top + CGRectGetMinY(line) + location.y - font.ascender;
+      fallback.size.height = std::ceil(font.lineHeight);
+      return fallback;
+    }
+  }
+  fallback.size.height = std::min(fallback.size.height, std::ceil(font.lineHeight));
+  return fallback;
+}
+- (CGRect)caretRectForPosition:(UITextPosition *)position {
+  return [self lyricsLineRectForPosition:position fallback:[super caretRectForPosition:position]];
+}
+- (NSArray<UITextSelectionRect *> *)selectionRectsForRange:(UITextRange *)range {
+  NSArray<UITextSelectionRect *> *native = [super selectionRectsForRange:range];
+  NSMutableArray<UITextSelectionRect *> *rects = [NSMutableArray arrayWithCapacity:native.count];
+  for (UITextSelectionRect *original in native) {
+    if (original.isVertical || (!original.containsStart && !original.containsEnd)) { [rects addObject:original]; continue; }
+    PlayWorshipLyricsSelectionRect *rect = [PlayWorshipLyricsSelectionRect new];
+    rect.original = original;
+    rect.textRect = [self lyricsLineRectForPosition:original.containsStart ? range.start : range.end fallback:original.rect];
+    [rects addObject:rect];
+  }
+  return rects;
+}
+- (void)insertText:(NSString *)text {
+  // UITextInput insertions do not always pass through shouldChangeTextInRange.
+  // Capture their exact native range before equal adjacent newlines make a
+  // text-only diff ambiguous and assign the edit to the following section.
+  [self.lyricsController willReplaceLyricsTextInRange:self.selectedRange withText:text];
+  [super insertText:text];
+}
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
   if (action == @selector(markLyricsSection:)) return self.selectedRange.length > 0 && self.editable;
   return [super canPerformAction:action withSender:sender];
 }
 - (void)markLyricsSection:(id)sender { (void)sender; [self.lyricsController showSectionChooser]; }
+- (void)unmarkText {
+  [super unmarkText];
+  [self.lyricsController textCompositionDidEnd];
+}
 - (void)layoutSubviews {
   [super layoutSubviews];
   [self.lyricsController refreshCardDecorations];
@@ -509,21 +658,37 @@ private:
   auto colors = configuration.getProperty("colors", {});
   self.view.backgroundColor = nativeColor(colors.getProperty("pageBackground", colors.getProperty("background", {})), UIColor.systemBackgroundColor);
   self.view.tintColor = nativeColor(colors.getProperty("accent", {}), UIColor.systemGreenColor);
-  self.navigationController.navigationBar.tintColor = self.view.tintColor;
-  UINavigationBarAppearance *bar = [UINavigationBarAppearance new];
-  [bar configureWithOpaqueBackground];
-  bar.backgroundColor = self.view.backgroundColor;
-  bar.titleTextAttributes = @{NSForegroundColorAttributeName:nativeColor(colors.getProperty("text", {}), UIColor.labelColor)};
-  self.navigationController.navigationBar.standardAppearance = bar;
-  self.navigationController.navigationBar.scrollEdgeAppearance = bar;
-  self.navigationController.navigationBar.compactAppearance = bar;
+  self.overrideUserInterfaceStyle = [self preferredStatusBarStyle] == UIStatusBarStyleLightContent
+      ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+  // Reuse the Library's theme tokens rather than UIKit's flat page background.
+  self.pageGradient = [CAGradientLayer layer];
+  self.pageGradient.colors = @[
+      (__bridge id)nativeColor(colors.getProperty("pageBackgroundTop", {}), self.view.backgroundColor).CGColor,
+      (__bridge id)nativeColor(colors.getProperty("pageBackgroundBottom", {}), self.view.backgroundColor).CGColor];
+  self.pageGradient.startPoint = CGPointMake(0.5, 0); self.pageGradient.endPoint = CGPointMake(0.5, 1);
+  [self.view.layer insertSublayer:self.pageGradient atIndex:0];
+  self.accentGlow = [CAGradientLayer layer];
+  self.accentGlow.type = kCAGradientLayerRadial;
+  self.accentGlow.colors = @[(__bridge id)[self.view.tintColor colorWithAlphaComponent:0.06].CGColor,
+                            (__bridge id)[self.view.tintColor colorWithAlphaComponent:0].CGColor];
+  self.accentGlow.startPoint = CGPointMake(0.16, 0.18); self.accentGlow.endPoint = CGPointMake(0.68, 0.80);
+  [self.view.layer insertSublayer:self.accentGlow above:self.pageGradient];
   self.title = [self label:"heading"];
-  self.closeItem = [[UIBarButtonItem alloc] initWithTitle:[self label:"closeTitle"]
+  UIImage *backImage = [[UIImage systemImageNamed:@"arrow.left"] imageByApplyingSymbolConfiguration:
+      [UIImageSymbolConfiguration configurationWithPointSize:21 weight:UIImageSymbolWeightRegular]];
+  self.closeItem = [[UIBarButtonItem alloc] initWithImage:backImage
       style:UIBarButtonItemStylePlain target:self action:@selector(closePressed)];
+  self.closeItem.accessibilityLabel = [self label:"closeTitle"];
   self.saveItem = [[UIBarButtonItem alloc] initWithTitle:[self label:"saveTitle"]
-      style:UIBarButtonItemStyleDone target:self action:@selector(savePressed)];
-  self.closeItem.tintColor = self.view.tintColor;
+      style:UIBarButtonItemStylePlain target:self action:@selector(savePressed)];
+  self.closeItem.tintColor = nativeColor(colors.getProperty("text", {}), UIColor.labelColor);
   self.saveItem.tintColor = self.view.tintColor;
+  if (@available(iOS 26.0, *)) {
+    // Public UIKit option for the same bare controls used by Library.
+    self.closeItem.hidesSharedBackground = YES;
+    self.saveItem.hidesSharedBackground = YES;
+  }
+  [self applyNavigationAppearance];
   self.closeItem.accessibilityIdentifier = @"nativeLyricsClose";
   self.saveItem.accessibilityIdentifier = @"nativeLyricsSave";
   self.navigationItem.leftBarButtonItem = self.closeItem;
@@ -531,8 +696,7 @@ private:
 
   self.songLabel = [UILabel new];
   self.songLabel.text = [self label:"title"];
-  UIFont *titleFont = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle1];
-  self.songLabel.font = [UIFont fontWithDescriptor:[titleFont.fontDescriptor fontDescriptorWithSymbolicTraits:UIFontDescriptorTraitBold] size:0];
+  self.songLabel.font = lyricsScaledFont(24, UIFontWeightSemibold, UIFontTextStyleTitle2);
   self.songLabel.numberOfLines = 2;
   self.songLabel.adjustsFontForContentSizeCategory = YES;
   self.songLabel.textColor = nativeColor(colors.getProperty("text", {}), UIColor.labelColor);
@@ -541,7 +705,7 @@ private:
   [self.view addSubview:self.songLabel];
   self.metadataLabel = [UILabel new];
   self.metadataLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  self.metadataLabel.font = lyricsScaledFont(14, UIFontWeightRegular, UIFontTextStyleSubheadline);
+  self.metadataLabel.font = lyricsScaledFont(13, UIFontWeightRegular, UIFontTextStyleSubheadline);
   self.metadataLabel.adjustsFontForContentSizeCategory = YES;
   self.metadataLabel.textColor = nativeColor(colors.getProperty("secondary", {}), UIColor.secondaryLabelColor);
   self.metadataLabel.text = [self label:"subtitle"];
@@ -577,13 +741,16 @@ private:
   self.editor = [[PlayWorshipNativeLyricsTextView alloc] initWithFrame:CGRectZero textContainer:container];
   self.editor.lyricsController = self;
   self.editor.translatesAutoresizingMaskIntoConstraints = NO;
-  self.editor.backgroundColor = self.view.backgroundColor;
+  self.editor.backgroundColor = UIColor.clearColor;
+  self.editor.opaque = NO;
   self.editor.textColor = nativeColor(colors.getProperty("text", {}), UIColor.labelColor);
   self.editor.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
   self.editor.adjustsFontForContentSizeCategory = YES;
   self.editor.textContainerInset = UIEdgeInsetsMake(24, 12, 32, 12);
   self.editor.alwaysBounceVertical = YES;
   self.editor.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+  self.editor.keyboardAppearance = self.overrideUserInterfaceStyle == UIUserInterfaceStyleDark
+      ? UIKeyboardAppearanceDark : UIKeyboardAppearanceLight;
   self.editor.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
   self.editor.accessibilityIdentifier = @"nativeLyricsText";
   self.editor.accessibilityLabel = [self label:"heading"];
@@ -597,6 +764,9 @@ private:
       name:NSUndoManagerDidUndoChangeNotification object:nil];
   [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(nativeHistoryDid:)
       name:NSUndoManagerDidRedoChangeNotification object:nil];
+  self.cardBackgrounds = [[PlayWorshipLyricsCardsBackground alloc] initWithFrame:CGRectZero];
+  self.cardBackgrounds.accessibilityIdentifier = @"nativeLyricsCardBackgrounds";
+  [self.view addSubview:self.cardBackgrounds];
   [self.view addSubview:self.editor];
   self.headerOverlay = [UIView new];
   self.headerOverlay.userInteractionEnabled = NO;
@@ -660,18 +830,33 @@ private:
   [super viewWillAppear:animated];
   // initWithRootViewController may load our view before navigationController is
   // assigned. Apply the native bar's app theme once it is attached as well.
+  [self applyNavigationAppearance];
+}
+- (void)applyNavigationAppearance {
+  self.navigationController.overrideUserInterfaceStyle = self.overrideUserInterfaceStyle;
   self.navigationController.view.tintColor = self.view.tintColor;
   self.navigationController.navigationBar.tintColor = self.view.tintColor;
+  self.navigationController.navigationBar.translucent = YES;
+  self.navigationController.navigationBar.prefersLargeTitles = NO;
+  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+  auto colors = configuration.getProperty("colors", {});
   UINavigationBarAppearance *bar = [UINavigationBarAppearance new];
-  [bar configureWithOpaqueBackground];
-  bar.backgroundColor = self.view.backgroundColor;
-  bar.titleTextAttributes = @{NSForegroundColorAttributeName:self.editor.textColor};
+  [bar configureWithTransparentBackground];
+  bar.shadowColor = UIColor.clearColor;
+  bar.titleTextAttributes = @{NSForegroundColorAttributeName:nativeColor(colors.getProperty("text", {}), UIColor.labelColor),
+      NSFontAttributeName:lyricsScaledFont(18, UIFontWeightSemibold, UIFontTextStyleHeadline)};
+  bar.buttonAppearance.normal.titleTextAttributes = @{NSFontAttributeName:lyricsScaledFont(16, UIFontWeightSemibold, UIFontTextStyleSubheadline)};
   self.navigationController.navigationBar.standardAppearance = bar;
   self.navigationController.navigationBar.scrollEdgeAppearance = bar;
   self.navigationController.navigationBar.compactAppearance = bar;
 }
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
+  if (!CGRectEqualToRect(self.pageGradient.frame, self.view.bounds)) {
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    self.pageGradient.frame = self.view.bounds; self.accentGlow.frame = self.view.bounds;
+    [CATransaction commit];
+  }
   [self refreshCardDecorations];
 }
 - (void)contentSizeChanged:(NSNotification *)notification {
@@ -688,13 +873,17 @@ private:
       delay:0 options:static_cast<UIViewAnimationOptions>([notification.userInfo[UIKeyboardAnimationCurveUserInfoKey] integerValue] << 16)
       animations:^{ [self.view layoutIfNeeded]; } completion:nil];
 }
+- (void)willReplaceLyricsTextInRange:(NSRange)range withText:(NSString *)text {
+  if (busy || updatingAppearance || range.location > INT_MAX || range.length > INT_MAX) return;
+  pendingRange = range; pendingReplacement = sharedString(text); hasPendingReplacement = true;
+}
 - (BOOL)textView:(UITextView *)textView shouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text {
   if (busy) return NO;
   auto candidate = document;
   if (range.location > INT_MAX || range.length > INT_MAX ||
       !replaceNativeLyricsText(candidate, static_cast<int>(range.location), static_cast<int>(range.length), sharedString(text)))
     return NO;
-  pendingRange = range; pendingReplacement = sharedString(text); hasPendingReplacement = true;
+  [self willReplaceLyricsTextInRange:range withText:text];
   return YES;
 }
 - (void)nativeUndoWill:(NSNotification *)notification {
@@ -769,10 +958,49 @@ private:
   }
   hasPendingReplacement = false;
   ++documentRevision; appearanceDirty = true;
-  [self updateAppearance];
+  // A native text edit must be free to scroll its caret above the keyboard.
+  // Viewport restoration is reserved for explicit section-formatting actions.
+  [self updateAppearancePreservingViewport:NO];
 }
 - (void)textViewDidChangeSelection:(UITextView *)textView {
-  if (appearanceDirty && textView.markedTextRange == nil && !updatingAppearance) [self updateAppearance];
+  if (updatingAppearance || textView.markedTextRange != nil) return;
+  if (appearanceDirty) [self updateAppearancePreservingViewport:NO];
+  else [self updateTypingAttributes];
+}
+- (void)textCompositionDidEnd {
+  if (appearanceDirty && !updatingAppearance && self.editor.markedTextRange == nil)
+    [self updateAppearancePreservingViewport:NO];
+}
+- (void)updateTypingAttributes {
+  if (self.editor.markedTextRange != nil) return;
+  auto *storage = self.editor.textStorage;
+  NSMutableDictionary<NSAttributedStringKey, id> *attributes = [self.editor.typingAttributes mutableCopy];
+  attributes[NSFontAttributeName] = self.editor.font;
+  attributes[NSForegroundColorAttributeName] = self.editor.textColor;
+  NSParagraphStyle *style = nil;
+  const NSUInteger caret = self.editor.selectedRange.location;
+  if (storage.length > 0 && caret != NSNotFound) {
+    style = [storage attribute:NSParagraphStyleAttributeName atIndex:std::min(caret, storage.length - 1) effectiveRange:nullptr];
+    // A pending empty line belongs to its card even before it has a glyph.
+    // Preserve that geometry both at EOF and before an unlabelled separator.
+    PlayWorshipLyricsSectionPresentation *owner = nil;
+    for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations)
+      if (section.ownsTrailingEmptyLine && NSMaxRange(section.range) == caret) { owner = section; break; }
+    if (owner != nil || (caret == storage.length &&
+        [NSCharacterSet.newlineCharacterSet characterIsMember:[storage.string characterAtIndex:storage.length - 1]])) {
+      NSMutableParagraphStyle *continuation = [NSMutableParagraphStyle new];
+      continuation.lineSpacing = 3;
+      if (owner != nil) {
+        continuation.firstLineHeadIndent = 12; continuation.headIndent = 12; continuation.tailIndent = -12;
+        continuation.paragraphSpacing = lyricsHeaderHeight();
+      }
+      style = continuation;
+    }
+  }
+  if (style != nil) attributes[NSParagraphStyleAttributeName] = style;
+  else [attributes removeObjectForKey:NSParagraphStyleAttributeName];
+  [attributes removeObjectForKey:NSBackgroundColorAttributeName];
+  if (![attributes isEqualToDictionary:self.editor.typingAttributes]) self.editor.typingAttributes = attributes;
 }
 - (juce::var)kindDefinition:(const juce::String &)kind {
   const auto kinds = configuration.getProperty("sectionKinds", {});
@@ -786,7 +1014,12 @@ private:
   NSString *text = nativeString(document.text);
   std::unordered_map<std::string, const SongLyricsSection *> byID;
   byID.reserve(document.sections.size());
-  for (const auto &section : document.sections) byID.emplace(section.id.toStdString(), &section);
+  std::unordered_set<NSUInteger> sectionStarts;
+  sectionStarts.reserve(document.sections.size());
+  for (const auto &section : document.sections) {
+    byID.emplace(section.id.toStdString(), &section);
+    sectionStarts.insert(static_cast<NSUInteger>(section.start));
+  }
   // Recalculate occurrences from the current document, not the opening config.
   // Intro/Bridge/etc acquire numbering only when duplicated, just like the
   // shared configuration and portable tests specify.
@@ -804,13 +1037,16 @@ private:
     entry.range = NSMakeRange(static_cast<NSUInteger>(section.start), static_cast<NSUInteger>(section.length));
     entry.paragraphRange = enclosingLyricsParagraphs(text, entry.range, false);
     entry.completeBlock = isCompleteLyricsParagraphs(text, entry.range);
+    entry.ownsTrailingEmptyLine = entry.completeBlock && hasTrailingEmptyLyricsLine(text, entry.range) &&
+        sectionStarts.find(NSMaxRange(entry.range)) == sectionStarts.end();
     [entries addObject:entry];
   }
   self.sectionPresentations = entries;
   self.lyricsLayout.sections = entries;
   [self.lyricsLayout invalidateCardFrames];
 }
-- (void)updateAppearance {
+- (void)updateAppearance { [self updateAppearancePreservingViewport:YES]; }
+- (void)updateAppearancePreservingViewport:(BOOL)preserveViewport {
   self.placeholder.hidden = self.editor.text.length > 0;
   if (!appearanceDirty || self.editor.markedTextRange != nil) return;
   appearanceDirty = false; updatingAppearance = true;
@@ -818,62 +1054,66 @@ private:
   const CGPoint offset = self.editor.contentOffset;
   auto colors = configuration.getProperty("colors", {});
   auto *textColor = nativeColor(colors.getProperty("text", {}), UIColor.labelColor);
-  self.lyricsLayout.cardBackground = nativeColor(colors.getProperty("cardBackground", {}), lyricsLiftedColor(self.view.backgroundColor, 0.11));
-  self.lyricsLayout.cardBorder = nativeColor(colors.getProperty("cardBorder", {}), [UIColor.whiteColor colorWithAlphaComponent:0.08]);
+  self.cardBackgrounds.cardBackground = nativeColor(colors.getProperty("cardBackground", {}), lyricsLiftedColor(self.view.backgroundColor, 0.11));
+  self.cardBackgrounds.cardBorder = nativeColor(colors.getProperty("cardBorder", {}), [UIColor.whiteColor colorWithAlphaComponent:0.08]);
   auto *storage = self.editor.textStorage;
-  const NSRange all = NSMakeRange(0, storage.length);
   [self rebuildSectionPresentations];
   // Only presentation attributes change. Never replace attributedText or add
   // heading characters: both would disturb native selection and text history.
   NSUndoManager *undo = self.editor.undoManager;
   const BOOL registration = undo.isUndoRegistrationEnabled;
   if (registration) [undo disableUndoRegistration];
-  [storage beginEditing];
-  [storage removeAttribute:NSBackgroundColorAttributeName range:all];
-  [storage addAttribute:NSForegroundColorAttributeName value:textColor range:all];
   NSMutableParagraphStyle *normal = [NSMutableParagraphStyle new];
   normal.lineSpacing = 3;
-  [storage addAttribute:NSParagraphStyleAttributeName value:normal range:all];
+  NSMutableAttributedString *desired = [[NSMutableAttributedString alloc] initWithString:storage.string attributes:@{
+      NSFontAttributeName:self.editor.font, NSForegroundColorAttributeName:textColor, NSParagraphStyleAttributeName:normal}];
   const CGFloat headerHeight = lyricsHeaderHeight();
   const BOOL startsWithCard = self.sectionPresentations.count > 0 && self.sectionPresentations.firstObject.completeBlock && self.sectionPresentations.firstObject.range.location == 0;
   // TextKit can omit paragraphSpacingBefore at the document's first line.
   // Reserve its floating heading physically in the native text-container inset.
   UIEdgeInsets insets = self.editor.textContainerInset;
   insets.top = startsWithCard ? headerHeight + 16 : 24;
-  self.editor.textContainerInset = insets;
+  if (!UIEdgeInsetsEqualToEdgeInsets(self.editor.textContainerInset, insets)) self.editor.textContainerInset = insets;
   PlayWorshipLyricsSectionPresentation *previousCard = nil;
   for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations) {
     if (!section.completeBlock) {
       // Old, truly partial ranges remain exact inline highlights. Do not turn
       // their surrounding unlabelled words into an implicitly labelled card.
-      [storage addAttribute:NSBackgroundColorAttributeName value:[section.color colorWithAlphaComponent:0.19] range:section.range];
+      [desired addAttribute:NSBackgroundColorAttributeName value:[section.color colorWithAlphaComponent:0.19] range:section.range];
       continue;
     }
     NSMutableParagraphStyle *body = [normal mutableCopy];
     body.firstLineHeadIndent = 12; body.headIndent = 12; body.tailIndent = -12;
     body.paragraphSpacing = 6;
-    [storage addAttribute:NSParagraphStyleAttributeName value:body range:section.paragraphRange];
+    [desired addAttribute:NSParagraphStyleAttributeName value:body range:section.paragraphRange];
     const NSRange first = [storage.string paragraphRangeForRange:NSMakeRange(section.range.location, 1)];
     const NSRange last = [storage.string paragraphRangeForRange:NSMakeRange(NSMaxRange(section.range) - 1, 1)];
     NSMutableParagraphStyle *firstStyle = [body mutableCopy];
     const bool blankParagraphGap = previousCard != nil &&
         hasBlankLyricsParagraphGap(storage.string, previousCard.paragraphRange, section.range.location);
     firstStyle.paragraphSpacingBefore = section.range.location == 0 ? 0 : headerHeight - (blankParagraphGap ? 12 : 0);
-    [storage addAttribute:NSParagraphStyleAttributeName value:firstStyle range:first];
-    NSMutableParagraphStyle *lastStyle = [[storage attribute:NSParagraphStyleAttributeName atIndex:last.location effectiveRange:nullptr] mutableCopy];
-    lastStyle.paragraphSpacing = headerHeight;
-    [storage addAttribute:NSParagraphStyleAttributeName value:lastStyle range:last];
+    [desired addAttribute:NSParagraphStyleAttributeName value:firstStyle range:first];
+    NSMutableParagraphStyle *lastStyle = [[desired attribute:NSParagraphStyleAttributeName atIndex:last.location effectiveRange:nullptr] mutableCopy];
+    // The footer belongs after the editable empty line, not before its caret.
+    lastStyle.paragraphSpacing = section.ownsTrailingEmptyLine ? body.paragraphSpacing : headerHeight;
+    [desired addAttribute:NSParagraphStyleAttributeName value:lastStyle range:last];
+    if (section.ownsTrailingEmptyLine && NSMaxRange(section.range) < storage.length) {
+      const NSRange empty = [storage.string paragraphRangeForRange:NSMakeRange(NSMaxRange(section.range), 1)];
+      NSMutableParagraphStyle *emptyStyle = [body mutableCopy];
+      emptyStyle.paragraphSpacing = headerHeight;
+      [desired addAttribute:NSParagraphStyleAttributeName value:emptyStyle range:empty];
+    }
     previousCard = section;
   }
-  [storage endEditing];
+  applyLyricsPresentationAttributes(storage, desired);
   if (registration) [undo enableUndoRegistration];
-  self.editor.typingAttributes = @{NSFontAttributeName:self.editor.font,
-                                   NSForegroundColorAttributeName:textColor};
+  [self updateTypingAttributes];
   juce::String identity = sharedString(self.view.traitCollection.preferredContentSizeCategory);
   for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations)
     identity << sharedString(section.identifier) << ':' << sharedString(section.label) << ':' << sharedString(section.code) << ';';
   const CGFloat diameter = std::max<CGFloat>(44, lyricsNavigationCircleDiameter() + 8);
-  self.sectionHeight.constant = document.sections.empty() ? 0 : diameter + 4;
+  const CGFloat navigationHeight = document.sections.empty() ? 0 : diameter + 4;
+  if (self.sectionHeight.constant != navigationHeight) self.sectionHeight.constant = navigationHeight;
   self.sectionScroll.hidden = document.sections.empty();
   if (identity != chipIdentity) {
     chipIdentity = identity;
@@ -898,7 +1138,7 @@ private:
   // editor's height. Settle that geometry and TextKit's paragraph layout before
   // restoring the native viewport; restoring earlier lets UIKit move it again
   // as the remaining line fragments and contentSize are calculated lazily.
-  [UIView performWithoutAnimation:^{
+  if (preserveViewport) [UIView performWithoutAnimation:^{
     [self.view setNeedsLayout];
     [self.view layoutIfNeeded];
     if (!CGRectIsEmpty(self.editor.bounds)) {
@@ -911,12 +1151,15 @@ private:
   }];
   updatingAppearance = false;
   [self.editor setNeedsDisplay];
-  [self refreshCardDecorations];
+  if (preserveViewport) [self refreshCardDecorations];
+  else [self.editor setNeedsLayout];
 }
 - (void)refreshCardDecorations {
   if (refreshingCards || updatingAppearance || self.editor == nil || CGRectIsEmpty(self.editor.bounds)) return;
   refreshingCards = true;
   self.headerOverlay.frame = self.editor.frame;
+  self.cardBackgrounds.frame = self.editor.frame;
+  NSMutableArray<NSValue *> *cardRects = [NSMutableArray new];
   NSMutableSet<NSString *> *visible = [NSMutableSet new];
   const CGRect viewport = CGRectInset(self.editor.bounds, 0, -lyricsHeaderHeight() - 64);
   const CGRect textViewport = CGRectOffset(viewport, -self.editor.textContainerInset.left, -self.editor.textContainerInset.top);
@@ -929,6 +1172,8 @@ private:
     if (!section.completeBlock || NSIntersectionRange(section.range, characters).length == 0) continue;
     const CGRect card = [self.lyricsLayout cardRectForSection:section];
     if (CGRectIsNull(card)) continue;
+    const CGRect nativeCard = CGRectOffset(card, self.editor.textContainerInset.left, self.editor.textContainerInset.top);
+    [cardRects addObject:[NSValue valueWithCGRect:[self.editor convertRect:nativeCard toView:self.cardBackgrounds]]];
     CGRect header = CGRectMake(CGRectGetMinX(card) + self.editor.textContainerInset.left + 12,
         CGRectGetMinY(card) + self.editor.textContainerInset.top - lyricsHeaderHeight() * 0.5, 0, lyricsHeaderHeight());
     if (CGRectGetMaxY(header) < CGRectGetMinY(viewport) || CGRectGetMinY(header) > CGRectGetMaxY(viewport)) continue;
@@ -943,12 +1188,23 @@ private:
   }
   for (NSString *identifier in self.cardHeaders.allKeys)
     if (![visible containsObject:identifier]) { [self.cardHeaders[identifier] removeFromSuperview]; [self.cardHeaders removeObjectForKey:identifier]; }
+  if (![self.cardBackgrounds.rectangles isEqualToArray:cardRects]) {
+    self.cardBackgrounds.rectangles = cardRects;
+    [self.cardBackgrounds setNeedsDisplay];
+  }
   refreshingCards = false;
   if (scrollTargetID.isEmpty()) [self updateActiveSectionForScroll];
 }
 - (void)updateActiveSectionForScroll {
   if (self.sectionPresentations.count == 0 || self.editor.textStorage.length == 0) { [self setActiveSection:{} animated:NO]; return; }
   const CGFloat maximum = std::max<CGFloat>(0, self.editor.contentSize.height - self.editor.bounds.size.height);
+  // When every card fits, the viewport has no unique active section. Keep the
+  // user's explicit navigation choice instead of resetting it to the first
+  // visible card on the next text-view layout.
+  if (maximum <= 0 && activeSectionID.isNotEmpty()) {
+    for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations)
+      if (sharedString(section.identifier) == activeSectionID) { [self setActiveSection:activeSectionID animated:NO]; return; }
+  }
   if (maximum > 0 && self.editor.contentOffset.y >= maximum - 1) {
     [self setActiveSection:sharedString(self.sectionPresentations.lastObject.identifier) animated:YES]; return;
   }
@@ -987,10 +1243,21 @@ private:
 }
 - (void)sectionChipPressed:(UIButton *)button {
   if (busy) return;
+  [self.editor unmarkText];
   const auto identifier = sharedString(button.accessibilityIdentifier).fromFirstOccurrenceOf("nativeLyricsSection:", false, false);
   for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations) {
     if (sharedString(section.identifier) != identifier) continue;
-    self.editor.selectedRange = section.range;
+    // Navigation is not a Select All action. Keep the keyboard's current
+    // visibility and place a single caret so typing cannot replace a whole card.
+    self.editor.selectedRange = NSMakeRange(section.range.location, 0);
+    // TextKit lays out edits lazily. Resolve the destination before asking
+    // UITextView for contentSize, otherwise its old partial height clamps a
+    // jump short of the card. Full layout belongs only to this explicit action.
+    [self.lyricsLayout ensureLayoutForTextContainer:self.editor.textContainer];
+    [self.view layoutIfNeeded];
+    [self.editor setNeedsLayout];
+    [self.editor layoutIfNeeded];
+    [self.lyricsLayout invalidateCardFrames];
     CGRect bounds = [self.lyricsLayout cardRectForSection:section];
     if (CGRectIsNull(bounds)) {
       [self.editor scrollRangeToVisible:section.range];

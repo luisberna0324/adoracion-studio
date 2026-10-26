@@ -1,4 +1,5 @@
 #include "data/SongLyrics.h"
+#include "platform/NativeSongLyricsEditing.h"
 
 #include <algorithm>
 #include <functional>
@@ -134,6 +135,110 @@ void edits() {
          "deleting all labelled text removes empty labels");
 }
 
+void nativeMobileBlocks() {
+  namespace native = NativeSongLyricsEditing;
+  const auto lf = native::enclosingParagraphs("One\nTwo\nThree", 1, 3);
+  expect(lf.start == 0 && lf.length == 3,
+         "selection ending at next paragraph start does not label that paragraph");
+  const auto multiple = native::enclosingParagraphs("One\nTwo\nThree", 2, 3);
+  expect(multiple.start == 0 && multiple.length == 7,
+         "selection touching two paragraphs labels complete contents without final separator");
+  const auto crlf = native::enclosingParagraphs("One\r\nTwo\r\nThree", 4, 2);
+  expect(crlf.start == 0 && crlf.length == 8,
+         "CRLF is one paragraph separator even when selection starts on LF");
+  const auto blank = native::enclosingParagraphs("One\n\nThree", 4, 1);
+  expect(!blank.valid(), "a wholly empty paragraph cannot create an empty section");
+  expect(native::isCompleteParagraphs("One\nTwo", 0, 3) &&
+         native::isCompleteParagraphs("One\nTwo", 0, 4) &&
+         !native::isCompleteParagraphs("One\nTwo", 1, 2),
+         "whole blocks accept with or without final separator while partial fragments remain partial");
+  auto end = withText("Chorus");
+  end.sections.push_back({"same-id", "chorus", 0, 6});
+  expect(native::replaceText(end, 6, 0, "\n") && end.text == "Chorus\n" &&
+         end.sections[0].id == "same-id" && end.sections[0].length == 7,
+         "Enter at EOF belongs to the current whole-paragraph card");
+  expect(native::replaceText(end, 7, 0, "\n  ") && end.sections[0].length == 10 &&
+         native::replaceText(end, 10, 0, juce::String::fromUTF8(u8"🎹")) && end.sections[0].length == 12,
+         "consecutive empty lines and spaces retain card ownership before Unicode continuation");
+  const auto encoded = json(end);
+  expect(!native::replaceText(end, 11, 0, "x") && json(end) == encoded,
+         "native block insertion cannot split a UTF16 surrogate pair");
+  auto middle = withText("First\n\nSecond");
+  middle.sections = {{"a", "verse", 0, 5}, {"b", "chorus", 7, 6}};
+  expect(native::replaceText(middle, 5, 0, "\n") && middle.sections[0].length == 6 &&
+         middle.sections[1].start == 8 && middle.sections[1].length == 6 &&
+         middle.sections[1].id == "b" && middle.text == "First\n\n\nSecond",
+         "exact LF insertion before equal separators retains owner and shifts following card by one");
+  expect(native::replaceText(middle, 6, 0, "\n") && middle.sections[0].length == 7 &&
+         middle.sections[1].start == 9 && isValidSongLyricsDocument(middle),
+         "repeated Enter on an intermediate empty line never absorbs or overlaps following card");
+  auto shared = withText("One\nTwo");
+  shared.sections = {{"left", "verse", 0, 4}, {"right", "chorus", 4, 3}};
+  expect(native::replaceText(shared, 4, 0, "X") && shared.sections[0].length == 4 &&
+         shared.sections[1].start == 4 && shared.sections[1].length == 4 &&
+         shared.sections[1].id == "right" && isValidSongLyricsDocument(shared),
+         "following card exclusively owns insertion at shared border");
+  auto partial = withText("Before fragment after");
+  partial.sections = {{"part", "verse", 7, 8}};
+  expect(native::replaceText(partial, 15, 0, "!") && partial.sections[0].length == 8 &&
+         partial.sections[0].id == "part", "legacy partial range keeps exact-border insertion outside");
+  auto unicode = withText(juce::String::fromUTF8(u8"🎹 One\nNext"));
+  const auto wholeUnicode = native::enclosingParagraphs(unicode.text, 2, 1);
+  expect(wholeUnicode.start == 0 && wholeUnicode.length == 6 &&
+         !native::enclosingParagraphs(unicode.text, 1, 1).valid(),
+         "paragraph expansion counts UTF16 units and rejects selected half emoji");
+  unicode.sections = {{"unicode", "verse", 0, 6}};
+  expect(native::setText(unicode, juce::String::fromUTF8(u8"🎸 One\nNext")) &&
+         unicode.sections[0].id == "unicode" && unicode.sections[0].length == 6,
+         "full-text IME fallback expands changed surrogate pair and retains section identity");
+  auto invalid = withText("One");
+  invalid.sections = {{"bad", "verse", 0, 100}};
+  const auto bad = json(invalid);
+  expect(!native::replaceText(invalid, 0, 0, "x") && !native::setText(invalid, "One") &&
+         json(invalid) == bad, "native block helper rejects invalid source documents transactionally");
+  const auto stable = json(shared);
+  expect(!native::replaceText(shared, 99, 0, "x") && json(shared) == stable,
+         "out-of-bounds exact edit leaves native document unchanged");
+}
+
+void nativeMobileCompletionClassification() {
+  namespace native = NativeSongLyricsEditing;
+  const juce::StringArray fixtures{
+      "A\nB\n", "\n\n", "\r\n\r\n", "One\r\nTwo\rThree\n",
+      juce::String::fromUTF8(u8"🎹 One\nNext"),
+      juce::String::fromUTF8(u8"A\u0085B\u2028C\u2029D")};
+  bool matches = true;
+  for (const auto &text : fixtures) {
+    const int size = songLyricsUtf16Length(text);
+    SongLyricsDocument ranges{1, text, {}};
+    for (int start = 0; start < size; ++start) {
+      for (int length = 1; length <= size - start; ++length) {
+        const auto content = native::enclosingParagraphs(text, start, length, true);
+        const auto all = native::enclosingParagraphs(text, start, length, false);
+        const bool reference = content.valid() && start == content.start &&
+            (start + length == content.start + content.length ||
+             (all.valid() && start + length == all.start + all.length));
+        matches = matches && native::isCompleteParagraphs(text, start, length) == reference;
+        ranges.sections.push_back({juce::String(ranges.sections.size()), "verse", start, length});
+      }
+    }
+    const auto flags = native::completeParagraphsForSections(ranges);
+    matches = matches && flags.size() == ranges.sections.size();
+    for (size_t i = 0; i < flags.size(); ++i)
+      matches = matches && flags[i] == native::isCompleteParagraphs(text, ranges.sections[i].start,
+                                                                  ranges.sections[i].length);
+  }
+  expect(matches, "constant-time and batched card classification matches paragraph reference for every mixed-newline and Unicode range");
+  auto maximum = withText(juce::String::repeatedString(juce::String::repeatedString("x", 62) + "\r\n", 4096));
+  for (int i = 0; i < 4096; ++i)
+    maximum.sections.push_back({"block-" + juce::String(i), "verse", i * 64, i % 2 == 0 ? 62 : 64});
+  expect(songLyricsUtf16Length(maximum.text) == kSongLyricsMaxUtf16Length &&
+         isValidSongLyricsDocument(maximum), "pathological classification fixture reaches both document and section budgets");
+  const auto flags = native::completeParagraphsForSections(maximum);
+  expect(flags.size() == 4096 && std::all_of(flags.begin(), flags.end(), [](bool value) { return value; }),
+         "single document scan classifies all 4096 full-paragraph cards with and without CRLF terminators");
+}
+
 void unicodeAndLimits() {
   auto emoji = withText(juce::String::fromUTF8(u8"A🎹B"));
   expect(songLyricsUtf16Length(emoji.text) == 4 && !applySongLyricsSection(emoji, 1, 1, "verse") &&
@@ -168,7 +273,7 @@ void unicodeAndLimits() {
 } // namespace
 
 int main() {
-  try { codec(); assignment(); edits(); unicodeAndLimits(); }
+  try { codec(); assignment(); edits(); nativeMobileBlocks(); nativeMobileCompletionClassification(); unicodeAndLimits(); }
   catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
   std::cout << "Song lyrics: " << checks << " checks passed\n";
 }

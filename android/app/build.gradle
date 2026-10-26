@@ -9,6 +9,8 @@ android {
         applicationId 'com.multitracks.playworship'
         minSdk 29
         targetSdk 36
+        // Dependency-free native UI/JNI contract harness (debug instrumentation only).
+        testInstrumentationRunner 'com.rmsl.juce.NativeLyricsInstrumentation'
         versionCode = (System.getenv('PLAYWORSHIP_VERSION_CODE') ?: '1').toInteger()
         versionName = System.getenv('PLAYWORSHIP_VERSION_NAME') ?: '1.1.4'
         externalNativeBuild {
