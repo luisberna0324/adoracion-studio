@@ -7,6 +7,13 @@ timestamp: 2026-10-25T00:00:00-03:00
 
 # Changelog
 
+## 2026-10-25 — Editor de canción y teclado en iPhone
+
+- `Editar canción` mantiene su overlay delante de Biblioteca al aparecer el teclado o recalcular el área segura; conserva la instancia, el foco y el borrador.
+- El orden se restaura después del drawer y antes de los modales prioritarios, sin usar always-on-top ni solicitar foco de nuevo.
+- Gate enfocado en drawer/editor real: prioridad, recepción de toques, texto, selección, caret y cierre explícito.
+- Contratos: [SongCreation](importing/SongCreation.md) y [MobileLayout](ui/MobileLayout.md).
+
 ## 2026-10-25 — Letra nativa inicial en iOS
 
 - Editor UIKit desde Biblioteca/setlist local, letra opcional y selección de fragmentos musicales.

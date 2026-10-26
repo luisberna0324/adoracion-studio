@@ -54,6 +54,14 @@ al actualizar la dependencia. Android reutiliza la actualizacion del IME de JUCE
 Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/uikit/uiresponder/reloadinputviews()),
 [Android keyboard visibility](https://developer.android.com/develop/ui/views/touch-and-input/keyboard-input/visibility).
 
+El editor de una canción existente se presenta en `SongWizardOverlay`, como
+hermano de Biblioteca bajo el editor principal. Al cambiar el teclado, el área
+segura o el tamaño, `layoutMainUi` mantiene ese mismo overlay por delante de
+Biblioteca y su fondo mediante `bringSongEditorOverlayToFront()` y
+`toFront(false)`. No lo reconstruye ni solicita foco de nuevo: conserva el campo,
+el borrador, la selección y el caret. Reautenticación y Ensayo mantienen su
+prioridad posterior. El cierre sólo se ejecuta por la acción explícita existente.
+
 ## Guardar
 
 1. Validar titulo y archivos incluidos existentes. WAV, AIFF, FLAC y MP3 deben
@@ -203,6 +211,10 @@ paquete para aplicar los cambios.
   original. Ademas pulsa el + real de Biblioteca, comprueba pagina interna,
   redimension, cancelacion durante la transicion y retorno tras guardar mediante
   el callback de produccion del panel.
+- `local_demo_access --phone-input-only`: drawer real con creación incrustada y
+  edición como overlay; conserva instancia, prioridad visual/hit testing,
+  borrador, selección y caret en reflows, foco cuando el SO lo concede y cierre
+  explícito. No sustituye la prueba de teclado nativo.
 - Validacion manual en iOS y Android: teclado, pickers de archivos, todos los
   pasos, cancion creada visible en Biblioteca y reapertura tras reinicio.
 
@@ -277,3 +289,20 @@ legibles, pero no definen duración ni se ejecutan en una canción en blanco.
 La creación/redimensión de secciones, regla ampliable y Fin automático/manual
 para este tipo quedan fuera del alcance de la versión. El análisis anterior
 se conserva en el historial `a25bcd9`; no hay una fase pendiente que ejecutar.
+
+### Regresión del editor superpuesto y teclado — 2026-10-25
+
+Se reprodujo en iPhone Simulator iOS 26.5: al mostrar el teclado del sistema en
+Título, Biblioteca cubría el editor aunque éste seguía abierto. La revisión de
+la compilación corregida comprobó editor visible con QWERTY y NumberPad,
+escritura mediante una tecla táctil real, transferencia Título → Artista → BPM,
+Listo para ocultar el teclado y X para regresar a Biblioteca. El borrador de QA
+se descartó al cerrar; la canción guardada no cambió.
+
+El gate enfocado `--phone-input-only` pasó sus 91 comprobaciones sobre drawer,
+creación y edición reales. La fixture consume la expansión inicial de la ventana
+del host macOS antes de simular los reflows de teléfono.
+
+Capturas antes/después y log del gate: `output/ios-song-editor-focus/` del checkout
+local de QA.
+Esta prueba acredita el simulador de iPhone; no una instalación física.

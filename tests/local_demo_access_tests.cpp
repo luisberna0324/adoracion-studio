@@ -101,6 +101,12 @@ struct LocalDemoAccessTestAccess {
     editor.isSetlistCollapsed = false;
     editor.layoutMainUi(true);
   }
+  static bool drawerOpen(const MTControlsAudioProcessorEditor &editor) {
+    return editor.isSetlistDrawerOpen;
+  }
+  static bool setlistCollapsed(const MTControlsAudioProcessorEditor &editor) {
+    return editor.isSetlistCollapsed;
+  }
   static auto &wave(MTControlsAudioProcessorEditor &editor) { return *editor.waveformBarPtr; }
   static auto &top(MTControlsAudioProcessorEditor &editor) { return *editor.topBar; }
   static auto mixerBounds(MTControlsAudioProcessorEditor &editor) { return editor.channelGridPanel->getBounds(); }
@@ -210,12 +216,35 @@ struct SongListPanelTestAccess {
     }
     throw std::runtime_error("Biblioteca contains the create-song action");
   }
+
+  static juce::Component *editorOverlay(SongListPanel &panel) {
+    // SongWizardOverlay is intentionally private to SongListPanel.cpp. Match
+    // its owned address to the real host child without exposing a test route.
+    if (auto *host = panel.getParentComponent())
+      for (auto *child : host->getChildren())
+        if (static_cast<void *>(child) ==
+            static_cast<void *>(panel.songImportOverlay.get()))
+          return child;
+    return nullptr;
+  }
+
+  static SongImportWizardComponent &openEditor(SongListPanel &panel,
+                                               const juce::String &songId) {
+    panel.openSongEditWizard(songId);
+    auto *overlay = editorOverlay(panel);
+    expect(overlay != nullptr, "Editar opens its owned overlay under the actual editor host");
+    for (auto *child : overlay->getChildren())
+      if (auto *wizard = dynamic_cast<SongImportWizardComponent *>(child))
+        return *wizard;
+    throw std::runtime_error("song editor overlay contains its real wizard");
+  }
 };
 
 struct SongImportWizardTestAccess {
   static juce::TextEditor &title(SongImportWizardComponent &wizard) {
     return wizard.songTitleEditor;
   }
+  static void close(SongImportWizardComponent &wizard) { wizard.closeDialog(); }
 };
 
 struct WaveformEditingTestAccess {
@@ -543,6 +572,91 @@ void testPhoneDrawerTextInputSurvivesRelayout() {
   focusWindow.clearContentComponent();
 }
 
+void testPhoneSongEditTextInputSurvivesRelayout() {
+  AppSettings::setLocalDemoSessionActive(false);
+  ImportedSongData song;
+  expect(DemoSongService::ensureInstalled(song).wasOk(),
+         "song editor input fixture uses a real local song without network access");
+  MTControlsAudioProcessor processor;
+  MTControlsAudioProcessorEditor editor(processor);
+  LocalDemoAccessTestAccess::initializePhoneInputUi(editor);
+  juce::DocumentWindow focusWindow("PlayWorship song editor input regression",
+                                    juce::Colours::black, 0);
+  focusWindow.setUsingNativeTitleBar(true);
+  focusWindow.setContentNonOwned(&editor, false);
+  focusWindow.setContentComponentSize(390, 800);
+  focusWindow.centreWithSize(focusWindow.getWidth(), focusWindow.getHeight());
+  focusWindow.setVisible(true);
+  focusWindow.toFront(true);
+  // initializeMainUi queues a native desktop work-area expansion. Finish that
+  // host startup before simulating the phone layout; otherwise the first
+  // dispatch loop (at Close) legitimately restores the desktop drawer policy.
+  drainMessages(100);
+  LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800);
+  auto &library = LocalDemoAccessTestAccess::library(editor);
+  library.openLocalLibrary();
+  auto &scrim = LocalDemoAccessTestAccess::drawerScrim(editor);
+  auto &wizard = SongListPanelTestAccess::openEditor(library, song.id);
+  auto *const overlay = SongListPanelTestAccess::editorOverlay(library);
+  expect(overlay->getParentComponent() == &editor &&
+             library.getParentComponent() == &editor,
+         "Editar and Biblioteca are siblings under the actual application editor");
+  auto &title = SongImportWizardTestAccess::title(wizard);
+  title.setText("Ensayo iPhone", juce::dontSendNotification);
+  title.setHighlightedRegion({2, 7});
+  title.grabKeyboardFocus();
+  const bool nativeFocusGranted = title.hasKeyboardFocus(false);
+  const auto draft = title.getText();
+  const auto selection = title.getHighlightedRegion();
+  const auto caret = title.getCaretPosition();
+
+  // A keyboard inset refresh can relayout unchanged bounds. Also cover the
+  // smaller available area and rotation: both raise the real library drawer.
+  for (const auto size : {juce::Point<int>{390, 800}, {390, 800}, {390, 560},
+                          {390, 800}, {800, 390}, {360, 720}, {390, 800}}) {
+    LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, size.x, size.y);
+    expect(library.isSongEditorOpen() &&
+               SongListPanelTestAccess::editorOverlay(library) == overlay &&
+               overlay->isVisible() && wizard.isVisible() && title.isVisible(),
+           "keyboard and orientation reflows preserve the same open song editor");
+    expect(editor.getIndexOfChildComponent(overlay) >
+                   editor.getIndexOfChildComponent(&library) &&
+               editor.getIndexOfChildComponent(overlay) >
+                   editor.getIndexOfChildComponent(&scrim),
+           "Editar stays in front of Biblioteca and its scrim after each root reflow");
+    const auto point = editor.getLocalPoint(&title, title.getLocalBounds().getCentre());
+    auto *hit = editor.getComponentAt(point);
+    expect(hit == &title || title.isParentOf(hit),
+           "the song text field still receives touches instead of the covered library");
+    expect(title.getText() == draft && title.getHighlightedRegion() == selection &&
+               title.getCaretPosition() == caret,
+           "song editor reflows retain the draft, selection and caret");
+    if (nativeFocusGranted)
+      expect(title.hasKeyboardFocus(false),
+             "raising the song overlay preserves the already focused editor");
+  }
+  if (!nativeFocusGranted)
+    std::cout << "Song editor input: OS focus unavailable; deterministic stacking and draft checks ran.\n";
+  title.insertTextAtCaret("ayo");
+  expect(title.getText() == draft.replaceSection(selection.getStart(), selection.getLength(), "ayo"),
+         "editing continues at the preserved selection after song editor root reflows");
+  SongImportWizardTestAccess::close(wizard);
+  waitFor([&] { return !library.isSongEditorOpen(); },
+          "the explicit song editor close still dismisses its overlay");
+  if (editor.getChildren().contains(overlay) || !library.isVisible() || !scrim.isVisible())
+    std::cout << "Song editor close state: overlayChild="
+              << editor.getChildren().contains(overlay)
+              << " libraryVisible=" << library.isVisible()
+              << " scrimVisible=" << scrim.isVisible()
+              << " drawerOpen=" << LocalDemoAccessTestAccess::drawerOpen(editor)
+              << " setlistCollapsed=" << LocalDemoAccessTestAccess::setlistCollapsed(editor)
+              << " libraryStillOwned=" << (library.getParentComponent() == &editor)
+              << " editorBounds=" << editor.getBounds().toString() << '\n';
+  expect(!editor.getChildren().contains(overlay) && library.isVisible() && scrim.isVisible(),
+         "closing Editar exposes the still-open library drawer without changing its owner");
+  focusWindow.clearContentComponent();
+}
+
 void testLocalSessionIsolationAndRestart() {
   AccountFixture account;
   // Persisted local state takes priority even if there is also a denied/old
@@ -715,8 +829,9 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && juce::String(argv[1]) == "--phone-input-only") {
       testPhoneDrawerTextInputSurvivesRelayout();
+      testPhoneSongEditTextInputSurvivesRelayout();
       ProjectStore::flushAllPendingSettings();
-      std::cout << "Phone input: " << checks << " checks passed; real drawer and song-creation page\n";
+      std::cout << "Phone input: " << checks << " checks passed; real drawer, song-creation page and song editor overlay\n";
       return 0;
     }
     const bool environmentPreview = juce::SystemStats::getEnvironmentVariable(
@@ -728,6 +843,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     testPhoneDrawerTextInputSurvivesRelayout();
+    testPhoneSongEditTextInputSurvivesRelayout();
 #if JUCE_DEBUG
     testLocalSessionIsolationAndRestart();
     testAppleCredentialStateIsolation();

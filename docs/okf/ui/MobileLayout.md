@@ -489,6 +489,12 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   caret durante el reflow. Ocultar y volver a mostrar su padre en un mismo
   `layoutMainUi` también descarta el foco en JUCE y puede cerrar/reabrir el IME
   de Android; no se fuerza el foco ni se reabre el teclado para compensarlo.
+- `Editar canción` conserva su overlay de JUCE encima de Biblioteca y su scrim
+  después del reflow del teclado o área segura. Es hermano del drawer bajo el
+  editor principal; elevar sólo Biblioteca lo tapaba en iPhone aunque siguiera
+  abierto y con foco. El owner restaura su prioridad con `toFront(false)` sin
+  ocultar/recrear componentes ni robar foco; reautenticación y Ensayo quedan
+  por encima según el orden existente.
   Cerrar Biblioteca sí retira su superficie y finaliza la edición habitual.
 ### Estilo compartido de selección
 

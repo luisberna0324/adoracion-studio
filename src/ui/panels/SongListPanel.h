@@ -103,6 +103,8 @@ public:
   void openLocalLibrary();
   void openCloudLibrary();
   bool isSongEditorOpen() const { return songImportOverlay != nullptr || nativeLyricsEditor != nullptr; }
+  /** Preserve the JUCE song editor above its library after host relayout. */
+  void bringSongEditorOverlayToFront();
   bool isCloudLibraryOpen() const { return libraryCatalogPanel.isCloudOpen(); }
   void showSongPicker(juce::Component &anchor, std::function<void()> onAdd);
   void showActiveSetlist();

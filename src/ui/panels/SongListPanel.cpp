@@ -3689,6 +3689,14 @@ void SongListPanel::showSongImportOverlay(
   songImportOverlay->toFront(false);
 }
 
+void SongListPanel::bringSongEditorOverlayToFront() {
+  // The editor is a sibling of the library under the host, so raising the
+  // library drawer during keyboard/safe-area reflow can otherwise cover it.
+  // Preserve the same component and focused field; never request focus here.
+  if (songImportOverlay != nullptr)
+    songImportOverlay->toFront(false);
+}
+
 void SongListPanel::showLibraryCreationPage(
     std::unique_ptr<SongImportWizardComponent> panel) {
   if (panel == nullptr || libraryCreationWizard != nullptr)

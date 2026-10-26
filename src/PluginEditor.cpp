@@ -5672,6 +5672,12 @@ void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile
     setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
   setlistHandlePanel->setCollapsed(isSetlistCollapsed);
 
+  // Keyboard/safe-area changes bring the open library drawer to the front.
+  // Its song editor is a host sibling and must stay above that drawer without
+  // taking focus from the field that caused the relayout.
+  if (songListPanelRaw != nullptr)
+    songListPanelRaw->bringSongEditorOverlayToFront();
+
   if (reauthPromptModal != nullptr) {
     const auto *prompt = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get());
     auto authBounds = getLocalBounds();
