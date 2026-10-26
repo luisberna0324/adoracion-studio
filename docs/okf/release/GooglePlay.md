@@ -13,6 +13,16 @@ Sus borradores no constituyen una declaración legal, una respuesta publicada de
 Data safety ni evidencia de envío, aprobación o publicación. Los estados del
 portal deben volver a consultarse antes de cerrar cada etapa.
 
+## Estado vigente de audiencia — corrección del propietario
+
+El propietario retiró expresamente la franja 9–12 porque la app está orientada
+a un uso técnico. Play Console confirmó guardadas **13–15, 16–17 y 18+** el
+26 de octubre de 2026. Esta decisión sustituye la intención anterior de 9+;
+los apartados sobre audiencia 9+ y brechas Families que siguen son históricos,
+no una instrucción para implementar un flujo infantil en esta entrega. La
+clasificación de contenido IARC Para todos / PEGI 3 sigue siendo independiente
+de la audiencia a la que el propietario dirige el producto.
+
 ## Estado inicial y decisiones de la sesión
 
 Evidencia de la sesión del 26 de octubre de 2026, comunicada por el agente que
@@ -716,3 +726,23 @@ Referencias verificadas para esta propuesta:
 - [Ley 962 de 2005, artículo 28](https://normativa.archivogeneral.gov.co/ley-962-de-2005/).
 - [Recurso web de eliminación de cuentas de Google Play](https://support.google.com/googleplay/android-developer/answer/13327111?hl=es).
 - [Declaración individual de recursos de IA](https://support.google.com/googleplay/android-developer/answer/17262077?hl=es).
+
+
+### Corrección a audiencia 13+ e ID de publicidad
+
+La edición de audiencia confirmó «Cambio guardado» con 13–15, 16–17 y 18+,
+sin 9–12. No se implementó un acceso infantil ni se modificó la app por esta
+corrección de metadatos. Evidencia local: `audiencia-13-guardada.jpg`.
+
+La página Contenido de la aplicación también exigía la declaración independiente
+de ID de publicidad. Se guardó **No**. La revisión del manifiesto y Gradle de
+Android no encontró AD_ID ni dependencias publicitarias; en el AAB 2.3.6 (129)
+cargado, el manifiesto base no contiene `com.google.android.gms.permission.AD_ID`
+y su único DEX no contiene `ads/identifier/AdvertisingIdClient`. Esta comprobación
+es acotada, coherente con la auditoría previa de dependencias; no es una nueva
+compilación ni QA manual. El portal mostró «Cambio guardado» con No seleccionado.
+Evidencia local: `id-publicidad-no-guardado.jpg`.
+
+Continúan pendientes Seguridad de los datos, el recurso público de eliminación
+y las verificaciones de privacidad/retención y QA ya documentadas. Esta corrección
+no acredita un envío de Alpha a revisión ni disponibilidad para testers.
