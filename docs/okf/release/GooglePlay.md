@@ -30,8 +30,8 @@ opera Chrome; este documento no realiza acciones en el portal:
 | Identificador de app en Play Console | `4972301308867133502`, cuenta de desarrollador `4978274340238447322` |
 | Firma existente | El propietario autorizó usar la clave de firma existente en GitHub; no se ha creado otra clave como parte de este borrador |
 | Versión pública GitHub de referencia | `v2.3.5`, run 128, verificados durante la sesión por el agente de release |
-| Candidato firmado | `versionName=2.3.6`, `versionCode=129`, generado en el run 129 y validado; pendiente de carga y comprobación en Play Console |
-| AAB cargado y procesado | Pendiente de evidencia de paquete, firma y resultado del portal |
+| Candidato firmado | `versionName=2.3.6`, `versionCode=129`, generado en el run 129, validado y cargado en Alpha |
+| AAB cargado y procesado | Google Play muestra `129 (2.3.6)`, API 29+, target 36 y arm64-v8a; borrador guardado |
 | Distribución | No consta publicación, acceso a producción ni invitaciones a testers efectuadas por esta preparación |
 
 La aplicación local sin suscripción y Cloud opcional concuerdan con los términos
@@ -369,7 +369,7 @@ Verificación del archivo descargado:
 `validation.json`, manifiesto decodificado y logs de firma están junto al AAB.
 Esto acredita generación y verificación del paquete, no su recepción por Play,
 la revisión de políticas ni publicación. El propietario ya creó la aplicación;
-el AAB sigue pendiente de carga y procesamiento.
+la carga y procesamiento del AAB se confirmaron posteriormente en Alpha, como se documenta al final.
 
 
 ## Ficha creada y continuidad de firma — 2026-10-26
@@ -454,3 +454,155 @@ El propietario debe seleccionar ese ZIP y guardar en Play Console; el estado
 actual todavía no acredita importación, configuración de firma final, carga
 del AAB ni disponibilidad de pruebas. Comparar el certificado **de firma de
 aplicación** del portal tras guardar; no basta con el certificado de subida.
+
+
+## Firma importada y AAB cargado en Alpha — 2026-10-26
+
+El propietario confirmó la importación y guardado de la copia cifrada. La
+pantalla de firma del portal, mediante su Digital Asset Links JSON, confirma
+que la clave **de firma de aplicación** tiene la huella Release original:
+`D1:16:2E:4A:7A:9B:B8:02:BE:08:94:8C:A3:3C:90:DA:61:F0:08:4F:AC:72:50:CB:98:1A:7D:A9:FC:26:F2:4D`.
+La validación de la carga posterior aceptó el AAB con la firma existente; no se
+generó otra clave de subida durante la preparación.
+
+El AAB cuyo hash es `4b7538c00a8cdcfb3bc8f2479234b18f7d65c04199ae7738757aeb138ddc4151`
+se cargó y procesó en **Prueba cerrada — Alpha**, canal
+`4699464310723384488`, versión en borrador `1`. Google muestra:
+
+- App bundle `129 (2.3.6)`, API 29 y posterior, SDK objetivo 36, ABI arm64-v8a.
+- Símbolos de depuración nativos adjuntos al bundle.
+- Nombre de release `2.3.6 (129)` y notas en `es-419` sobre editor nativo,
+  organización de párrafos y corrección del cursor/pegado Samsung.
+- «Cambios guardados. Ahora puedes previsualizar tu versión antes de enviarla
+  a revisión». Esto acredita borrador guardado, no envío ni disponibilidad.
+
+La vista de revisión informó inicialmente cinco bloqueos de configuración: tareas
+de ficha pendientes, descripción completa ausente, países sin seleccionar y
+declaraciones financieras/de salud sin completar. Se guardaron las declaraciones
+correctas **sin anuncios, sin funciones financieras, sin funciones de salud y
+sin vínculo gubernamental**. También quedó guardada la categoría **Música y
+audio**, el correo público `hola@playworship.app` y la web de soporte
+`https://help.playworship.app`. El panel confirmó 5 de 11 tareas completas.
+
+El propietario seleccionó **todos los países disponibles** para la prueba
+cerrada. Tras guardar, el canal confirma **178 países o regiones** y 2 de 4
+tareas completas. Continúa inactivo y sin testers inscritos. La ficha de textos
+y recursos está en preparación; no se ha enviado nada a revisión.
+
+Las advertencias iniciales fueron ausencia de testers y ausencia de archivo
+de desofuscación. Esta build no activa R8/ProGuard: el log usa dexBuilderRelease
+y mergeDexRelease, sin minifyReleaseWithR8 ni mapping.txt. No generar un mapa
+artificial para ocultar esa advertencia; los símbolos nativos son independientes.
+
+La extensión de Chrome no permitió setFiles sin un permiso adicional de acceso
+a URLs locales; no se cambió ese permiso. La carga se completó con el selector
+nativo de macOS. Evidencia de QA local: `firma-original-importada.jpg` y
+`aab-2.3.6-129-cargado.jpg`, bajo `output/google-play-preparation/`.
+
+
+## Audiencia mixta desde 9 años y preparación Families — 2026-10-26
+
+El propietario precisó que PlayWorship está diseñada **desde los 9 años,
+además de adolescentes y adultos**. Las franjas que corresponden a esa decisión
+son **9–12, 13–15, 16–17 y 18+**. No añadir 5 o menos ni 6–8 sin otra decisión,
+ni declarar 13+ para evitar requisitos. La clasificación IARC se obtiene de su
+cuestionario real; no se deduce de estas franjas. Este apartado registra la
+intención de producto, no acredita que las edades se hayan guardado en el
+portal ni certifica cumplimiento.
+
+Google exige Families si cualquiera de las audiencias objetivo incluye niños,
+aunque también haya adultos y no se muestren anuncios. Seleccionar edades no
+sustituye revisar la app, sus proveedores, las declaraciones y el contenido que
+reciben esos usuarios. La ausencia de anuncios sigue siendo la respuesta
+sustentada; no se incorpora una red publicitaria ni un servicio nuevo.
+
+### Brechas concretas antes de presentar la audiencia 9+
+
+| Área | Evidencia actual y tarea mínima pendiente |
+| --- | --- |
+| Acceso sin cuenta Google | Google permite Sign-In opcional en audiencia mixta, pero la app completa debe ser accesible sin iniciar sesión en Google. Android ofrece correo/contraseña; el backend auditado recupera contraseña de una cuenta existente y crea cuentas en el callback Google. Eso no demuestra un alta independiente para esta audiencia. Definir y comprobar un camino de acceso completo apropiado, sin presentar la mera presencia del botón de correo como cumplimiento. |
+| APIs y tratamiento por edad | Families exige que APIs no aprobadas para uso infantil estén detrás de una pantalla neutral de edad o se implementen sin recopilar datos de niños; tampoco pueden ser el acceso obligatorio al contenido. No se encontró un flujo neutral de edad o parental en las superficies auditadas. Determinar qué proveedores y rutas necesitan tratamiento por edad; no afirmar que basta un aviso o que toda app sin anuncios tiene la misma solución. |
+| Cuenta, dispositivo y Cloud | Se transmiten datos de autenticación y un ID estable del dispositivo, y se sincroniza contenido por acción del usuario. Revisar campos, finalidades, retención y controles aplicables a los usuarios 9–12 con el responsable antes de cerrar Data safety y la política. No copiar la declaración Apple ni marcar ausencia de datos por reproducir audio local. |
+| Teams y contenido compartido | Teams distribuye archivos privados del propietario a sus miembros. Evaluar las reglas Families de funciones sociales e intercambio: información de seguridad, gestión por adultos y acción adulta antes de funciones que intercambien información personal cuando corresponda. Definir qué acceso tienen los menores y verificar los controles; el perfil de administrador de Teams no acredita tutela o consentimiento parental. |
+| Bluetooth MIDI Android | Families exige Companion Device Manager al solicitar Bluetooth, salvo versiones de SO incompatibles. El mínimo Android es API 29, el manifiesto declara BLUETOOTH_CONNECT y JuceMidiSupport usa BluetoothLeScanner; no se encontró integración CDM en la fuente auditada. Revisar y adecuar este flujo antes de certificar Families. |
+| Políticas públicas | Términos y privacidad, consultados por HTTPS el 26 de octubre, no fijan edad mínima ni describen un tratamiento específico de menores o responsables. No existe aquí una cláusula pública 18+ que se pueda dar por cambiada: falta acordar y reflejar la audiencia 9+, los controles efectivos, el tratamiento y las solicitudes de sus responsables. Los términos también deben conciliarse con el intercambio privado de Teams. Preparar un texto revisable y obtener revisión del propietario antes de publicarlo; este documento no modifica las páginas. |
+
+La revisión infantil no cambia automáticamente iOS o macOS. Las políticas
+públicas son compartidas y cualquier cambio debe representar los flujos reales
+de cada plataforma. Las adaptaciones de aplicación/backend o declaraciones de
+Apple constituyen trabajo posterior explícito; este apunte no las implementa ni
+aprueba un despliegue.
+
+### Decisiones y comprobaciones para cerrar la ficha
+
+- Audiencia de producto confirmada: 9–12, 13–15, 16–17 y 18+; falta constatar
+  guardado y resumen final del formulario correspondiente.
+- Resolver el acceso completo sin Google para usuarios 9–12 y el alcance de
+  cuenta/responsable; verificar el flujo antes de ofrecerlo a revisión.
+- Resolver los controles de Teams y los proveedores/rutas que requieren
+  tratamiento por edad; verificar Bluetooth MIDI con el requisito CDM.
+- Revisar el texto de privacidad/términos y completar Data safety e IARC con
+  esos comportamientos comprobados. No enviar una certificación Families ni la
+  versión a revisión sólo por haber cargado correctamente el AAB.
+- Mantener separadas la carga aceptada, el borrador Alpha, la ficha completa,
+  el envío a revisión y la disponibilidad de la prueba. El requisito vigente de
+  12 testers inscritos durante 14 días continuos antes de solicitar producción
+  sigue siendo independiente.
+
+Fuentes primarias consultadas el 26 de octubre de 2026:
+
+- [Franjas del formulario de audiencia](https://developers.google.com/android-publisher/app-store-review/policy-declarations).
+- [Selección de audiencia y contenido](https://support.google.com/googleplay/android-developer/answer/9867159?hl=en).
+- [Google Play Families: datos, APIs, funciones sociales y Bluetooth](https://support.google.com/googleplay/android-developer/answer/9893335?hl=en).
+- [Google APIs: aplicaciones infantiles y de audiencia mixta](https://developers.google.com/terms/api-services-user-data-policy#child-directed_apps).
+- [Términos públicos actuales](https://playworship.app/legal/terminos.html) y
+  [privacidad pública actual](https://playworship.app/legal/privacidad.html).
+
+
+## Ficha gráfica guardada y capturas Android — 2026-10-26
+
+La ficha predeterminada `es-419` conserva como borrador el nombre PlayWorship,
+la descripción breve de 71 caracteres y la descripción completa de 1614
+caracteres documentadas arriba. El portal confirmó «Se han guardado los cambios».
+Quedaron adjuntos el icono oficial RGB de 512 × 512, el gráfico de funciones
+RGB de 1024 × 500 y dos capturas nuevas aceptadas de teléfono:
+
+| Recurso cargado | Dimensiones | SHA-256 del PNG |
+| --- | --- | --- |
+| `01-reproductor-demo.png` | 1920 × 1080 | `79419ce8d24da0d04e38ae3ca9c379489b0cab9d56947ecb68fe8118ad6fa3c6` |
+| `02-biblioteca-local.png` | 1080 × 1920 | `9e989ee7176f45179644f11ca4735ce55d4d98f7698a8f5c0030bf6e44328049` |
+
+Son capturas reales completas del emulador API 36, con la canción original
+«Luz de esperanza — PlayWorship · Demo». El tamaño temporal del emulador fue
+1080 × 1920 para obtener 16:9/9:16; después se restauró la resolución original
+1080 × 2400, sin borrar datos. Se eliminó únicamente alfa completamente opaco
+al exportar RGB; no se recortó, estiró ni reconstruyó la interfaz. El AVD
+abierto para estas capturas se cerró al terminar.
+
+La captura usa el APK **Debug** local cuyo SHA-256 es
+`bf0ff2a9e599362d0609abcb3fda3d1991d3c446e7f0f4f96a666564923e9bfb`,
+con valores de desarrollo `1.1.4 (1)`. No confundir esas capturas de la interfaz
+con QA de una instalación distribuida por Play de Release 2.3.6 (129).
+Evidencia de procedencia: `store-assets/android-phone-captures-metadata.json`.
+
+Al intentar dar foco al editor nativo de letras en ese emulador se registró un
+ANR por Input dispatching timed out / FocusEvent(hasFocus=false) de JuceActivity.
+El log también muestra frames omitidos y retrasos gráficos generales; no se
+obtuvo el stack de ANR por permisos. **La causa queda indeterminada**: no
+atribuirla a memoria, audio o un deadlock sin evidencia. No se tomó una captura
+final del editor ni se declaró fluidez. Conviene reproducir de forma acotada
+el flujo JUCE → editor nativo en Release/Android físico antes del envío; las
+pruebas previas del componente nativo no sustituyen ese flujo manual completo.
+
+El propietario facilitó dos correos para el grupo de prueba y autorizó usar
+la cuenta dedicada de revisión en el campo privado de Google Play. No guardar
+esos correos ni credenciales en este documento. La lista de testers se preparó
+como «PlayWorship - prueba inicial»; la entrada por herramienta fue reemplazada
+por un marcador literal de redacción, así que quedó al propietario completar
+los dos correos y guardar. Aún no consta creación de lista ni participación de
+los testers; agregar direcciones tampoco acredita aceptación del enlace.
+
+Pendientes: completar audiencia mixta 9+, clasificación y Data safety conforme
+a los controles reales y Families; política pública coherente; acceso privado
+del revisor; incorporación del grupo de testers; revisión del ANR observado;
+confirmación/envío de la versión. No hay envío, aprobación ni publicación.
