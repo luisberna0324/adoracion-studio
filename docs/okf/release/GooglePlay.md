@@ -26,11 +26,11 @@ opera Chrome; este documento no realiza acciones en el portal:
 | Idioma seleccionado | Español (Latinoamérica), `es-419`, aprobado por el propietario |
 | Tipo | Aplicación, aprobado por el propietario |
 | Precio de descarga | Sin coste, aprobado por el propietario |
-| Creación de ficha | Pendiente de comprobar el resultado en el portal; el propietario está completando personalmente las declaraciones legales |
+| Creación de ficha | Las tres casillas legales ya aparecen marcadas por el propietario; sigue pendiente que pulse «Crear aplicación», que envía la aceptación final |
 | Identificador de app en Play Console | Pendiente; no inventar un ID ni una URL de ficha |
 | Firma existente | El propietario autorizó usar la clave de firma existente en GitHub; no se ha creado otra clave como parte de este borrador |
 | Versión pública GitHub de referencia | `v2.3.5`, run 128, verificados durante la sesión por el agente de release |
-| Candidato propuesto | `versionName=2.3.6`, `versionCode=129`: preparación local, pendiente de run real y de comprobar códigos ya usados en Play |
+| Candidato firmado | `versionName=2.3.6`, `versionCode=129`, generado en el run 129 y validado; pendiente de carga y comprobación en Play Console |
 | AAB cargado y procesado | Pendiente de evidencia de paquete, firma y resultado del portal |
 | Distribución | No consta publicación, acceso a producción ni invitaciones a testers efectuadas por esta preparación |
 
@@ -340,3 +340,34 @@ Samsung. Este archivo local no está firmado y no es el entregable de Play.
 Evidencia local: `output/google-play-preparation/` del checkout de QA, incluidos
 `local-unsigned-bundle-validation.json`, manifiesto decodificado y logs. El AAB
 firmado de GitHub deberá verificarse nuevamente contra su SHA y versión reales.
+
+
+## AAB firmado generado y validado — 2026-10-26
+
+Los cambios autorizados se subieron a `main`: `11b847d` contiene los editores
+nativos y la corrección Samsung; `431f705` añade el modo Google Play y esta guía.
+El run [129](https://github.com/luisberna0324/adoracion-studio/actions/runs/40321130667)
+finalizó correctamente sobre `431f705bc1dc838841cff78be0382d9085b75793`. Sólo
+`prepare` y `Build signed Android App Bundle` se ejecutaron; las tareas de
+macOS, Windows, publicación web/GCS y GitHub Release quedaron omitidas.
+
+Artefacto: `playworship-google-play-2.3.6-arm64.aab`, versión 2.3.6 (129),
+conservado siete días en GitHub y descargado al checkout de QA bajo
+`output/google-play-preparation/signed-2.3.6-129/`.
+
+Verificación del archivo descargado:
+
+- Firma JAR Release válida, certificado distinto de Android Debug. Huella SHA-256:
+  `D1:16:2E:4A:7A:9B:B8:02:BE:08:94:8C:A3:3C:90:DA:61:F0:08:4F:AC:72:50:CB:98:1A:7D:A9:FC:26:F2:4D`.
+- SHA-256 del AAB: `4b7538c00a8cdcfb3bc8f2479234b18f7d65c04199ae7738757aeb138ddc4151`.
+- `bundletool validate` correcto; paquete, versión y código coinciden;
+  `debuggable` no está habilitado, ABI arm64, API mínima 29 y target 36.
+- BundleConfig solicita `PAGE_ALIGNMENT_16K` y todos los LOAD de Bungee,
+  JUCE y libc++ tienen alineación de 16384 bytes. El Dex incluye el cursor
+  clonable de Samsung y excluye la clase de instrumentación de pruebas.
+
+`validation.json`, manifiesto decodificado y logs de firma están junto al AAB.
+Esto acredita generación y verificación del paquete, no su recepción por Play,
+la revisión de políticas ni publicación. El portal aún muestra «Crear aplicación»
+con las declaraciones marcadas; el clic final corresponde al titular porque
+envía los términos y certificaciones legales.
