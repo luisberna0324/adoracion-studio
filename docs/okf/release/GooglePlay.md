@@ -599,10 +599,29 @@ la cuenta dedicada de revisión en el campo privado de Google Play. No guardar
 esos correos ni credenciales en este documento. La lista de testers se preparó
 como «PlayWorship - prueba inicial»; la entrada por herramienta fue reemplazada
 por un marcador literal de redacción, así que quedó al propietario completar
-los dos correos y guardar. Aún no consta creación de lista ni participación de
-los testers; agregar direcciones tampoco acredita aceptación del enlace.
+los dos correos y guardar. Después el propietario confirmó el guardado y el
+portal mostró la lista con **2 usuarios**. Se asoció la lista a Alpha y se
+guardó el canal: el panel confirmó **3 de 4 tareas completas**. Esto no acredita
+participación: el enlace sigue inactivo hasta publicar la prueba y no se han
+enviado mensajes ni invitaciones por esta preparación.
 
 Pendientes: completar audiencia mixta 9+, clasificación y Data safety conforme
 a los controles reales y Families; política pública coherente; acceso privado
 del revisor; incorporación del grupo de testers; revisión del ANR observado;
 confirmación/envío de la versión. No hay envío, aprobación ni publicación.
+
+
+### Acceso privado y dependencias del formulario de edades
+
+Google no permite comenzar «Contenido y audiencia objetivo» hasta completar
+«Datos de inicio de sesión». Por ello las franjas 9–12, 13–15, 16–17 y 18+
+están definidas por el propietario y documentadas, pero todavía no se han
+registrado en ese cuestionario bloqueado. No declarar que esté cerrado.
+
+Se eligió que la app requiere acceso y se preparó un conjunto de instrucciones
+de revisión en inglés con el flujo de correo, demo, reproducción, Ensayo,
+Biblioteca y Letra. Los archivos de evidencia Apple no conservan la contraseña;
+el formulario privado quedó al propietario para introducir la cuenta dedicada
+y su clave directamente en Google y confirmar el acceso completo real. No
+guardar credenciales ni capturas que muestren la clave en este repositorio.
+La habilitación del formulario de edades no prueba cumplimiento Families.
