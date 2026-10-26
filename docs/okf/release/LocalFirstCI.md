@@ -2,8 +2,8 @@
 
 Solo `.github/workflows/ci.yml` permanece activo: genera instaladores de release
 mediante `workflow_dispatch`. No hay eventos push, PR, merge, tag, schedule,
-workflow_run ni workflows auxiliares. Actions no ejecuta tests ni checks,
-automáticos o manuales. Se retiraron tests.yml, pr-semver.yml y
+workflow_run ni workflows auxiliares. Actions no ejecuta suites de QA,
+automáticas o manuales; la generación conserva la validación del paquete firmado. Se retiraron tests.yml, pr-semver.yml y
 android-cloudbuild.yml; sus pruebas fuente permanecen intactas.
 
 ## Coordinación principal en Codex Cloud
@@ -73,8 +73,8 @@ sustituyen. Los tests interactivos y LAN mantienen su validación específica.
 3. retain_artifacts=true autoriza guardar instaladores en artefactos del run
    GitHub por siete días (almacenamiento facturable según presupuesto).
    publish_release=false genera instaladores sin uploads Sentry/GCS, cleanup,
-   manifiesto ni tag/GitHub Release. La matriz sigue consumiendo Actions y usa
-   los secretos de firma Android existentes. Solo ejecutarla por solicitud
+   manifiesto ni tag/GitHub Release. El modo completo sigue consumiendo la
+   matriz de Actions y usa los secretos de firma Android existentes. Solo ejecutarla por solicitud
    concreta de generación de release. Si retain_artifacts y publish_release
    están desactivados, prepare falla antes de compilar: no se gastan matrices
    para generar instaladores sin destino.
@@ -86,6 +86,41 @@ Un tag explícito conserva su versión; rama/SHA calcula release_kind desde tags
 estables. La revisión fijada identifica también símbolos Sentry. No se cancela
 una operación de release activa por una ejecución nueva. Subir esta rama o
 fusionarla necesita aprobación; nada de esta preparación despacha Actions.
+
+## App Bundle para Google Play
+
+El input booleano `google_play_only` vale `false` por defecto y conserva el
+flujo completo anterior. Con `true`, sólo se ejecutan `prepare` y el build de
+Android; macOS y Windows se omiten. No se añade otro workflow ni una suite de QA.
+
+Para preparar el AAB de una revisión aprobada:
+
+- `ref`: SHA de la revisión concreta que contiene los cambios aprobados.
+- `release_kind=patch`: calcula la siguiente versión desde el último tag estable;
+  con `v2.3.5` como último tag, el candidato es `2.3.6`. Un tag explícito conserva
+  su propia versión, como en el flujo completo.
+- `google_play_only=true`, `retain_artifacts=true`, `publish_release=false`.
+
+`prepare` rechaza `google_play_only=true` con `publish_release=true` o sin
+retención del artefacto, antes de resolver versiones y abrir la matriz. Los
+secretos Android Release existentes sólo se usan en el runner temporal; no se
+exportan al Mac ni se conserva el keystore en los artefactos. El destino es
+exclusivamente `dist/playworship-google-play-<versión>-arm64.aab`, retenido en el
+run por siete días. El nombre del artefacto incluye versión y SHA.
+
+El build ejecuta `:app:bundleRelease`, usando el número de run como `versionCode`.
+Antes de enviarlo a Play Console se debe comprobar que ese código esté libre allí.
+Se comprueba firma JAR válida y distinta de Android Debug, estructura AAB,
+bibliotecas arm64 y paquete/versión/ausencia de `debuggable` en el manifiesto de
+Release que empaqueta Gradle. La revisión del AAB final con `bundletool` confirma
+el manifiesto binario y `PAGE_ALIGNMENT_16K`; compilar o firmar no sustituye esa
+comprobación ni QA en dispositivos con páginas de 16 KB.
+
+Este modo no genera APK para la web, símbolos Sentry, carga GCS, limpieza de
+versiones, manifiesto de descargas, tag ni GitHub Release. El AAB descargado aún
+necesita carga y procesamiento en Play Console, validación de la ficha y envío a
+revisión: generar el archivo no acredita publicación. Se mantienen las
+aprobaciones concretas para subir código, ejecutar el generador y enviar la app.
 
 ## Activación sin consumo accidental
 

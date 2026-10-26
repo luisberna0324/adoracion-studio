@@ -22,6 +22,11 @@ on:
         required: true
         default: false
         type: boolean
+      google_play_only:
+        description: "Generar solo el App Bundle Android firmado para Google Play; requiere retener artefacto y no publica descargas"
+        required: true
+        default: false
+        type: boolean
       publish_release:
         description: "Publicar instaladores en GCS, simbolos Sentry, limpiar versiones y actualizar manifiesto/Release"
         required: true
@@ -57,6 +62,7 @@ jobs:
           REQUESTED_RELEASE_KIND: ${{ inputs.release_kind }}
           REQUESTED_PUBLISH: ${{ inputs.publish_release }}
           REQUESTED_RETAIN_ARTIFACTS: ${{ inputs.retain_artifacts }}
+          REQUESTED_GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
         run: |
           set -euo pipefail
 
@@ -68,6 +74,11 @@ jobs:
           }
 
           [[ "${REQUESTED_PUBLISH}" == "true" || "${REQUESTED_RETAIN_ARTIFACTS}" == "true" ]] || { echo "Autorizar guardar artefactos o publicar; no generar instaladores sin entregables." >&2; exit 1; }
+
+          if [[ "${REQUESTED_GOOGLE_PLAY_ONLY}" == "true" ]]; then
+            [[ "${REQUESTED_PUBLISH}" == "false" ]] || { echo "google_play_only no permite publish_release: no publicar descargas, tags ni manifiestos." >&2; exit 1; }
+            [[ "${REQUESTED_RETAIN_ARTIFACTS}" == "true" ]] || { echo "google_play_only requiere retain_artifacts para entregar el AAB firmado." >&2; exit 1; }
+          fi
 
           REF_INPUT="$(trim "${REQUESTED_REF}")"
           if [[ -z "${REF_INPUT}" ]]; then
@@ -158,6 +169,7 @@ jobs:
           echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
 
   build-macos:
+    if: ${{ !inputs.google_play_only }}
     name: Build macOS artifact
     needs: prepare
     runs-on: macos-latest
@@ -273,6 +285,7 @@ jobs:
           gcloud storage cp "${FILE}" "gs://${GCS_BUCKET}/${PREFIX}/macos/v${SEMVER}/"
 
   build-windows:
+    if: ${{ !inputs.google_play_only }}
     name: Build Windows artifacts
     needs: prepare
     # windows-latest currently resolves to the VS 2026 image, which does not
@@ -412,7 +425,7 @@ jobs:
           gcloud storage cp "${FILE}" "gs://${GCS_BUCKET}/${PREFIX}/windows/v${SEMVER}/"
 
   build-android:
-    name: Build signed Android APK
+    name: Build signed Android ${{ inputs.google_play_only && 'App Bundle' || 'APK' }}
     needs: prepare
     runs-on: ubuntu-latest
     steps:
@@ -449,9 +462,10 @@ jobs:
           [[ -n "${KEYSTORE_BASE64}" ]] || { echo 'Missing ANDROID_RELEASE_KEYSTORE_BASE64' >&2; exit 1; }
           printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/playworship-release.jks"
           echo "PLAYWORSHIP_ANDROID_KEYSTORE=${RUNNER_TEMP}/playworship-release.jks" >> "${GITHUB_ENV}"
-      - name: Build release APK
+      - name: Build signed Android release
         working-directory: android
         env:
+          GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
           PLAYWORSHIP_VERSION_NAME: ${{ needs.prepare.outputs.semver }}
           PLAYWORSHIP_VERSION_CODE: ${{ github.run_number }}
           PLAYWORSHIP_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
@@ -463,8 +477,13 @@ jobs:
           for value in PLAYWORSHIP_ANDROID_STORE_PASSWORD PLAYWORSHIP_ANDROID_KEY_ALIAS PLAYWORSHIP_ANDROID_KEY_PASSWORD; do
             [[ -n "${!value}" ]] || { echo "Missing Android signing secret: ${value}" >&2; exit 1; }
           done
-          ./gradlew :app:assembleRelease --no-daemon
+          if [[ "${GOOGLE_PLAY_ONLY}" == "true" ]]; then
+            ./gradlew :app:bundleRelease --no-daemon
+          else
+            ./gradlew :app:assembleRelease --no-daemon
+          fi
       - name: Verify and name release APK
+        if: ${{ !inputs.google_play_only }}
         shell: bash
         env:
           SEMVER: ${{ needs.prepare.outputs.semver }}
@@ -476,8 +495,57 @@ jobs:
           "${ANDROID_HOME}/build-tools/36.0.0/aapt" dump badging "${APK}" | grep -F "versionName='${SEMVER}'"
           mkdir -p dist
           cp "${APK}" "dist/playworship-android-${SEMVER}-arm64.apk"
+      - name: Verify and name Google Play App Bundle
+        if: inputs.google_play_only
+        shell: bash
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          AAB='android/app/build/outputs/bundle/release/app-release.aab'
+          MANIFEST='android/app/build/intermediates/bundle_manifest/release/processApplicationManifestReleaseForBundle/AndroidManifest.xml'
+          test -s "${AAB}"
+          SIGNATURE_LOG="$(mktemp)"
+          CERTIFICATE_LOG="$(mktemp)"
+          trap 'rm -f "${SIGNATURE_LOG}" "${CERTIFICATE_LOG}"' EXIT
+          jarsigner -J-Duser.language=en -verify "${AAB}" > "${SIGNATURE_LOG}" 2>&1
+          grep -F 'jar verified.' "${SIGNATURE_LOG}"
+          keytool -J-Duser.language=en -printcert -jarfile "${AAB}" > "${CERTIFICATE_LOG}" 2>&1
+          if grep -Eiq 'CN[[:space:]]*=[[:space:]]*Android[[:space:]]*Debug([,[:space:]]|$)' "${CERTIFICATE_LOG}"; then
+            echo 'Google Play requires the release upload key, not Android Debug.' >&2
+            exit 1
+          fi
+          python3 - "${AAB}" "${MANIFEST}" "${SEMVER}" "${VERSION_CODE}" <<'PY'
+          import pathlib, re, sys, xml.etree.ElementTree as ET, zipfile
+          aab, manifest, version, code = sys.argv[1:]
+          with zipfile.ZipFile(aab) as archive:
+              names = set(archive.namelist())
+              assert {'BundleConfig.pb', 'base/manifest/AndroidManifest.xml'} <= names, 'Invalid App Bundle structure'
+              assert any(re.fullmatch(r'META-INF/[^/]+\.(RSA|DSA|EC)', name) for name in names), 'Missing JAR signing block'
+              libraries = [pathlib.PurePosixPath(name) for name in names if name.startswith('base/lib/') and name.endswith('.so')]
+              assert {path.parts[2] for path in libraries} == {'arm64-v8a'}, 'Unexpected native ABI'
+              assert {'libjuce_jni.so', 'libbungee.so', 'libc++_shared.so'} <= {path.name for path in libraries}, 'Missing native library'
+          root = ET.parse(manifest).getroot()
+          android = '{http://schemas.android.com/apk/res/android}'
+          assert root.get('package') == 'com.multitracks.playworship', 'Unexpected package ID'
+          assert root.get(android + 'versionName') == version, 'Unexpected versionName'
+          assert root.get(android + 'versionCode') == code, 'Unexpected versionCode'
+          assert root.find('application').get(android + 'debuggable', 'false') != 'true', 'Debuggable app is not a release'
+          print(f'Validated release App Bundle: com.multitracks.playworship {version} ({code}), arm64-v8a')
+          PY
+          mkdir -p dist
+          cp "${AAB}" "dist/playworship-google-play-${SEMVER}-arm64.aab"
+      - name: Retain requested Google Play App Bundle
+        if: inputs.google_play_only && inputs.retain_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-google-play-${{ needs.prepare.outputs.semver }}-${{ needs.prepare.outputs.release_ref }}
+          path: dist/playworship-google-play-${{ needs.prepare.outputs.semver }}-arm64.aab
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain requested Android release installer
-        if: inputs.retain_artifacts
+        if: inputs.retain_artifacts && !inputs.google_play_only
         uses: actions/upload-artifact@v4
         with:
           name: release-android-arm64-${{ needs.prepare.outputs.semver }}-${{ needs.prepare.outputs.release_ref }}
