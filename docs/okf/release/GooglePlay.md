@@ -13,6 +13,14 @@ Sus borradores no constituyen una declaración legal, una respuesta publicada de
 Data safety ni evidencia de envío, aprobación o publicación. Los estados del
 portal deben volver a consultarse antes de cerrar cada etapa.
 
+## Estado vigente de envío — 2026-10-26
+
+**PlayWorship 2.3.6 (129) se envió a revisión de Google para Prueba cerrada —
+Alpha.** El portal mostró «Cambios en revisión» y después «Tus cambios están
+en proceso de revisión». La aceptación del envío no es aprobación ni
+publicación en producción. Los apartados siguientes conservan etapas anteriores;
+este estado sustituye los pendientes históricos de confirmación y envío.
+
 ## Estado vigente de audiencia — corrección del propietario
 
 El propietario retiró expresamente la franja 9–12 porque la app está orientada
@@ -781,3 +789,32 @@ La audiencia continúa en 13–15, 16–17 y 18+; no hay nuevo envío de Alpha.
 La URL pública se añadió al campo de eliminación de cuentas de Data safety y
 se guardó como borrador. El portal confirmó «Se han guardado los cambios».
 Continúan pendientes los tipos/finalidades y el cierre final de esa declaración.
+
+
+## Envío Alpha confirmado — 2026-10-26
+
+El propietario pidió enviar la versión y confirmó que ya la probó. No se generó
+otro binario: se revisó y confirmó el candidato existente **2.3.6 (129)**,
+con API 29+, SDK objetivo 36, arm64-v8a y símbolos nativos adjuntos. La revisión
+final no presentó errores bloqueantes; mostró únicamente el aviso conocido
+sobre archivo de desofuscación, coherente con la ausencia de R8/ProGuard en el
+candidato auditado.
+
+El portal ya tenía las declaraciones al día, incluido Data safety. Tras guardar
+la revisión final se envió el lote de **15 cambios** de Resumen de publicación:
+Alpha, países/regiones y lista de testers previamente autorizados, ficha es-419,
+clasificación, audiencia 13+, privacidad y declaraciones correspondientes. Las
+instrucciones privadas del revisor se incluyeron por el flujo ya aprobado;
+no se copiaron cuentas, contraseñas ni correos de testers a este documento.
+
+Después de confirmar «Enviar cambios a revisión», la sección pasó a **Cambios
+en revisión**. Inicialmente aparecieron comprobaciones rápidas con hasta 12
+minutos estimados; la captura posterior ya mostró **«Tus cambios están en
+proceso de revisión»**, sin ese contador. Evidencia local:
+`output/google-play-preparation/alpha-2.3.6-129-envio-confirmado.jpg`.
+
+Publicación gestionada continúa desactivada, tal como estaba configurada: el
+lote corresponde a la prueba cerrada y no a un lanzamiento de producción.
+No se acredita aún aprobación, acceso efectivo de testers ni inicio del período
+de prueba de 12 participantes durante 14 días continuos. No se enviaron mensajes
+ni invitaciones externas por esta acción.
