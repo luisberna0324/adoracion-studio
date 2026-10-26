@@ -625,3 +625,94 @@ el formulario privado quedó al propietario para introducir la cuenta dedicada
 y su clave directamente en Google y confirmar el acceso completo real. No
 guardar credenciales ni capturas que muestren la clave en este repositorio.
 La habilitación del formulario de edades no prueba cumplimiento Families.
+
+
+## Acceso de revisión e IARC completados — 2026-10-26
+
+El propietario introdujo directamente las credenciales de la cuenta dedicada y
+confirmó el guardado. La página de acceso mostró «Cambio guardado» y el panel
+marcó Datos de inicio de sesión como completado. No se conservaron contraseñas
+ni capturas del formulario con credenciales. El guardado del formulario no
+acredita una prueba autenticada completa de las funciones de esa cuenta.
+
+Después el propietario completó el primer cuestionario IARC. La consulta en
+vivo muestra Estado de la IARC **Completado**, enviado el 26 de octubre de 2026
+a las 11:56, con ESRB **Para todos**, PEGI **3**, ClassInd **Todas las edades**,
+USK **Para todos los públicos** e IARC Generic **3+**. El campo de certificado
+mostraba un guion: no inventar un identificador. El aviso anterior de 13+ en
+el formulario de audiencia no representa esta clasificación ya completada.
+
+El panel confirma **7 de 11 tareas completas**. Permanecen pendientes la URL
+de privacidad, la audiencia objetivo, Seguridad de los datos y finalizar la
+ficha de Play Store. La intención de audiencia mixta desde 9 años se mantiene;
+la clasificación IARC no demuestra que se hayan registrado esas franjas ni
+resuelve las brechas Families documentadas arriba.
+
+La última vista observada quedó en «Crear versión de prueba interna», sin
+bundle añadido ni nombre de versión. No se creó ni lanzó una segunda versión
+desde la automatización. La preparación Alpha 2.3.6 (129) continúa siendo un
+borrador; no hay evidencia nueva de envío a revisión ni disponibilidad.
+
+
+### Audiencia y URL pública guardadas
+
+Se avanzó el formulario de audiencia con 9–12, 13–15, 16–17 y 18+, sin
+participación en Aprobada por profesores. La vista final mostró «Cambio guardado»
+y el panel marcó la tarea completada. También se guardó
+`https://playworship.app/legal/privacidad.html` y se verificó por HTTPS que la
+página pública responde. Esto guarda el enlace existente en el borrador; no
+actualiza la política ni acredita que se resolvieran sus brechas sobre menores.
+El panel llegó a **9 de 11 tareas completas**: faltan Seguridad de los datos y
+finalizar la ficha. No se envió la versión a revisión.
+
+La revisión de fuente precisó que no corresponde declarar todos los datos
+cifrados en tránsito: el remoto LAN propio usa `ws://` y envía metadatos de
+canciones, nombres de archivos, biblioteca/setlists y portadas fuera del
+dispositivo. Base64 no es cifrado. Fuentes: `RemoteSession.cpp:122`,
+`RemoteStateCodec.h:61-111` y `RemoteEditorIntegration.cpp:610-645`. La política
+oficial de Data safety incluye transmisiones efímeras y metadatos de archivos;
+la excepción para servicios externos como SMS no acredita este servidor propio.
+No se cambiaron los transportes durante la preparación de la ficha.
+
+
+### Ficha finalizada y Data safety guardado parcialmente
+
+Con autorización específica del propietario se etiquetó como creado/editado con
+IA únicamente `playworship-feature-1024x500.png`. El diálogo individual mantuvo
+sin marcar el icono existente y las dos capturas reales. La ficha pasó de
+Borrador a **Lista para enviar a revisión**; no equivale al envío de la app.
+El panel acredita **10 de 11 tareas completas**, quedando Seguridad de los datos.
+
+En Data safety se guardó un borrador parcial en el paso 2 de 5 con recogida de
+datos Sí, cifrado en tránsito No por el remoto LAN descrito arriba, creación de
+cuentas OAuth y sin solicitar la insignia opcional Families. No se inventó un
+alta pública por contraseña a partir del flujo de recuperación. La URL de
+eliminación continúa vacía: la política pública actual no describe todos los
+pasos, datos y plazos requeridos. No se completaron los tipos/finalidades de
+datos, la vista previa ni su envío final. El formulario confirmó el guardado
+parcial, no una declaración completa.
+
+El propietario pidió usar el estándar para preparar la página de eliminación.
+Se preparó un HTML local revisable en
+`output/google-play-preparation/eliminar-cuenta-borrador.html`, sin publicar.
+La propuesta usa el marco colombiano: atención de reclamos sobre datos personales
+en 15 días hábiles desde el día siguiente al recibo, con ampliación excepcional
+de hasta 8 días hábiles previo aviso motivado; y conservación comercial general
+de 10 años desde el último asiento, documento o comprobante, sin perjuicio de
+plazos especiales menores. Este último criterio se limita a soportes contables
+mínimos y no a canciones ni a toda la cuenta. No representa una garantía de
+purga automática ni prueba que el backend tenga configurada esa caducidad.
+
+El plazo de 30 días de consulta del estado de eliminación no demuestra borrado
+físico de recibos o marcadores de seguridad. La fuente histórica consultada
+conserva marcadores para impedir que callbacks o cargas antiguas resuciten
+cuentas eliminadas; sus plazos y la revisión productiva requieren validación
+antes de cerrar el texto público. Continúan las brechas Families y el QA Android
+ya descritos; no se ha enviado la prueba cerrada a revisión.
+
+Referencias verificadas para esta propuesta:
+
+- [Ley 1581 de 2012, artículo 15](https://cancilleria.gov.co/normograma/compilacion/docs/ley_1581_2012.htm).
+- [Ley 962 de 2005, artículo 28](https://normativa.archivogeneral.gov.co/ley-962-de-2005/).
+- [Recurso web de eliminación de cuentas de Google Play](https://support.google.com/googleplay/android-developer/answer/13327111?hl=es).
+- [Declaración individual de recursos de IA](https://support.google.com/googleplay/android-developer/answer/17262077?hl=es).
