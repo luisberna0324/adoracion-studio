@@ -746,3 +746,38 @@ Evidencia local: `id-publicidad-no-guardado.jpg`.
 Continúan pendientes Seguridad de los datos, el recurso público de eliminación
 y las verificaciones de privacidad/retención y QA ya documentadas. Esta corrección
 no acredita un envío de Alpha a revisión ni disponibilidad para testers.
+
+
+## Recurso público de eliminación publicado — 2026-10-26
+
+El propietario autorizó publicar la página revisada. La landing incorporó
+`public/legal/eliminar-cuenta.html` y un enlace desde Privacidad, en el commit
+`70976ae41d991550940e5bb10d16fc6ac029baf9`. La configuración de publicación quedó
+fijada mediante el target `landing` al sitio `play-worship`, commit
+`1887f13350485b777d7f06eaf0bb8f922899aaf7`, para no depender de la resolución
+implícita de destino ni afectar al sitio de ayuda.
+
+El despliegue real con `firebase deploy --project play-worship --only
+hosting:landing` finalizó con 50 archivos y «release complete». Las consultas
+HTTPS posteriores a ambos dominios devolvieron 200 y coincidencia exacta con
+el HTML revisado (SHA-256
+`a2ab1046eaad30a86279a39888d69dd88419e6e22e7517908e8bb6616cef7b34`):
+
+- `https://playworship.app/legal/eliminar-cuenta.html`.
+- `https://play-worship.web.app/legal/eliminar-cuenta.html`.
+
+Privacidad también devolvió 200 y contiene el enlace a la nueva página. El
+recurso expone solicitud por correo, atención en 15 días hábiles y ampliación
+excepcional motivada de 8, alcance de eliminación y conservación contable
+general de 10 años limitada a los soportes necesarios. Informa expresamente
+que los marcadores mínimos de seguridad no tienen actualmente un plazo fijo
+de eliminación. No se publicó un plazo inventado de purga ni una garantía de
+borrar copias locales o descargas sin conexión de otros dispositivos.
+
+La publicación informativa no cambia la ejecución del backend, no acredita una
+eliminación real ni completa por sí sola Data safety o la revisión de Google.
+La audiencia continúa en 13–15, 16–17 y 18+; no hay nuevo envío de Alpha.
+
+La URL pública se añadió al campo de eliminación de cuentas de Data safety y
+se guardó como borrador. El portal confirmó «Se han guardado los cambios».
+Continúan pendientes los tipos/finalidades y el cierre final de esa declaración.
