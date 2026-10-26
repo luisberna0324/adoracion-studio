@@ -389,8 +389,8 @@ No tratarla como equivalente a la firma Release `D1:16:2E:…:F2:4D`.
 El propietario autorizó expresamente transferir a Google Play una copia
 cifrada de la clave existente para conservar la compatibilidad de las
 actualizaciones. La original permanece en los secretos protegidos de GitHub.
-La autorización no prueba que se haya exportado ni importado: esas operaciones
-siguen pendientes. El propietario abrió las preferencias de firma y se seleccionó
+La autorización es distinta de la evidencia de ejecución; la exportación
+y descarga cifrada se documentan al final. La importación sigue pendiente. El propietario abrió las preferencias de firma y se seleccionó
 «Exportar y subir una clave del almacén de claves de Java». Se obtuvieron las
 instrucciones PEPK y su clave pública desde esta consola. No exportar ni traer el keystore privado a la Mac
 ni incluirlo, contraseñas o material privado en artefactos o logs.
@@ -424,5 +424,33 @@ pública con las contraseñas en memoria procedentes del entorno. Sólo se
 conservan `encryptedPrivateKey` y `certificate.pem` dentro del ZIP. Comparar
 el certificado con la huella Release conocida antes de entregarlo al portal.
 
-La ejecución y la importación siguen pendientes hasta documentar resultados
-reales; no crear ni usar una nueva clave de subida durante este trámite.
+La exportación se completó en el run 130, documentado abajo. La importación
+sigue pendiente; no crear ni usar una nueva clave de subida durante este trámite.
+
+
+### Copia cifrada generada y validada — run 130
+
+El commit `eaecf12dfa1d16dc076e2a31c36d205ee5219579` quedó en `main` y el
+[run 130](https://github.com/luisberna0324/adoracion-studio/actions/runs/40327400021)
+ejecutó únicamente `Export encrypted Google Play signing key`. La exportación,
+validación del ZIP y limpieza de material temporal finalizaron correctamente.
+`prepare`, los tres builds y todas las publicaciones quedaron omitidos.
+No se recompiló ni cambió el AAB 2.3.6 (129), construido desde `431f705`.
+
+El artefacto `google-play-encrypted-signing-eaecf12dfa1d16dc076e2a31c36d205ee5219579`,
+ID `12651841436`, conserva únicamente el ZIP cifrado y su reporte público
+hasta el 27 de octubre de 2026. El propietario autorizó expresamente descargar
+la copia cifrada a `output/google-play-preparation/signing-export-130/` del
+checkout local de QA. No se descargó keystore privado sin cifrar ni contraseñas.
+
+Validación local del ZIP de 4402 bytes:
+
+- SHA-256: `08b406368c76e5023cfb93fa511dfca45f58518d36b5ec689af68d9ab0f255b3`.
+- Exactamente `encryptedPrivateKey` y `certificate.pem`, sin entradas adicionales.
+- Certificado público idéntico al Release conocido `D1:16:2E:…:F2:4D`.
+- Hash y revisión coinciden con `report.json` del runner.
+
+El propietario debe seleccionar ese ZIP y guardar en Play Console; el estado
+actual todavía no acredita importación, configuración de firma final, carga
+del AAB ni disponibilidad de pruebas. Comparar el certificado **de firma de
+aplicación** del portal tras guardar; no basta con el certificado de subida.
