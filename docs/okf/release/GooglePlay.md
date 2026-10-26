@@ -26,8 +26,8 @@ opera Chrome; este documento no realiza acciones en el portal:
 | Idioma seleccionado | Español (Latinoamérica), `es-419`, aprobado por el propietario |
 | Tipo | Aplicación, aprobado por el propietario |
 | Precio de descarga | Sin coste, aprobado por el propietario |
-| Creación de ficha | Las tres casillas legales ya aparecen marcadas por el propietario; sigue pendiente que pulse «Crear aplicación», que envía la aceptación final |
-| Identificador de app en Play Console | Pendiente; no inventar un ID ni una URL de ficha |
+| Creación de ficha | El propietario creó la aplicación; ficha y panel verificados en Play Console el 26 de octubre de 2026 |
+| Identificador de app en Play Console | `4972301308867133502`, cuenta de desarrollador `4978274340238447322` |
 | Firma existente | El propietario autorizó usar la clave de firma existente en GitHub; no se ha creado otra clave como parte de este borrador |
 | Versión pública GitHub de referencia | `v2.3.5`, run 128, verificados durante la sesión por el agente de release |
 | Candidato firmado | `versionName=2.3.6`, `versionCode=129`, generado en el run 129 y validado; pendiente de carga y comprobación en Play Console |
@@ -368,6 +368,61 @@ Verificación del archivo descargado:
 
 `validation.json`, manifiesto decodificado y logs de firma están junto al AAB.
 Esto acredita generación y verificación del paquete, no su recepción por Play,
-la revisión de políticas ni publicación. El portal aún muestra «Crear aplicación»
-con las declaraciones marcadas; el clic final corresponde al titular porque
-envía los términos y certificaciones legales.
+la revisión de políticas ni publicación. El propietario ya creó la aplicación;
+el AAB sigue pendiente de carga y procesamiento.
+
+
+## Ficha creada y continuidad de firma — 2026-10-26
+
+El panel de Play Console confirma la ficha `PlayWorship`, paquete
+`com.multitracks.playworship`, app ID `4972301308867133502`. La cuenta personal
+requiere al menos 12 testers inscritos en prueba cerrada durante 14 días
+continuos antes de solicitar acceso a producción. El panel muestra cero
+testers inscritos; crear la ficha no inicia esa prueba.
+
+La pantalla **Protegida con Play → Protección de Play Store → Firma de
+aplicaciones** ya muestra una clave generada por Google, distinta de la que
+firma los APK distribuidos: SHA-256
+`56:DA:6D:A9:39:3A:38:D0:BB:19:21:73:71:75:E4:86:53:5B:13:D8:2E:78:F7:84:9B:9B:AC:ED:9C:82:23:5C`.
+No tratarla como equivalente a la firma Release `D1:16:2E:…:F2:4D`.
+
+El propietario autorizó expresamente transferir a Google Play una copia
+cifrada de la clave existente para conservar la compatibilidad de las
+actualizaciones. La original permanece en los secretos protegidos de GitHub.
+La autorización no prueba que se haya exportado ni importado: esas operaciones
+siguen pendientes. El propietario abrió las preferencias de firma y se seleccionó
+«Exportar y subir una clave del almacén de claves de Java». Se obtuvieron las
+instrucciones PEPK y su clave pública desde esta consola. No exportar ni traer el keystore privado a la Mac
+ni incluirlo, contraseñas o material privado en artefactos o logs.
+
+La configuración productiva consultada de sólo lectura tiene
+`ACCOUNT_DELETION_ENABLED=true`, referencia a política contable y retención de
+estado de 30 días. La ruta pública de preview responde 401 sin autenticación.
+Esto verifica configuración y ruta, no una eliminación efectiva ni la consulta
+de capacidades de una cuenta autenticada. Sigue pendiente conciliar la
+política pública con Teams y completar las declaraciones de seguridad de datos.
+
+
+### Instrucciones PEPK obtenidas de Play Console
+
+La opción Java Keystore de esta app ofrece `--include-cert`,
+`--rsa-aes-encryption` y `--encryption-key-path`. El JAR fue descargado con su
+botón oficial; la procedencia registrada apunta a
+`https://www.gstatic.com/play-apps-publisher-rapid/signing-tool/prod/pepk.jar`.
+
+- SHA-256 del JAR revisado:
+  `aaccc0774b240aa5304bdad2a49865e92f229ca73209ecb6eaafe75dc858e24e`.
+- SHA-256 del PEM de cifrado de Google:
+  `7c50d42784451af7b1f437a6298341c1f866a3dbab665f54a376e2d6c6029264`.
+- La clave de cifrado RSA de 3072 bits es pública y puede conservarse junto al
+  wrapper. No es la clave privada Release de PlayWorship.
+
+El modo `export_play_signing_key` del generador manual prepara exclusivamente
+la copia cifrada con esos recursos fijados. El CLI PEPK usa consola para
+contraseñas y puede imprimir argumentos ante errores; el wrapper invoca su API
+pública con las contraseñas en memoria procedentes del entorno. Sólo se
+conservan `encryptedPrivateKey` y `certificate.pem` dentro del ZIP. Comparar
+el certificado con la huella Release conocida antes de entregarlo al portal.
+
+La ejecución y la importación siguen pendientes hasta documentar resultados
+reales; no crear ni usar una nueva clave de subida durante este trámite.

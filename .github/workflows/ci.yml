@@ -27,6 +27,11 @@ on:
         required: true
         default: false
         type: boolean
+      export_play_signing_key:
+        description: "Exportar solo la copia PEPK cifrada autorizada para Google Play; no genera instaladores"
+        required: true
+        default: false
+        type: boolean
       publish_release:
         description: "Publicar instaladores en GCS, simbolos Sentry, limpiar versiones y actualizar manifiesto/Release"
         required: true
@@ -42,6 +47,7 @@ concurrency:
 
 jobs:
   prepare:
+    if: ${{ !inputs.export_play_signing_key }}
     runs-on: ubuntu-latest
     outputs:
       release_ref: ${{ steps.resolve.outputs.release_ref }}
@@ -167,6 +173,105 @@ jobs:
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
           echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
+
+  export-play-signing-key:
+    if: ${{ inputs.export_play_signing_key }}
+    name: Export encrypted Google Play signing key
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check explicit export-only request
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
+          RETAIN_ARTIFACTS: ${{ inputs.retain_artifacts }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${GITHUB_REF}" == "refs/heads/main" ]] || { echo "Signing export requires a manual request from main." >&2; exit 1; }
+          [[ "${REQUESTED_REF}" == "${GITHUB_SHA}" ]] || { echo "Signing export requires the exact reviewed workflow SHA." >&2; exit 1; }
+          [[ "${GOOGLE_PLAY_ONLY}" == "true" && "${RETAIN_ARTIFACTS}" == "true" && "${PUBLISH_RELEASE}" == "false" ]] || { echo "Signing export must retain only its encrypted artifact and must not publish releases." >&2; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/google-play
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify official PEPK and Google encryption public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          TASK_DIR="${RUNNER_TEMP}/play-signing-export"
+          mkdir -p "${TASK_DIR}/classes" "${TASK_DIR}/deliverables"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            'https://www.gstatic.com/play-apps-publisher-rapid/signing-tool/prod/pepk.jar' \
+            --output "${TASK_DIR}/pepk.jar"
+          printf '%s  %s\n' 'aaccc0774b240aa5304bdad2a49865e92f229ca73209ecb6eaafe75dc858e24e' "${TASK_DIR}/pepk.jar" | sha256sum --check --status
+          printf '%s  %s\n' '7c50d42784451af7b1f437a6298341c1f866a3dbab665f54a376e2d6c6029264' 'scripts/google-play/encryption_public_key.pem' | sha256sum --check --status
+          javac -cp "${TASK_DIR}/pepk.jar" -d "${TASK_DIR}/classes" scripts/google-play/ExportSigningKey.java
+
+      - name: Export only the encrypted copy
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          TASK_DIR="${RUNNER_TEMP}/play-signing-export"
+          trap 'rm -f "${TASK_DIR}/release.keystore"' EXIT
+          [[ -n "${ANDROID_RELEASE_KEYSTORE_BASE64}" && -n "${ANDROID_RELEASE_STORE_PASSWORD}" && -n "${ANDROID_RELEASE_KEY_ALIAS}" && -n "${ANDROID_RELEASE_KEY_PASSWORD}" ]] || { echo "Required protected Android signing secrets are missing." >&2; exit 1; }
+          printf '%s' "${ANDROID_RELEASE_KEYSTORE_BASE64}" | base64 --decode > "${TASK_DIR}/release.keystore"
+          unset ANDROID_RELEASE_KEYSTORE_BASE64
+          java -cp "${TASK_DIR}/pepk.jar:${TASK_DIR}/classes" ExportSigningKey \
+            "${TASK_DIR}/release.keystore" scripts/google-play/encryption_public_key.pem \
+            "${TASK_DIR}/deliverables/playworship-google-play-signing-encrypted.zip"
+          python3 - <<'REPORT'
+          import hashlib, json, os, pathlib
+          task_dir = pathlib.Path(os.environ['RUNNER_TEMP']) / 'play-signing-export'
+          encrypted = task_dir / 'deliverables/playworship-google-play-signing-encrypted.zip'
+          report = {
+              'packageName': 'com.multitracks.playworship',
+              'googlePlayAppId': '4972301308867133502',
+              'sourceRevision': os.environ['GITHUB_SHA'],
+              'githubRunId': os.environ['GITHUB_RUN_ID'],
+              'signingCertificateSha256': 'D1:16:2E:4A:7A:9B:B8:02:BE:08:94:8C:A3:3C:90:DA:61:F0:08:4F:AC:72:50:CB:98:1A:7D:A9:FC:26:F2:4D',
+              'pepkJarSha256': 'aaccc0774b240aa5304bdad2a49865e92f229ca73209ecb6eaafe75dc858e24e',
+              'googleEncryptionPublicKeySha256': '7c50d42784451af7b1f437a6298341c1f866a3dbab665f54a376e2d6c6029264',
+              'encryptedZipSha256': hashlib.sha256(encrypted.read_bytes()).hexdigest(),
+              'retentionDays': 1,
+          }
+          (task_dir / 'deliverables/report.json').write_text(json.dumps(report, indent=2) + '\n')
+          REPORT
+
+      - name: Remove temporary private signing material
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "${RUNNER_TEMP}/play-signing-export/release.keystore"
+          rm -rf "${RUNNER_TEMP}/play-signing-export/classes"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: google-play-encrypted-signing-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/play-signing-export/deliverables/playworship-google-play-signing-encrypted.zip
+            ${{ runner.temp }}/play-signing-export/deliverables/report.json
+          if-no-files-found: error
+          retention-days: 1
 
   build-macos:
     if: ${{ !inputs.google_play_only }}

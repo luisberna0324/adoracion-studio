@@ -122,6 +122,35 @@ necesita carga y procesamiento en Play Console, validación de la ficha y envío
 revisión: generar el archivo no acredita publicación. Se mantienen las
 aprobaciones concretas para subir código, ejecutar el generador y enviar la app.
 
+## Copia cifrada de firma para el alta en Google Play
+
+`export_play_signing_key=false` conserva el comportamiento de generación de
+instaladores. Sólo tras autorización concreta de transferencia de la clave a
+Google Play, puede activarse este modo manual dentro del mismo `ci.yml`.
+No añade workflows, triggers ni suites de QA.
+
+Con `export_play_signing_key=true`, `prepare` y todos los builds/publicaciones
+que dependen de él se omiten. Sólo corre `export-play-signing-key`, con token
+`contents: read`, desde `main`, con `ref` igual al SHA exacto del workflow
+revisado, `google_play_only=true`, `retain_artifacts=true` y
+`publish_release=false`. No calcula otra versión ni recompila la app.
+
+El JAR oficial PEPK se descarga por HTTPS y se compara contra el SHA-256
+revisado antes de recibir secretos. La clave pública de cifrado descargada de
+la consola de esta app queda fijada en `scripts/google-play/` con su hash.
+El wrapper Java usa la API pública de PEPK con contraseñas provenientes del
+entorno; no pasa secretos por argumentos ni llama al CLI que podría imprimirlos
+ante un error. Exige el certificado Release conocido antes de cifrar y valida
+el ZIP resultante con su certificado público.
+
+El keystore sólo se decodifica en `$RUNNER_TEMP`, con permisos restringidos, y
+se elimina mediante trap y limpieza `always` antes de conservar el artefacto.
+Únicamente se guardan ZIP cifrado y reporte público durante un día. No se
+suben a Release, web ni GCS. Descargar ese ZIP no prueba la importación: el
+propietario completa el cambio de credencial en Play Console y después se
+comparan sus huellas de firma y subida. Nunca guardar keystore sin cifrar,
+contraseñas ni secretos en el repo, artefactos o logs.
+
 ## Activación sin consumo accidental
 
 Estos cambios locales no alteran los workflows remotos vigentes. Antes de subir
