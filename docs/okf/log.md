@@ -2,10 +2,19 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-10-05T00:00:00-03:00
+timestamp: 2026-10-25T00:00:00-03:00
 ---
 
 # Changelog
+
+## 2026-10-25 — Letra nativa inicial en iOS
+
+- Editor UIKit desde Biblioteca/setlist local, letra opcional y selección de fragmentos musicales.
+- Tarjetas musicales con encabezados pastel, código y nombre; navegación circular fija y metadata de canción. Las nuevas marcas abarcan los párrafos seleccionados sin modificar la letra ni sus rangos históricos.
+- Escala compacta: círculos visibles de 36 pt con target mínimo de 44 pt, encabezados de 32 pt y menos sangría y separación vertical; mantiene tipografía dinámica y letra legible.
+- Modelo UTF-16 portable con etiquetas independientes del arreglo y de FreeShow.
+- Guardado asíncrono sólo de letra, borrador conservado ante error y ciclo de vida cancelable.
+- Contrato: [NativeLyrics](ui/NativeLyrics.md).
 
 ## 2026-10-05
 

@@ -179,3 +179,91 @@ en paquete/sidecar por compatibilidad con el prototipo `11f804d`; la creación
 simplificada no la añade ni la aplica como un control distinto del pad global.
 Los campos históricos `clickEnabled`/`padEnabled` no reemplazan los ajustes
 habituales del reproductor. El botón nuevo guarda cero compases y arreglo vacío.
+
+
+## Letras móviles: texto y marcas de sección
+
+La primera etapa ofrece un editor nativo iOS desde la lista de canciones.
+`ImportedSongData::lyrics` es opcional y guarda sólo texto y marcas sobre
+rangos de ese texto; no guarda acordes ni vínculos con el timeline, la guía,
+FreeShow o `SongArrangementSnapshot`. No añade un editor de escritorio.
+El esquema portable es:
+
+```json
+{
+  "schemaVersion": 1,
+  "offsetEncoding": "utf16",
+  "text": "Una letra para cantar",
+  "sections": [{"id": "estable", "kind": "verse", "start": 0, "length": 9}]
+}
+```
+
+`start` y `length` cuentan unidades UTF-16, como `NSRange` de UIKit. Son
+independientes del índice Unicode de `juce::String`; nunca se interpretan como
+bytes UTF-8. Los límites de un rango no pueden partir el par surrogate de un
+carácter suplementario (por ejemplo, un emoji). El formato declara la
+codificación explícitamente para que futuras interfaces nativas puedan usar
+el mismo contrato. Se conserva el texto pegado, incluidos sus saltos de línea.
+
+Los tipos canónicos son `intro`, `verse`, `prechorus`, `chorus`, `bridge`,
+`instrumental`, `outro` y `ending`; sus nombres de presentación se localizan en
+la interfaz. Las marcas tienen IDs únicos estables, longitud positiva, orden
+canónico por inicio y no se solapan. Aplicar o quitar una marca en una selección
+recorta/divide únicamente los rangos intersectados y conserva el resto. El
+primer fragmento superviviente conserva el ID; un segundo recibe un ID nuevo.
+Repetir la misma asignación exacta es un no-op.
+
+`replaceSongLyricsText` recibe la edición exacta del control nativo. Una
+inserción dentro de una marca amplía su rango; en sus bordes queda fuera.
+Reemplazar texto contenido en una marca conserva su tipo e ID. Un reemplazo
+que atraviesa varias conserva sólo sus fragmentos supervivientes y deja el
+texto nuevo sin marcar, evitando asignarle un tipo arbitrario o crear solapes.
+`setSongLyricsText` deriva un reemplazo común para puentes que sólo entregan el
+texto final; ajusta el diff a límites Unicode válidos. Las operaciones inválidas
+no modifican el borrador.
+
+`SongLibraryStore::updateSongLyrics` valida el borrador y guarda sólo la letra.
+Una canción legacy se actualiza mediante un read-modify-write breve de
+Biblioteca en el message thread. Para un proyecto, el worker prepara un ZIP
+con `ProjectStore::prepareLyricsUpdate`: cambia únicamente `manifest.song.lyrics`
+y copia los objetos codificados sin decodificar audio ni normalizar metadatos,
+mezcla o ventana. Reabre el ZIP temporal, verifica manifiesto y SHA-256 de cada
+objeto, y comprueba el hash completo de la versión de origen. El commit breve
+en el message thread verifica identidad del archivo (inode), tamaño, fecha,
+ruta, ID y ausencia de una edición concurrente de letra; vuelve a leer
+Biblioteca y cambia sólo ese campo. Un cambio concurrente del proyecto hace
+fallar el guardado para reintentar. Los cambios de mezcla/setlists/metadatos
+de otras canciones realizados durante la preparación permanecen intactos.
+
+El proyecto anterior se aparta como respaldo antes del reemplazo. Si falla
+Biblioteca, se restaura el original; un rollback fallido conserva el backup e
+informa su ruta. Nunca se elimina ese único respaldo. No se llama a
+`updateSongMetadata`, reconciliación de stems, actualización de sidecars,
+`scheduleSettingsSave` ni callbacks de recarga del motor. Las lecturas y copias
+grandes del ZIP y su hash permanecen en el worker, sin retener locks durante
+`callSync`. La interfaz lo ejecuta al confirmar; cancelar sólo descarta el
+borrador.
+
+Como los objetos de audio y `songSettings` embebidos no cambian, esta operación
+conserva el timestamp de origen del paquete y actualiza sólo un marcador de
+caché que ya correspondía a esa versión. Así conserva la precedencia del
+sidecar vigente y evita reextraer stems en la siguiente apertura. No altera
+sus bytes ni recuerda una mezcla antigua. Cloud detecta el contenido por
+SHA-256/fingerprint, no por tamaño/fecha; la regresión verifica un fingerprint
+nuevo aun con timestamp idéntico. `songToVar/songFromVar` conservan el documento en Biblioteca,
+manifiestos `.pwproj` y descargas Cloud. No forma parte de sidecars ni de
+`ProjectSongSettings` o versiones de mezcla. Texto vacío sin marcas elimina el
+campo; canciones históricas sin `lyrics` conservan su comportamiento. También
+se permite en canciones en blanco sin stems.
+
+Se validan atómicamente versión/codificación, tipos JSON, Unicode, límites,
+IDs, catálogo y ausencia de solapes. Los límites son 262144 unidades UTF-16 de
+texto y 4096 marcas por documento, con IDs de hasta 128 caracteres. Abrir datos
+inválidos ignora únicamente el documento de letras y conserva la canción.
+Guardar un documento inválido falla antes de reemplazar Biblioteca o paquete.
+No se interpreta el prototipo descartado de bloques/acordes como este esquema.
+
+Verificación: `song_lyrics` prueba selección, recorte/división, edición, UTF-16,
+codec y límites. `song_project_creation` añade paquetes reales, Biblioteca,
+metadatos actuales, cancelación de borrador, mezclas/ventanas conservadas,
+rechazo sin cambios de bytes, canciones en blanco y reconstrucción Cloud sin red.

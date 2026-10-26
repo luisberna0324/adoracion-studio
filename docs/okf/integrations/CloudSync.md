@@ -800,3 +800,32 @@ Antes del login, también en Debug, el aviso es informativo. Los enlaces abren
 los documentos públicos actuales. No se borran ni simulan constancias anteriores
 para forzar esta revisión. La aceptación de cuenta requiere el flujo autenticado
 real, igual que Release, y el despliegue de los documentos y backend correspondientes.
+
+
+## Letras móviles como contenido portable
+
+La letra opcional y sus rangos de sección viven en `song.lyrics` del manifiesto,
+con `schemaVersion: 1` y `offsetEncoding: "utf16"`. El primer editor es nativo
+iOS; la representación de almacenamiento es común y no añade interfaz de
+escritorio, acordes, seguimiento de reproducción ni acciones de FreeShow.
+
+`CloudProjectArchive::buildUpload` conserva el documento del manifiesto como
+contenido indexado por hash. La publicación explícita habitual puede incluir
+cambios de texto/marcas; no recodifica los stems. `materializeCachedSong` y
+`rebuildProject` usan el mismo `songDataFromVar` que Biblioteca y recuperan los
+IDs/rangos. No se añaden campos al descriptor ni endpoints al backend.
+
+Los sidecars, snapshots de versiones manuales de mezcla y protocolo de control
+remoto permanecen independientes. Un proyecto sin `lyrics` no necesita
+migración. La prueba de integración prepara objetos locales, materializa la
+canción y reconstruye un `.pwproj` sin llamar a la red; comprueba que editar sólo
+letra cambia el hash de contenido y mantiene el hash del audio.
+
+El guardado de letras conserva el mtime del paquete para no alterar la
+precedencia del sidecar ni invalidar la caché de audio. Esto no oculta cambios
+Cloud: `SongSyncService::upload` ejecuta siempre `buildUpload`, que calcula los
+hashes actuales; compara `CloudSyncJson::fingerprint(descriptor)` contra
+`CloudProjectLink::descriptorFingerprint` para devolver `NO_CHANGES`. No hay
+un caché de ese fingerprint basado sólo en fecha o tamaño. La prueba verifica
+que una edición de letra mantiene el mtime y aun así cambia ese fingerprint,
+por lo que no puede pasar como una revisión ya sincronizada.

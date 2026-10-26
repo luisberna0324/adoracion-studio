@@ -706,10 +706,19 @@ if(MTCONTROLS_BUILD_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
             "$<TARGET_FILE:MTControlsMacAppStoreTests>")
     endif()
+    juce_add_console_app(MTControlsSongLyricsTests PRODUCT_NAME "Song Lyrics Range Tests")
+    target_sources(MTControlsSongLyricsTests PRIVATE tests/song_lyrics_tests.cpp src/data/SongLyrics.cpp)
+    target_include_directories(MTControlsSongLyricsTests PRIVATE src)
+    target_link_libraries(MTControlsSongLyricsTests PRIVATE juce::juce_core)
+    if(MSVC)
+        target_compile_options(MTControlsSongLyricsTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME song_lyrics COMMAND "$<TARGET_FILE:MTControlsSongLyricsTests>")
+
     juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
     target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
         src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
-    target_compile_definitions(MTControlsSongCreationTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_compile_definitions(MTControlsSongCreationTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_include_directories(MTControlsSongCreationTests PRIVATE src)
     target_link_libraries(MTControlsSongCreationTests PRIVATE MTControls MTControlsAssets
         juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
@@ -717,6 +726,29 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME song_project_creation COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsSongCreationTests>")
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        juce_add_gui_app(MTControlsNativeSongLyricsUITests
+            PRODUCT_NAME "Native Lyrics UI Tests"
+            BUNDLE_ID "com.multitracks.playworship.native-lyrics-tests")
+        target_sources(MTControlsNativeSongLyricsUITests PRIVATE tests/native_song_lyrics_editor_ui_tests.mm)
+        set_source_files_properties(tests/native_song_lyrics_editor_ui_tests.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+        target_include_directories(MTControlsNativeSongLyricsUITests PRIVATE src)
+        target_link_libraries(MTControlsNativeSongLyricsUITests PRIVATE MTControls MTControlsAssets juce::juce_gui_basics)
+        juce_generate_juce_header(MTControlsNativeSongLyricsUITests)
+    else()
+        juce_add_console_app(MTControlsSongListLyricsTests PRODUCT_NAME "Song List Lyrics Tests")
+        target_sources(MTControlsSongListLyricsTests PRIVATE tests/song_list_lyrics_tests.cpp
+            src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+        target_include_directories(MTControlsSongListLyricsTests PRIVATE src)
+        target_compile_definitions(MTControlsSongListLyricsTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1
+            MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+        target_link_libraries(MTControlsSongListLyricsTests PRIVATE MTControls MTControlsAssets
+            juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+        juce_generate_juce_header(MTControlsSongListLyricsTests)
+        add_test(NAME song_list_lyrics COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+            "$<TARGET_FILE:MTControlsSongListLyricsTests>")
+    endif()
     juce_add_console_app(MTControlsSongWizardTests PRODUCT_NAME "Song Wizard Tests")
     target_sources(MTControlsSongWizardTests PRIVATE tests/song_import_wizard_tests.cpp
         src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
@@ -1302,6 +1334,8 @@ target_sources(MTControls
         src/data/ProjectStore.h
         src/data/SongData.cpp
         src/data/SongData.h
+        src/data/SongLyrics.cpp
+        src/data/SongLyrics.h
         src/data/SongLibraryStore.cpp
         src/data/PortableFlacConversion.cpp
         src/data/PortableFlacConversion.h
@@ -1357,6 +1391,7 @@ target_sources(MTControls
         src/ui/panels/SongImportWizardComponent.cpp
         src/ui/panels/SongImportWizardComponent.h
         src/ui/panels/SongListPanel.cpp
+        src/ui/panels/SongListLyrics.cpp
         src/ui/panels/SongListPanel.h
         src/ui/panels/TopBar.cpp
         src/ui/panels/TopBar.h
@@ -1401,7 +1436,8 @@ endif()
 target_sources(MTControls PRIVATE
     src/AppleSignInIntegration.cpp
     src/data/AppleSignInApi.cpp src/data/AppleSignInApi.h
-    src/platform/NativeAppleSignIn.cpp src/platform/NativeAppleSignIn.h)
+    src/platform/NativeAppleSignIn.cpp src/platform/NativeAppleSignIn.h
+    src/platform/NativeSongLyricsEditor.cpp src/platform/NativeSongLyricsEditor.h)
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(MTControls PRIVATE "-framework SystemConfiguration")
@@ -1412,7 +1448,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         src/platform/IOSWindowLayout.mm
         src/platform/IOSWindowLayout.h
         src/platform/NativeAuthSession.mm
+        src/platform/NativeSongLyricsEditor.mm
         src/platform/NativeAuthSession.h)
+    set_source_files_properties(src/platform/NativeSongLyricsEditor.mm PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")
 else()
     target_sources(MTControls PRIVATE

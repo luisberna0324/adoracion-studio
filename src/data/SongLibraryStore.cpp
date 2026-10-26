@@ -1691,6 +1691,7 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
     updated.timeSignature = song.timeSignature;
     updated.artworkSource = song.artworkSource;
     updated.artworkPath = song.artworkPath;
+    updated.lyrics = song.lyrics;
     return updateSong(std::move(updated), errorMessage);
   }
   auto updated = previousSong;
@@ -1703,6 +1704,7 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
                          ? song.fileType.trim()
                          : previousSong.fileType;
   updated.artworkSource = song.artworkSource.trim();
+  updated.lyrics = song.lyrics;
   if (updated.artworkSource.isEmpty())
     updated.artworkPath.clear();
   followEditedBaseTempoInDefaultMap(updated, previousSong);
@@ -1743,6 +1745,128 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
   SessionAuthLogger::write("[SongImportStore] metadata-only update saved id=" +
                            song.id);
   return true;
+}
+
+bool SongLibraryStore::updateSongLyrics(const juce::String &songId,
+                                         std::optional<SongLyricsDocument> lyrics,
+                                         juce::String *errorMessage,
+                                         const SongImportProgressFn &onProgress) {
+  if (errorMessage != nullptr) errorMessage->clear();
+  if (lyrics.has_value() && !isValidSongLyricsDocument(*lyrics)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("La letra o sus marcas de sección contienen datos no válidos.",
+                              "The lyrics or section labels contain invalid data.");
+    return false;
+  }
+  if (!hasSongLyrics(lyrics)) lyrics.reset();
+  const auto canonicalLyrics = [](const auto &value) {
+    return value.has_value() ? juce::JSON::toString(songLyricsToVar(*value), true) : juce::String();
+  };
+  const auto wantedId = songId.trim();
+  const auto runOnMessageThread = [](std::function<bool()> action) {
+    auto safeAction = [action = std::move(action)] {
+      try { return action(); } catch (...) { return false; }
+    };
+    auto *manager = juce::MessageManager::getInstanceWithoutCreating();
+    if (manager == nullptr || manager->isThisTheMessageThread()) return safeAction();
+    return juce::MessageManager::callSync(std::move(safeAction)).value_or(false);
+  };
+  ImportedSongData snapshot;
+  bool completedWithoutPackage = false;
+  if (!runOnMessageThread([&] {
+        auto library = loadLibrary();
+        auto found = std::find_if(library.songs.begin(), library.songs.end(),
+                                 [&wantedId](const auto &song) { return song.id == wantedId; });
+        if (wantedId.isEmpty() || found == library.songs.end()) {
+          if (errorMessage != nullptr)
+            *errorMessage = L10n::tr("La canción ya no existe en la biblioteca.", "Song no longer exists in the library.");
+          return false;
+        }
+        if (canonicalLyrics(found->lyrics) == canonicalLyrics(lyrics)) {
+          completedWithoutPackage = true; return true;
+        }
+        if (!isProjectBackedSong(*found)) {
+          found->lyrics = lyrics;
+          completedWithoutPackage = true;
+          return saveLibrary(library);
+        }
+        snapshot = *found;
+        return true;
+      })) {
+    if (errorMessage != nullptr && errorMessage->isEmpty())
+      *errorMessage = L10n::tr("No se pudo guardar la letra.", "Couldn't save lyrics.");
+    return false;
+  }
+  if (completedWithoutPackage) return true;
+  if (onProgress) onProgress(0.05, L10n::tr("Preparando letra...", "Preparing lyrics..."));
+  PreparedProjectLyricsUpdate prepared;
+  if (!ProjectStore::prepareLyricsUpdate(juce::File(snapshot.projectPath), lyrics, prepared, errorMessage)) return false;
+  const auto removeStage = [&] { prepared.stagedFile.deleteFile(); };
+  const auto expectedIdentity = projectIdentityForSong(snapshot);
+  if (prepared.projectId != expectedIdentity) {
+    removeStage();
+    if (errorMessage != nullptr) *errorMessage = "Project identity changed while saving lyrics.";
+    return false;
+  }
+  if (onProgress) onProgress(0.85, L10n::tr("Confirmando letra...", "Committing lyrics..."));
+  // The full hash is intentionally checked on the worker immediately before
+  // the short message-thread commit. The latter also compares inode and stats.
+  if (!ProjectStore::lyricsUpdateSourceUnchanged(prepared, true, errorMessage)) { removeStage(); return false; }
+  const auto backup = prepared.file.getSiblingFile(prepared.file.getFileNameWithoutExtension() +
+      "_lyrics_backup_" + juce::Uuid().toString() + ProjectStore::kFileExtension);
+  const auto failed = prepared.file.getSiblingFile(prepared.file.getFileNameWithoutExtension() +
+      "_lyrics_failed_" + juce::Uuid().toString() + ProjectStore::kFileExtension);
+  const auto oldLyrics = canonicalLyrics(snapshot.lyrics);
+  const bool saved = runOnMessageThread([&] {
+    auto library = loadLibrary();
+    auto found = std::find_if(library.songs.begin(), library.songs.end(),
+                             [&wantedId](const auto &song) { return song.id == wantedId; });
+    if (found == library.songs.end() || juce::File(found->projectPath) != prepared.file ||
+        projectIdentityForSong(*found) != expectedIdentity || canonicalLyrics(found->lyrics) != oldLyrics ||
+        !ProjectStore::lyricsUpdateSourceUnchanged(prepared, false, errorMessage)) {
+      if (errorMessage != nullptr && errorMessage->isEmpty())
+        *errorMessage = L10n::tr("La canción cambió mientras se guardaba la letra. Inténtalo de nuevo.",
+                                "The song changed while saving lyrics. Please retry.");
+      return false;
+    }
+    if (!prepared.file.moveFileTo(backup)) {
+      if (errorMessage != nullptr) *errorMessage = "Couldn't back up the project before saving lyrics.";
+      return false;
+    }
+    const auto restore = [&] {
+      if (prepared.file.existsAsFile() && !prepared.file.moveFileTo(failed)) return false;
+      if (!backup.moveFileTo(prepared.file)) return false;
+      failed.deleteFile();
+      return true;
+    };
+    if (!prepared.stagedFile.moveFileTo(prepared.file)) {
+      const bool restored = restore();
+      if (errorMessage != nullptr) *errorMessage = restored ? "Couldn't install the lyric update. Original project restored."
+          : "Couldn't install the lyric update. Original project preserved at: " + backup.getFullPathName();
+      return false;
+    }
+    // This is a FRESH library snapshot. Only this field changes; no reconciliation,
+    // artwork/tempo/stem edits, cached settings save, or transport callback occurs.
+    found->lyrics = lyrics;
+    bool librarySaved = false;
+    try { librarySaved = saveLibrary(library); } catch (...) {}
+    if (!librarySaved) {
+      const bool restored = restore();
+      if (errorMessage != nullptr) *errorMessage = restored ? "Couldn't save the library. Original project restored."
+          : "Couldn't save the library. Original project preserved at: " + backup.getFullPathName();
+      return false;
+    }
+    try { ProjectStore::refreshLyricsCacheMarker(prepared); } catch (...) {}
+    return true;
+  });
+  removeStage();
+  if (saved) {
+    backup.deleteFile();
+    if (onProgress) onProgress(1.0, L10n::tr("Letra guardada", "Lyrics saved"));
+  } else if (errorMessage != nullptr && errorMessage->isEmpty()) {
+    *errorMessage = L10n::tr("No se pudo guardar la letra.", "Couldn't save lyrics.");
+  }
+  return saved;
 }
 
 bool SongLibraryStore::getActiveSetlistMix(const juce::String &songId,
@@ -2513,8 +2637,11 @@ LibraryState SongLibraryStore::loadLibrary() {
 bool SongLibraryStore::saveLibrary(const LibraryState &library) {
   juce::Array<juce::var> songVars;
   songVars.ensureStorageAllocated(static_cast<int>(library.songs.size()));
-  for (const auto &song : library.songs)
+  for (const auto &song : library.songs) {
+    if (song.lyrics.has_value() && !isValidSongLyricsDocument(*song.lyrics))
+      return false;
     songVars.add(songToVar(song));
+  }
 
   juce::Array<juce::var> setlistVars;
   setlistVars.ensureStorageAllocated(
@@ -2925,6 +3052,8 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("stems", juce::var(stemVars));
   obj->setProperty("arrangement", arrangementToVar(song.arrangement));
   obj->setProperty("tempoMap", tempoMapToVar(song.tempoMap));
+  if (hasSongLyrics(song.lyrics))
+    obj->setProperty("lyrics", songLyricsToVar(*song.lyrics));
   return juce::var(obj);
 }
 
@@ -2947,6 +3076,8 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   song.artworkSource = obj->getProperty("artworkSource").toString();
   song.projectPath = obj->getProperty("projectPath").toString();
   song.createdMs = static_cast<juce::int64>(obj->getProperty("createdMs"));
+  if (obj->hasProperty("lyrics"))
+    song.lyrics = songLyricsFromVar(obj->getProperty("lyrics"));
 
   if (const auto *blank = obj->getProperty("blankSong").getDynamicObject()) {
     song.blankSong = true;

@@ -814,6 +814,8 @@ SongListPanel::SongListPanel() {
       [this] { openProjectFileChooser(); });
   libraryCatalogPanel.setOnSongEditRequested(
       [this](const juce::String &songId) { openSongEditWizard(songId); });
+  libraryCatalogPanel.setOnSongLyricsRequested(
+      [this](const juce::String &songId) { openSongLyricsEditor(songId); });
   libraryCatalogPanel.setOnSongConvertRequested(
       [this](const juce::String &songId) {
         beginLegacySongConversion(songId);
@@ -934,6 +936,9 @@ SongListPanel::SongListPanel() {
   setlistsViewport.setScrollBarThickness(1);
   setlistsPage.addAndMakeVisible(setlistsViewport);
 
+  listContent.setOnSongLyricsRequested(
+      [this](const juce::String &songId) { openSongLyricsEditor(songId); },
+      [this] { return remoteLibrary == nullptr; });
   listContent.setOnSongActivated([this](int songIndex) {
     activateSongAtIndex(songIndex);
   });
@@ -1005,6 +1010,7 @@ SongListPanel::SongListPanel() {
 }
 
 SongListPanel::~SongListPanel() {
+  cancelSongLyricsEditor();
   if (projectImportCancelled)
     projectImportCancelled->store(true);
   if (projectOpenOverlay)
@@ -2241,6 +2247,12 @@ void SongListPanel::ListContent::setOnOptimizeRequested(
   onOptimizeRequested = std::move(cb);
 }
 
+void SongListPanel::ListContent::setOnSongLyricsRequested(
+    std::function<void(const juce::String &)> cb, std::function<bool()> available) {
+  onSongLyricsRequested = std::move(cb);
+  lyricsEditingAvailable = std::move(available);
+}
+
 int SongListPanel::ListContent::getPreferredHeight() const {
   const int songCount = static_cast<int>(songs.size());
   const int rowsHeight = rowStart + songCount * (rowHeight + rowGap);
@@ -2770,9 +2782,9 @@ juce::Rectangle<int> SongListPanel::ListContent::optionsButtonBoundsForRow(
   return optionsRect;
 }
 
-void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
+std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuForRow(int rowIndex) {
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(songs.size())))
-    return;
+    return nullptr;
 
   class ActionChip final : public juce::Button {
   public:
@@ -2824,7 +2836,8 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
   public:
     SongActionsPopover(bool autoPlayEnabled, bool hasNextSong,
                        std::function<void()> onToggleFn,
-                       std::function<void()> onRemoveFn)
+                       std::function<void()> onRemoveFn,
+                       std::function<void()> onLyricsFn)
         : toggleChip(!hasNextSong
                          ? L10n::tr("No hay canción siguiente",
                                     "There is no next song")
@@ -2837,7 +2850,9 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
                      SvgIconName::SkipForward, autoPlayEnabled, false),
           removeChip(L10n::tr("Quitar del setlist", "Remove from setlist"),
                      SvgIconName::Trash, false, true),
-          onToggle(std::move(onToggleFn)), onRemove(std::move(onRemoveFn)) {
+          lyricsChip(L10n::tr("Letra", "Lyrics"), SvgIconName::Pencil, false, false),
+          onToggle(std::move(onToggleFn)), onRemove(std::move(onRemoveFn)),
+          onLyrics(std::move(onLyricsFn)) {
       toggleChip.setEnabled(hasNextSong);
       toggleChip.onClick = [this] {
         if (onToggle)
@@ -2849,8 +2864,14 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
           onRemove();
         closeSelf();
       };
+      lyricsChip.onClick = [this] {
+        auto callback = onLyrics;
+        closeSelf();
+        if (callback) juce::MessageManager::callAsync(std::move(callback));
+      };
       addAndMakeVisible(toggleChip);
       addAndMakeVisible(removeChip);
+      if (onLyrics) addAndMakeVisible(lyricsChip);
     }
 
     void paint(juce::Graphics &g) override {
@@ -2872,13 +2893,19 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
       toggleChip.setBounds(area.removeFromTop(34));
       area.removeFromTop(8);
       removeChip.setBounds(area.removeFromTop(34));
+      if (onLyrics) {
+        area.removeFromTop(8);
+        lyricsChip.setBounds(area.removeFromTop(34));
+      }
     }
 
   private:
     ActionChip toggleChip;
     ActionChip removeChip;
+    ActionChip lyricsChip;
     std::function<void()> onToggle;
     std::function<void()> onRemove;
+    std::function<void()> onLyrics;
 
     void closeSelf() {
       if (auto *callout = findParentComponentOfClass<juce::CallOutBox>()) {
@@ -2890,11 +2917,9 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
 
   const auto songIndex = songs[static_cast<size_t>(rowIndex)].songIndex;
   const bool autoPlayEnabled = songs[static_cast<size_t>(rowIndex)].autoPlayNext;
-  const auto rowBounds =
-      juce::Rectangle<int>(rowSideInset, rowTopAtIndex(rowIndex),
-                           getWidth() - (rowSideInset * 2), rowHeight);
-  const auto optionsBounds = optionsButtonBoundsForRow(rowBounds);
-
+  const auto lyricsSongId = songs[static_cast<size_t>(rowIndex)].songId;
+  const bool showLyrics = NativeSongLyricsEditor::isAvailable() && onSongLyricsRequested &&
+                         lyricsEditingAvailable && lyricsEditingAvailable() && lyricsSongId.isNotEmpty();
   auto safeThis = juce::Component::SafePointer<ListContent>(this);
   auto panel = std::make_unique<SongActionsPopover>(
       autoPlayEnabled,
@@ -2910,13 +2935,26 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
           return;
         if (safeThis->onSongRemoveRequested)
           safeThis->onSongRemoveRequested(songIndex);
-      });
-  panel->setSize(240, 96);
+      }, showLyrics ? std::function<void()>([safeThis, lyricsSongId] {
+        if (safeThis != nullptr && NativeSongLyricsEditor::isAvailable() &&
+            safeThis->lyricsEditingAvailable && safeThis->lyricsEditingAvailable() &&
+            safeThis->onSongLyricsRequested)
+          safeThis->onSongLyricsRequested(lyricsSongId);
+      }) : std::function<void()>{});
+  panel->setSize(240, showLyrics ? 138 : 96);
 
+  return panel;
+}
+
+void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
+  auto panel = createActionsMenuForRow(rowIndex);
+  if (panel == nullptr) return;
+  const auto rowBounds = juce::Rectangle<int>(rowSideInset, rowTopAtIndex(rowIndex),
+                                              getWidth() - rowSideInset * 2, rowHeight);
+  const auto optionsBounds = optionsButtonBoundsForRow(rowBounds);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
-  juce::Component *parentComp = editor != nullptr
-                                    ? static_cast<juce::Component *>(editor)
-                                    : static_cast<juce::Component *>(this);
+  auto *parentComp = editor != nullptr ? static_cast<juce::Component *>(editor)
+                                       : static_cast<juce::Component *>(this);
   const auto anchor = parentComp->getLocalArea(this, optionsBounds);
   presentActionPopover(std::move(panel), anchor, parentComp);
 }
@@ -4441,6 +4479,7 @@ void SongListPanel::refreshFromStorage() {
 }
 
 void SongListPanel::setRemoteLibrary(std::shared_ptr<const LibraryState> library) {
+  cancelSongLyricsEditor();
   if (library != nullptr && projectImportCancelled) {
     projectImportCancelled->store(true);
     if (projectOpenOverlay) {

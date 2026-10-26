@@ -155,6 +155,11 @@ public:
                          const SongImportProgressFn &onProgress = {});
   static bool updateSongMetadata(ImportedSongData song,
                                  juce::String *errorMessage = nullptr);
+  /** Background content-only save; final library RMW is on the message thread. */
+  static bool updateSongLyrics(const juce::String &songId,
+                               std::optional<SongLyricsDocument> lyrics,
+                               juce::String *errorMessage = nullptr,
+                               const SongImportProgressFn &onProgress = {});
   static bool getActiveSetlistMix(const juce::String &songId,
                                   SongMixSnapshot &outMix);
   static bool updateMixForActiveSetlist(const juce::String &songId,

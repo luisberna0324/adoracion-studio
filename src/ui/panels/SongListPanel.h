@@ -3,6 +3,7 @@
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
 #include "../../data/ProjectStore.h"
+#include "../../platform/NativeSongLyricsEditor.h"
 #include "../components/SearchField.h"
 #include "../components/SetlistSongsHeaderPanel.h"
 #include "LibraryCatalogPanel.h"
@@ -101,7 +102,7 @@ public:
   void refreshFromStorageView();
   void openLocalLibrary();
   void openCloudLibrary();
-  bool isSongEditorOpen() const { return songImportOverlay != nullptr; }
+  bool isSongEditorOpen() const { return songImportOverlay != nullptr || nativeLyricsEditor != nullptr; }
   bool isCloudLibraryOpen() const { return libraryCatalogPanel.isCloudOpen(); }
   void showSongPicker(juce::Component &anchor, std::function<void()> onAdd);
   void showActiveSetlist();
@@ -121,6 +122,7 @@ private:
   friend struct TeamsWorkspaceTestAccess;
   std::shared_ptr<const LibraryState> remoteLibrary;
   friend struct SongListPanelTestAccess;
+  friend struct SongListLyricsTestAccess;
   enum class ViewMode { Setlists, Songs };
   enum class SongsSubview { SetlistSongs, Library };
   struct SongsLayout {
@@ -179,6 +181,8 @@ private:
     void setOnSongRemoveRequested(std::function<void(int)> cb);
     void setOnAddSongsRequested(std::function<void()> cb);
     void setOnOptimizeRequested(std::function<void(int)> cb);
+    void setOnSongLyricsRequested(std::function<void(const juce::String &)> cb,
+                                  std::function<bool()> available);
     int getPreferredHeight() const;
 
     void paint(juce::Graphics &g) override;
@@ -190,6 +194,7 @@ private:
     void mouseExit(const juce::MouseEvent &event) override;
 
   private:
+    friend struct SongListLyricsTestAccess;
     static constexpr int rowStart = 8;
     static constexpr int rowHeight = 64;
     static constexpr int rowGap = 0;
@@ -202,6 +207,7 @@ private:
     juce::Rectangle<int> optionsButtonBoundsForRow(
         const juce::Rectangle<int> &rowBounds) const;
     void showActionsMenuForRow(int rowIndex);
+    std::unique_ptr<juce::Component> createActionsMenuForRow(int rowIndex);
 
     std::vector<SongRow> songs;
     std::function<void(int)> onSongActivated;
@@ -211,6 +217,8 @@ private:
     std::function<void(int)> onSongRemoveRequested;
     std::function<void()> onAddSongsRequested;
     std::function<void(int)> onOptimizeRequested;
+    std::function<void(const juce::String &)> onSongLyricsRequested;
+    std::function<bool()> lyricsEditingAvailable;
     juce::Point<float> mouseDownPosition;
     bool dragCandidate = false;
     bool isDragging = false;
@@ -241,6 +249,8 @@ private:
   void beginProjectImport(const juce::URL &url, bool copyToSandbox);
   void showProjectImportError(const juce::String &error);
   void openSongEditWizard(const juce::String &songId);
+  void openSongLyricsEditor(const juce::String &songId);
+  void cancelSongLyricsEditor();
   void beginLegacySongConversion(const juce::String &songId);
   void convertLegacySongAtDestination(const juce::String &songId,
                                       const juce::File &destination);
@@ -360,6 +370,10 @@ private:
   std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;
   std::unique_ptr<SongWizardOverlay> songImportOverlay;
+  std::unique_ptr<NativeSongLyricsEditor::Handle> nativeLyricsEditor;
+  std::shared_ptr<std::atomic<bool>> nativeLyricsCancelled;
+  std::shared_ptr<std::atomic<bool>> nativeLyricsSaving;
+  uint64_t nativeLyricsGeneration = 0;
   std::unique_ptr<AppModal> appModal;
   std::unique_ptr<SongImportWizardComponent> libraryCreationWizard;
   std::unique_ptr<juce::FileChooser> projectFileChooser;

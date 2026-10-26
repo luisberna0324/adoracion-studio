@@ -44,6 +44,7 @@ public:
 
   void setOnSongLoadRequested(SongLoadRequested cb);
   void setOnSongEditRequested(SongEditRequested cb);
+  void setOnSongLyricsRequested(SongEditRequested cb);
   void setOnSongConvertRequested(SongConvertRequested cb);
   void setOnProjectUploadRequested(ProjectUploadRequested cb);
   void setOnCloudDownloadRequested(CloudDownloadRequested cb);
@@ -82,6 +83,7 @@ public:
 
 private:
   friend struct TeamsWorkspaceTestAccess;
+  friend struct SongListLyricsTestAccess;
   std::shared_ptr<const LibraryState> remoteLibrary;
   enum class FilterChip {
     All = 0,
@@ -316,6 +318,7 @@ private:
 
   SongLoadRequested onSongLoadRequested;
   SongEditRequested onSongEditRequested;
+  SongEditRequested onSongLyricsRequested;
   SongConvertRequested onSongConvertRequested;
   ProjectUploadRequested onProjectUploadRequested;
   CloudDownloadRequested onCloudDownloadRequested;

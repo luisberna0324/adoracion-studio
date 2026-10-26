@@ -1,4 +1,5 @@
 #include "LibraryCatalogPanel.h"
+#include "../../platform/NativeSongLyricsEditor.h"
 
 #include "../../data/CloudSyncIndexStore.h"
 #include "../../data/Localization.h"
@@ -1065,6 +1066,10 @@ void LibraryCatalogPanel::setOnSongEditRequested(SongEditRequested cb) {
   onSongEditRequested = std::move(cb);
 }
 
+void LibraryCatalogPanel::setOnSongLyricsRequested(SongEditRequested cb) {
+  onSongLyricsRequested = std::move(cb);
+}
+
 void LibraryCatalogPanel::setOnSongConvertRequested(SongConvertRequested cb) {
   onSongConvertRequested = std::move(cb);
 }
@@ -1692,6 +1697,21 @@ std::unique_ptr<juce::Component> LibraryCatalogPanel::createRowMenu(
                songId.isNotEmpty())
              safeThis->onSongEditRequested(songId);
          }, SvgIconName::Pencil});
+    if (!remoteLibrary && NativeSongLyricsEditor::isAvailable() && onSongLyricsRequested) {
+      actions.push_back(
+          {L10n::tr("Letra", "Lyrics"), true, false, false,
+           [safeThis, songId = selectedItem.songId] {
+             // The callout closes when this callback returns; UIKit opens on
+             // the next message, using the captured song identity after resorts.
+             juce::MessageManager::callAsync([safeThis, songId] {
+               if (safeThis != nullptr && !safeThis->remoteLibrary &&
+                   NativeSongLyricsEditor::isAvailable() && safeThis->onSongLyricsRequested && songId.isNotEmpty()) {
+                 dismissActiveActionPopover();
+                 safeThis->onSongLyricsRequested(songId);
+               }
+             });
+           }, SvgIconName::Pencil});
+    }
     if (!selectedItem.isProjectBacked) {
       actions.push_back(
           {L10n::tr("Convertir a proyecto...", "Convert to project..."), true, false, false,

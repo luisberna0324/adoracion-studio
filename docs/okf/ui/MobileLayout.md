@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-10-12T00:00:00-03:00
+timestamp: 2026-10-25T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -48,6 +48,11 @@ ventana, la raiz OpenGL y el editor, incluida el area segura actualizada.
 Los cambios de area segura se propagan tambien cuando el tamano de la ventana
 y del contenido permanece igual. Asi se retira el margen superior al ocultar
 la barra del sistema, sin esperar a otra rotacion o redimension.
+
+El editor de [Letra nativa](NativeLyrics.md), abierto desde el menú de una
+canción local, usa UIKit a pantalla completa. En iPhone solicita portrait y al
+cerrar restaura la máscara previa. En iPad usa la orientación actual, el área
+segura y el teclado de UIKit; no cambia el perfil ni la distribución del player.
 
 En teléfonos, el botón de tres puntos horizontales del `TopBar` incluye
 `Ensayo`. Abre `PracticePanel` como superficie completa y solicita portrait;

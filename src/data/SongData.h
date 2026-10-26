@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "SongLyrics.h"
 
 #include <array>
 #include <functional>
@@ -179,6 +180,8 @@ struct ImportedSongData {
   std::vector<ImportedStemData> stems;
   SongArrangementSnapshot arrangement;
   SongTempoMapSnapshot tempoMap;
+  // Optional lyric text and native UTF-16 section ranges, not playback sections.
+  std::optional<SongLyricsDocument> lyrics;
 };
 
 extern const std::array<const char *, 19> kTrackCategories;

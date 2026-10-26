@@ -1,9 +1,12 @@
 #include "data/ProjectStore.h"
+#include "data/CloudProjectArchive.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/ArrangementSourceMapping.h"
 #include "network/RemoteStateCodec.h"
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -1146,11 +1149,239 @@ void testColdProjectExtractionProgress(const Fixtures &fixtures) {
 
 } // namespace
 
+
+bool runLyricsWorker(const std::function<bool()> &action) {
+  std::atomic<bool> done{false};
+  bool result = false;
+  std::exception_ptr failure;
+  std::thread worker([&] {
+    try { result = action(); } catch (...) { failure = std::current_exception(); }
+    done.store(true, std::memory_order_release);
+  });
+  while (!done.load(std::memory_order_acquire))
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
+  worker.join();
+  if (failure) std::rethrow_exception(failure);
+  return result;
+}
+
+void testNativeLyricsPersistence(const Fixtures &fixtures) {
+  ProjectDocument document;
+  document.song.id = juce::Uuid().toString();
+  document.song.projectId = document.song.id;
+  document.song.title = "Native lyrics fixture";
+  document.song.artist = "First artist";
+  document.song.bpm = 120; document.song.key = "C"; document.song.timeSignature = "4/4";
+  SongLyricsDocument lyrics;
+  lyrics.text = juce::String::fromUTF8(u8"Aquí 🎹 cantamos\nTodos juntos");
+  expect(applySongLyricsSection(lyrics, 0, 16, "verse") &&
+             applySongLyricsSection(lyrics, 17, 12, "chorus"), "native fixture has valid UTF16 lyric ranges");
+  document.song.lyrics = lyrics;
+  const auto canonical = [](const auto &value) {
+    return value ? juce::JSON::toString(songLyricsToVar(*value), true) : juce::String();
+  };
+  const auto originalLyrics = canonical(document.song.lyrics);
+  const auto source = fixtures.directory.getChildFile("native-lyrics-source.flac");
+  writeFlac(source);
+  ImportedStemData stem;
+  stem.stemId = "native-lyrics-stem"; stem.sourcePath = source.getFullPathName();
+  stem.displayName = "Piano"; stem.category = "Keys"; stem.include = true;
+  stem.durationSec = static_cast<double>(sampleCount) / sampleRate;
+  stem.sampleRate = static_cast<int>(sampleRate); stem.channels = 1;
+  document.song.stems.push_back(stem);
+  // Use the complete settings of a saved song, not a missing-stem/default-window
+  // fixture which the established metadata transaction normally reconciles.
+  document.settings.tempoBpm = 115; document.settings.pitchSemitones = -2;
+  document.settings.mix.master.volume = 0.37f;
+  StemMixSnapshot mix;
+  mix.stemId = stem.stemId; mix.volume = 0.42f; mix.gain = 1.13f;
+  mix.mute = true; mix.solo = true; mix.outputChannel = 2;
+  document.settings.mix.stems.push_back(mix);
+  document.settings.window.startSec = 0.01; document.settings.window.endSec = 0.11;
+  document.settings.window.fadeOutSec = 0.02; document.settings.windowCustomized = true;
+  const auto archive = fixtures.directory.getChildFile("native-lyrics.pwproj");
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error), "native lyrics save in a real project");
+  ProjectDocument reopened;
+  expect(ProjectStore::open(archive, reopened, &error) && canonical(reopened.song.lyrics) == originalLyrics,
+         "project reopen preserves text, native section IDs and UTF16 ranges");
+  expect(ProjectStore::settingsJsonEqual(reopened.settings, document.settings) &&
+             ProjectStore::serializeSettings(reopened.settings).getProperty("lyrics", {}).isVoid(),
+         "native lyrics are portable content rather than mixer/settings versions");
+  expect(SongLibraryStore::registerProjectSong(reopened.song), "native lyrics register in Biblioteca");
+  const auto id = reopened.song.id;
+  const auto findSong = [&](const juce::String &songId) {
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto found = std::find_if(songs.begin(), songs.end(), [&](const auto &song) { return song.id == songId; });
+    expect(found != songs.end(), "native lyric song remains registered");
+    return *found;
+  };
+  auto registered = findSong(id);
+  expect(canonical(registered.lyrics) == originalLyrics, "library restart retains native lyric text and ranges");
+  bool changed = false;
+  auto oldSong = SongLibraryStore::songDataToVar(registered);
+  oldSong.getDynamicObject()->removeProperty("lyrics");
+  expect(!SongLibraryStore::songDataFromVar(oldSong, changed).lyrics, "historical songs need no lyrics migration");
+  auto cancelledDraft = *registered.lyrics;
+  expect(setSongLyricsText(cancelledDraft, "Not saved") && canonical(findSong(id).lyrics) == originalLyrics,
+         "editing or discarding a detached native draft never writes Biblioteca");
+
+  // Metadata changed after the editor opened: saving its draft must not replay
+  // the stale title/artist/BPM/key that were present when it was presented.
+  registered.title = "Updated while editor was open";
+  registered.artist = "Current artist"; registered.bpm = 132; registered.key = "D";
+  expect(SongLibraryStore::updateSongMetadata(registered, &error), "concurrent metadata edit establishes latest values");
+  CloudUploadRequest upload;
+  expect(CloudProjectArchive::buildUpload(archive, "native-lyrics-cloud", 0, upload, &error),
+         "cloud preparation includes native lyric content without network");
+  const auto firstManifest = upload.descriptor.settings.sha256, firstAudio = upload.descriptor.stems.front().sha256;
+  CloudDownloadResult downloaded;
+  downloaded.descriptor = upload.descriptor;
+  for (const auto &object : upload.objects) downloaded.objects.push_back({object.reference, object.file});
+  ImportedSongData cached, portable;
+  std::vector<float> bins;
+  expect(CloudProjectArchive::materializeCachedSong(downloaded, cached, bins, &error) &&
+             canonical(cached.lyrics) == originalLyrics && cached.projectPath.isEmpty(),
+         "Cloud materialization retains native lyric ranges without a second portable package");
+  expect(CloudProjectArchive::rebuildProject(downloaded,
+             fixtures.directory.getChildFile("native-lyrics-cloud.pwproj"), portable, &error) &&
+             canonical(portable.lyrics) == originalLyrics,
+         "Cloud reconstruction roundtrips the native lyric document");
+
+  expect(ProjectStore::open(archive, reopened, &error), "restore the source project's current cache marker after portable Cloud reconstruction");
+  const auto cachedStem = juce::File(reopened.song.stems.front().storedPath);
+  const auto cachedStemId = cachedStem.getFileIdentifier();
+  const auto originalMtime = archive.getLastModificationTime();
+  const auto originalFingerprint = CloudSyncJson::fingerprint(upload.descriptor);
+  const auto setlistId = SongLibraryStore::createSetlist("Native lyric concurrency");
+  expect(SongLibraryStore::addSongToSetlist(setlistId, id) && SongLibraryStore::setActiveSetlistId(setlistId),
+         "prepare active song settings for concurrent user edits");
+  auto concurrentSong = document.song;
+  concurrentSong.id = juce::Uuid().toString(); concurrentSong.projectId.clear(); concurrentSong.projectPath.clear();
+  expect(SongLibraryStore::appendSong(concurrentSong, &error), "prepare a separate legacy song for a concurrent metadata edit");
+  const auto concurrentId = concurrentSong.id;
+  auto edited = lyrics;
+  expect(replaceSongLyricsText(edited, 0, 0, "Hoy "), "edit detached native lyric draft");
+  juce::String addedList;
+  bool interleaved = false;
+  bool stageWasOffMessageThread = false;
+  ProjectSongSettings expectedSettings;
+  juce::String sidecarAfterUserEdit;
+  const auto sidecar = ProjectStore::getCacheDirectory(document.song.id).getChildFile("song-settings.json");
+  expect(runLyricsWorker([&] {
+    return SongLibraryStore::updateSongLyrics(id, edited, &error,
+      [&](double progress, const juce::String &) {
+        if (progress != 0.85 || interleaved) return;
+        stageWasOffMessageThread = !juce::MessageManager::getInstance()->isThisTheMessageThread();
+        const auto applied = juce::MessageManager::callSync([&] {
+          auto latest = findSong(concurrentId);
+          latest.title = "Concurrent latest title";
+          if (!SongLibraryStore::updateSongMetadata(latest, &error) ||
+              !SongLibraryStore::updateStemVolumeForActiveSetlist(id, stem.stemId, 0.19f)) return false;
+          addedList = SongLibraryStore::createSetlist("Created while lyric ZIP was copying");
+          sidecarAfterUserEdit = sidecar.loadFileAsString();
+          return ProjectStore::getCachedSettings(archive, expectedSettings) && addedList.isNotEmpty();
+        });
+        interleaved = applied.value_or(false);
+      });
+  }), "native save commits a worker-prepared content-only transaction");
+  expect(interleaved && stageWasOffMessageThread, "test genuinely changes metadata, setlists and mixer after worker preparation");
+  registered = findSong(id);
+  expect(canonical(registered.lyrics) == canonical(std::optional<SongLyricsDocument>(edited)),
+         "native save survives library reload");
+  expect(registered.title == "Updated while editor was open" && registered.artist == "Current artist" &&
+             registered.bpm == 132 && registered.key == "D", "native save preserves the latest unrelated song metadata");
+  const auto concurrentLibrary = SongLibraryStore::loadLibrarySnapshot();
+  expect(findSong(concurrentId).title == "Concurrent latest title" &&
+             std::any_of(concurrentLibrary.setlists.begin(), concurrentLibrary.setlists.end(),
+                         [&](const auto &list) { return list.id == addedList; }),
+         "fresh final library commit retains changes made after ZIP preparation");
+  expect(sidecar.loadFileAsString() == sidecarAfterUserEdit && archive.getLastModificationTime() == originalMtime,
+         "content-only save preserves exact sidecar bytes and its precedence over embedded settings");
+  expect(ProjectStore::open(archive, reopened, &error) &&
+             canonical(reopened.song.lyrics) == canonical(registered.lyrics), "native save survives project reopening");
+  expect(ProjectStore::settingsJsonEqual(reopened.settings, expectedSettings) &&
+             reopened.settings.mix.stems.front().volume == 0.19f,
+         "native lyric save preserves mixer edits made during ZIP preparation and every window value");
+  expect(cachedStem.getFileIdentifier() == cachedStemId,
+         "reopening a lyric-only update does not re-extract or replace the active audio cache");
+  CloudUploadRequest changedUpload;
+  expect(CloudProjectArchive::buildUpload(archive, "native-lyrics-cloud", 1, changedUpload, &error) &&
+             changedUpload.descriptor.settings.sha256 != firstManifest && changedUpload.descriptor.stems.front().sha256 == firstAudio &&
+             CloudSyncJson::fingerprint(changedUpload.descriptor) != originalFingerprint,
+         "unchanged project timestamp still produces a different real Cloud fingerprint and unchanged audio blob");
+
+  // An atomic replacement can have exactly the same content, size and mtime.
+  // The final short commit must also reject its different file identity.
+  PreparedProjectLyricsUpdate stalePrepared;
+  expect(runLyricsWorker([&] { return ProjectStore::prepareLyricsUpdate(archive, lyrics, stalePrepared, &error); }),
+         "prepare a source-version conflict fixture off the message thread");
+  const auto equalReplacement = archive.getSiblingFile("native-lyrics-equal-replacement.pwproj");
+  expect(archive.copyFileTo(equalReplacement) && equalReplacement.setLastModificationTime(archive.getLastModificationTime()) &&
+             equalReplacement.replaceFileIn(archive) && archive.getSize() == stalePrepared.baseSize &&
+             archive.getLastModificationTime().toMilliseconds() == stalePrepared.baseModifiedMs &&
+             juce::SHA256(archive).toHexString() == stalePrepared.baseSha256 &&
+             !ProjectStore::lyricsUpdateSourceUnchanged(stalePrepared, false, &error),
+         "inode comparison rejects a concurrent replacement even with identical size, timestamp and hash");
+  stalePrepared.stagedFile.deleteFile();
+
+  auto conflictLyrics = edited;
+  expect(replaceSongLyricsText(conflictLyrics, 0, 0, "Conflict "), "prepare a second lyric draft");
+  bool projectChangedDuringPreparation = false;
+  expect(!runLyricsWorker([&] {
+    return SongLibraryStore::updateSongLyrics(id, conflictLyrics, &error,
+      [&](double progress, const juce::String &) {
+        if (progress != 0.85 || projectChangedDuringPreparation) return;
+        const auto changed = juce::MessageManager::callSync([&] {
+          auto latest = findSong(id);
+          latest.title = "Concurrent project edit wins";
+          return SongLibraryStore::updateSongMetadata(latest, &error);
+        });
+        projectChangedDuringPreparation = changed.value_or(false);
+      });
+  }) && projectChangedDuringPreparation && findSong(id).title == "Concurrent project edit wins" &&
+      canonical(findSong(id).lyrics) == canonical(std::optional<SongLyricsDocument>(edited)),
+      "concurrent project content changes reject stale lyric staging without losing either current metadata or stored lyrics");
+
+  auto invalid = edited;
+  invalid.sections.front().start = 1000000;
+  juce::MemoryBlock packageBefore, libraryBefore, packageAfter, libraryAfter;
+  expect(archive.loadFileAsData(packageBefore) && fixtures.libraryFile.loadFileAsData(libraryBefore) &&
+             !runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(id, invalid, &error); }) && error.isNotEmpty() &&
+             archive.loadFileAsData(packageAfter) && fixtures.libraryFile.loadFileAsData(libraryAfter) &&
+             packageBefore == packageAfter && libraryBefore == libraryAfter,
+         "invalid native draft cannot change project or library bytes");
+  auto invalidProject = reopened;
+  invalidProject.song.lyrics = invalid;
+  expect(!ProjectStore::save(invalidProject, archive, &error) && error.isNotEmpty(),
+         "portable save rejects invalid native ranges");
+  // File::loadFileAsData appends to MemoryBlock; use a fresh destination.
+  juce::MemoryBlock invalidPortableSaveAfter;
+  expect(archive.loadFileAsData(invalidPortableSaveAfter) && packageBefore == invalidPortableSaveAfter,
+         "invalid portable save leaves the original project byte-for-byte unchanged");
+  expect(runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(id, std::nullopt, &error); }) && !findSong(id).lyrics &&
+             ProjectStore::open(archive, reopened, &error) && !reopened.song.lyrics,
+         "explicitly clearing lyrics persists across project and library reopen");
+  CloudProjectArchive::cleanupUploadStaging(upload.stagingDirectory);
+  CloudProjectArchive::cleanupUploadStaging(changedUpload.stagingDirectory);
+
+  auto legacy = document.song;
+  legacy.id = juce::Uuid().toString(); legacy.projectId.clear(); legacy.projectPath.clear();
+  expect(SongLibraryStore::appendSong(legacy, &error), "legacy song imports with native lyrics");
+  legacy = findSong(legacy.id);
+  legacy.title = "Latest legacy title";
+  expect(SongLibraryStore::updateSongMetadata(legacy, &error) &&
+             runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(legacy.id, edited, &error); }) &&
+             canonical(findSong(legacy.id).lyrics) == canonical(std::optional<SongLyricsDocument>(edited)) &&
+             findSong(legacy.id).title == "Latest legacy title", "dedicated native save also preserves current legacy metadata");
+}
+
 void testBlankSongPersistence(const Fixtures &fixtures) {
   ImportedSongData song;
   song.id = juce::Uuid().toString(); song.title = "Blank fixture";
   song.blankSong = true; song.bpm = 120; song.key = "D"; song.timeSignature = "4/4";
   song.blankSongBars = 20; song.blankPadEnabled = true; song.blankClickEnabled = false;
+  song.lyrics = SongLyricsDocument{1, "Letra opcional sin pistas", {}};
   expect(estimateSongLengthSeconds(song) == 0.0, "historical bar counts never impose a duration on blank playback");
   for (const auto &meter : {"3/4", "6/8"}) {
     song.timeSignature = meter;
@@ -1174,6 +1405,7 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
            "blank project contains neither generated silent audio nor fabricated waveform");
   ProjectDocument reopened;
   expect(ProjectStore::open(archive, reopened, &error), "blank project reopens");
+  expect(hasSongLyrics(reopened.song.lyrics), "blank project retains optional native lyrics");
   expect(reopened.song.blankSong && reopened.song.stems.empty() && reopened.waveformBins.empty() &&
       reopened.song.blankSongBars == 20 && reopened.song.blankPadEnabled && !reopened.song.blankClickEnabled &&
       reopened.settings.blankPadEnabled == true && reopened.song.arrangement.parts[1].id == "blank-verse",
@@ -1221,6 +1453,7 @@ int main() {
     runRoundtripAndFailureChecks(fixtures);
     testAutomaticLegacyStemStorage(fixtures);
     testColdProjectExtractionProgress(fixtures);
+    testNativeLyricsPersistence(fixtures);
     testBlankSongPersistence(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
