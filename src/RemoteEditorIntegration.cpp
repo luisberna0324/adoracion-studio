@@ -47,6 +47,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
   using Mode = playworship::remote::RemoteSession::Mode;
   const auto previousMode = remoteSession.getMode();
   if (mode == previousMode) return;
+  closeSectionDetection();
   learningRemoteAction.disconnected();
   if (songLoadBusy || projectSaveBusy || mixExportBusy) { remoteConnectionStatus = L10n::tr("Espera a que termine la carga", "Wait for loading to finish"); refreshRemoteSettings(); return; }
   auto &p = static_cast<MTControlsAudioProcessor &>(processor);

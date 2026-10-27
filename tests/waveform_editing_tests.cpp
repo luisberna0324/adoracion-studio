@@ -3078,6 +3078,80 @@ void testPlaybackLimitsReuseCacheWithoutBakingShading() {
                            "a cache rebuilt during a trim never retains its shading or boundary guides");
 }
 
+void testDetectedSectionsReviewAndHistory() {
+  Fixture f;
+  SongArrangementSnapshot base;
+  base.parts = {original("manual-verse", 10.0, 20.0)};
+  base.parts.front().name = "Verso corregido";
+  base.parts.front().muteInstruments = true;
+  base.parts.front().automation.pads.volume = 0.25f;
+  SongArrangementCueSnapshot cue;
+  cue.id = "independent-count";
+  cue.name = "1";
+  cue.positionSec = 2.0;
+  base.cues.push_back(cue);
+  f.waveform.setArrangement(base, true);
+  base = f.waveform.getArrangementSnapshot();
+  const auto unmodified = f.waveform.createComponentSnapshot(
+      f.waveform.getLocalBounds());
+  auto proposed = original("suggested-intro", 0.0, 10.0);
+  proposed.name = "Sección sugerida 1";
+  f.waveform.setSectionDetectionPreview({proposed});
+  expect(f.commits == 0 && f.waveform.getArrangementSnapshot().parts.size() == 1,
+         "provisional timeline blocks never commit or enter the arrangement");
+  const auto preview = f.waveform.createComponentSnapshot(
+      f.waveform.getLocalBounds());
+  bool changed = false;
+  for (int y = 0; y < preview.getHeight() && !changed; ++y)
+    for (int x = 0; x < preview.getWidth() && !changed; ++x)
+      changed = preview.getPixelAt(x, y) != unmodified.getPixelAt(x, y);
+  expect(changed, "review proposals render over the actual waveform");
+  f.waveform.clearSectionDetectionPreview();
+  expectSamePlaybackPixels(unmodified, f.waveform.createComponentSnapshot(
+                              f.waveform.getLocalBounds()),
+                           "discarding proposals restores the original timeline");
+  expect(f.commits == 0, "discard never calls the persistence callback");
+
+  auto merged = base;
+  merged.parts.push_back(proposed);
+  merged.parts.push_back(original("suggested-outro", 20.0, 30.0));
+  auto invalid = merged;
+  invalid.parts.front().name = "Replaced by analysis";
+  expect(!f.waveform.applyDetectedSections(invalid) && f.commits == 0,
+         "confirmation cannot rename a manually corrected section");
+  invalid = merged;
+  invalid.parts.back().startSec = 19.0;
+  expect(!f.waveform.applyDetectedSections(invalid) && f.commits == 0,
+         "an overlapping suggestion is rejected atomically");
+  expect(f.waveform.applyDetectedSections(merged) && f.commits == 1,
+         "confirmation uses the ordinary persistence callback exactly once");
+  const auto accepted = f.waveform.getArrangementSnapshot();
+  const auto manual = f.part("manual-verse");
+  expect(manual.name == "Verso corregido" && manual.muteInstruments &&
+             manual.automation == base.parts.front().automation &&
+             accepted.cues == base.cues,
+         "confirmation preserves manual name, automation, actions and cue marks");
+  expect(!f.waveform.applyDetectedSections(accepted) && f.commits == 1,
+         "reapplying accepted proposals never duplicates sections");
+  expect(f.command('Z') && f.commits == 2 &&
+             f.waveform.getArrangementSnapshot().parts.size() == 1,
+         "one ordinary undo restores all pre-analysis sections");
+  expect(f.command('Y') && f.commits == 3 &&
+             f.waveform.getArrangementSnapshot().parts.size() == 3,
+         "ordinary redo restores the accepted detection in one operation");
+
+  Fixture empty;
+  empty.waveform.setArrangement({}, false);
+  expect(empty.waveform.getArrangementSnapshot().parts.empty(),
+         "an untouched song has no synthetic full-song annotation");
+  SongArrangementSnapshot initialDetection;
+  initialDetection.parts = {original("first-suggestion", 0.0, 30.0)};
+  expect(empty.waveform.applyDetectedSections(initialDetection),
+         "a song with no manual sections accepts its first detection");
+  expect(empty.command('Z') && empty.waveform.getArrangementSnapshot().parts.empty(),
+         "undo of the first detection restores the original empty arrangement");
+}
+
 void testCueVisualPreview() {
   const auto path = juce::SystemStats::getEnvironmentVariable("PW_CUE_CAPTURE_DIR",{});
   if (path.isEmpty()) return;
@@ -3144,6 +3218,7 @@ int main() {
   run("cue counts follow regional tempo grid", testCueSequenceUsesRegionalPulseGrid);
   run("cue capacity rejects copy and paste atomically", testCueCapacityRejectsCopyWithoutChangingTimeline);
   run("cue component previews", testCueVisualPreview);
+  run("section detection preview, safe confirmation and undo", testDetectedSectionsReviewAndHistory);
   run("independent cue drag, history and deletion", testIndependentCueEditing);
   run("stacked cue double-click deletion and undo", testCueDoubleClickDeletesOnlyItsPoint);
   run("wave cues preserve rendered musical ruler", testCueOverlayPreservesMusicalRuler);

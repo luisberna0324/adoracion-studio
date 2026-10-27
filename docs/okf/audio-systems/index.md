@@ -32,3 +32,4 @@ perfil compacto táctil en tablets de alta densidad. Este ajuste vive en
 | [StemOutputRouter](StemOutputRouter.md) | Enrutador de stems a canales |
 | [SongMixExporter](SongMixExporter.md) | Render offline del mix actual a WAV |
 | [StemCache](StemCache.md) | Cache on-disk de stems decodificados a FLAC, con migración de directorios legacy |
+| [SectionDetection](SectionDetection.md) | Análisis offline y propuestas revisables de secciones, aisladas del reproductor |

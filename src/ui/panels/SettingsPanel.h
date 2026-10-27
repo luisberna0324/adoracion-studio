@@ -20,9 +20,6 @@ public:
   void changeListenerCallback(juce::ChangeBroadcaster* source) override;
   using ThemeChanged = std::function<void(ThemePreset)>;
   using LanguageChanged = std::function<void(AppLanguage)>;
-  using ExpandLaunchChanged = std::function<void(bool)>;
-  using PrimeImportChanged = std::function<void(bool)>;
-  using StemOptimizationChanged = std::function<void(bool)>;
   using PadsCrossfadeChanged = std::function<void(PadsCrossfadePreset)>;
   using MetronomeClickStyleChanged =
       std::function<void(MetronomeClickStyle)>;
@@ -51,10 +48,7 @@ public:
   };
 
   SettingsPanel(ThemePreset current, ThemeChanged cb, AppLanguage language,
-                LanguageChanged languageCb, bool expandWindowOnLaunch,
-                ExpandLaunchChanged expandCb, bool primeImportEnabled,
-                PrimeImportChanged primeImportCb, bool stemOptimizationEnabled,
-                StemOptimizationChanged stemOptimizationCb,
+                LanguageChanged languageCb,
                 PadsCrossfadePreset padsCrossfadePreset,
                 PadsCrossfadeChanged padsCrossfadeCb,
                 MetronomeClickStyle metronomeClickStyle,
@@ -141,7 +135,7 @@ private:
   class RoutingRow;
   class SettingsCard;
   class SettingsRowSeparator;
-  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics, Learning, Teams };
+  enum class Destination { Home, Appearance, Playback, Audio, Routing, Remote, Account, Diagnostics, Learning, Teams };
   class SettingsHomePage;
   juce::Component *getLearningTargetComponent(playworship::learning::Anchor) const;
 
@@ -189,15 +183,6 @@ private:
   juce::Label languageLabel;
   juce::Label languageHelp;
   AdaptiveComboBox languageBox;
-  juce::Label expandLaunchLabel;
-  juce::Label expandLaunchHelp;
-  juce::ToggleButton expandLaunchToggle;
-  juce::Label primeImportLabel;
-  juce::Label primeImportHelp;
-  juce::ToggleButton primeImportToggle;
-  juce::Label stemOptimizationLabel;
-  juce::Label stemOptimizationHelp;
-  juce::ToggleButton stemOptimizationToggle;
   juce::Label padsCrossfadeLabel;
   juce::Label padsCrossfadeHelp;
   AdaptiveComboBox padsCrossfadeBox;
@@ -272,9 +257,6 @@ private:
   juce::Component routingContent;
   ThemeChanged onThemeChanged;
   LanguageChanged onLanguageChanged;
-  ExpandLaunchChanged onExpandLaunchChanged;
-  PrimeImportChanged onPrimeImportChanged;
-  StemOptimizationChanged onStemOptimizationChanged;
   PadsCrossfadeChanged onPadsCrossfadeChanged;
   MetronomeClickStyleChanged onMetronomeClickStyleChanged;
   CloseRequested onCloseRequested;

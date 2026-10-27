@@ -213,9 +213,11 @@ y no acreditan por sí mismas QA del binario de Mac App Store.
 
 La imagen iPad se capturó tras corregir el área segura: TopBar, waveform,
 mixer, pads y drawer se mantienen dentro de los límites seguros. El simulador
-se preparó con `Full Screen Apps` y estado 9:41. `UIRequiresFullScreen=true`
-solicita compatibilidad de tamaño; en iPadOS 26 con `Windowed Apps` no garantiza
-que la app abra automáticamente a pantalla completa. Ver el
+se preparó con `Full Screen Apps` y estado 9:41. Esa versión usaba
+`UIRequiresFullScreen=true` y compatibilidad de tamaño; la captura conserva su
+procedencia. El contrato actual usa `UIRequiresFullScreen=false` y las cuatro
+orientaciones de iPad para adaptar el layout a la escena real. Las imágenes
+anteriores no acreditan esa rotación ni el resize del nuevo binario. Ver el
 [contrato de distribución](../release/AppStore.md).
 
 ## Texto promocional — iOS y macOS

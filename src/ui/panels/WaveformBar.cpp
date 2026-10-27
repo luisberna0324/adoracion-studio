@@ -914,9 +914,12 @@ private:
 class WaveformActionsPopover final : public juce::Component {
 public:
   void addAction(juce::String label, const SvgIconName icon, const bool enabled,
-                 const bool dismissOnTrigger, std::function<void()> callback) {
+                 const bool dismissOnTrigger, std::function<void()> callback,
+                 const juce::String &detail = {}) {
     auto button = std::make_unique<WaveformActionButton>(
         std::move(label), icon, enabled, dismissOnTrigger, std::move(callback));
+    button->setTooltip(detail);
+    button->setDescription(detail);
     addAndMakeVisible(*button);
     actions.push_back(std::move(button));
   }
@@ -1136,6 +1139,28 @@ WaveformBar::WaveformBar() {
     const auto screenAnchor =
         moreButton.localAreaToGlobal(moreButton.getLocalBounds());
     auto panel = std::make_unique<WaveformActionsPopover>();
+    if (onSectionDetectionRequest) {
+      const bool linearSource = std::all_of(arrangement.parts.begin(), arrangement.parts.end(), [](const auto &part) {
+        return part.sourcePartId.isEmpty() &&
+            (!(part.sourceEndSec > part.sourceStartSec) ||
+             (std::abs(part.startSec-part.sourceStartSec)<0.000001 && std::abs(part.endSec-part.sourceEndSec)<0.000001));
+      });
+      const bool canDetect = sectionDetectionAvailable && linearSource && state.localAnalysisAvailable;
+      panel->addAction(
+          L10n::tr("Detectar secciones", "Detect sections") +
+              (canDetect ? juce::String{} :
+                   L10n::tr(" · no disponible", " · unavailable")),
+          SvgIconName::Music,
+          canDetect && sectionAutomationEditingPartId.isEmpty(),
+          true, [safeBar] {
+            if (safeBar && safeBar->sectionDetectionAvailable &&
+                safeBar->sectionAutomationEditingPartId.isEmpty() &&
+                safeBar->onSectionDetectionRequest)
+              safeBar->onSectionDetectionRequest();
+          }, !state.localAnalysisAvailable ? L10n::tr("Abre una canción con audio local para analizarla.", "Open a song with local audio to analyze it.") :
+             !linearSource ? L10n::tr("El arreglo contiene regiones movidas o copiadas. Detecta sobre la canción original.",
+                                      "The arrangement contains moved or copied regions. Analyze the original song.") : sectionDetectionUnavailableReason);
+    }
     int automationPartIndex = -1;
     const double automationPosition = positionProvider ? positionProvider() : 0.0;
     for (size_t i = 0; i < arrangement.parts.size(); ++i)
@@ -1464,6 +1489,7 @@ void WaveformBar::setArrangement(
   resetTouchWaveformNavigation();
   livePointerActive = false;
   arrangement = arrangementSnapshot;
+  sectionDetectionPreview.clear();
   migrateLegacyArrangementCues(arrangement);
   normalizeArrangementCues(arrangement);
   selectedCueId.clear();
@@ -1882,6 +1908,83 @@ void WaveformBar::setOnExportMixRequested(
   onExportMixRequested = std::move(cb);
 }
 
+void WaveformBar::setSectionDetectionAvailability(const bool available,
+                                                  juce::String reason) {
+  sectionDetectionAvailable = available;
+  sectionDetectionUnavailableReason = std::move(reason);
+}
+
+void WaveformBar::setOnSectionDetectionRequest(std::function<void()> cb) {
+  onSectionDetectionRequest = std::move(cb);
+}
+
+void WaveformBar::setSectionDetectionPreview(
+    std::vector<SongArrangementPartSnapshot> parts) {
+  sectionDetectionPreview = std::move(parts);
+  if (!sectionDetectionPreview.empty())
+    setLiveMode(false);
+  repaint();
+}
+
+void WaveformBar::clearSectionDetectionPreview() {
+  sectionDetectionPreview.clear();
+  repaint();
+}
+
+bool WaveformBar::applyDetectedSections(const SongArrangementSnapshot &snapshot) {
+  if (sectionAutomationEditingPartId.isNotEmpty() || songLoadingActive ||
+      snapshot.parts.size() <= arrangement.parts.size() ||
+      snapshot.parts.size() > static_cast<size_t>(
+          playworship::audio::SectionScheduler::maxSections) ||
+      snapshot.cues != arrangement.cues)
+    return false;
+  const auto samePart = [](const auto &a, const auto &b) {
+    return a.id == b.id && a.name == b.name && a.color == b.color &&
+           a.startSec == b.startSec && a.endSec == b.endSec &&
+           a.sourcePartId == b.sourcePartId &&
+           a.sourceStartSec == b.sourceStartSec &&
+           a.sourceEndSec == b.sourceEndSec && a.utilityCue == b.utilityCue &&
+           a.muteInstruments == b.muteInstruments &&
+           a.skipPlayback == b.skipPlayback && a.automation == b.automation;
+  };
+  for (const auto &part : arrangement.parts) {
+    const auto found = std::find_if(snapshot.parts.begin(), snapshot.parts.end(),
+        [&](const auto &candidate) { return candidate.id == part.id; });
+    if (found == snapshot.parts.end() || !samePart(*found, part))
+      return false;
+  }
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  for (size_t i = 0; i < snapshot.parts.size(); ++i) {
+    const auto &part = snapshot.parts[i];
+    if (part.id.isEmpty()) return false;
+    for (size_t j = 0; j < i; ++j)
+      if (snapshot.parts[j].id == part.id) return false;
+    if (std::any_of(arrangement.parts.begin(), arrangement.parts.end(),
+                    [&](const auto &existing) { return existing.id == part.id; }))
+      continue;
+    if (!std::isfinite(part.startSec) || !std::isfinite(part.endSec) ||
+        part.startSec < 0.0 || part.endSec > sourceLength ||
+        part.endSec - part.startSec < kMinPartDurationSec ||
+        part.name.trim().isEmpty() || part.sourcePartId.isNotEmpty() ||
+        part.utilityCue || part.muteInstruments || part.skipPlayback ||
+        part.automation.hasOverrides())
+      return false;
+    for (size_t j = 0; j < snapshot.parts.size(); ++j) {
+      if (i == j) continue;
+      const auto &other = snapshot.parts[j];
+      if (part.startSec < other.endSec && part.endSec > other.startSec)
+        return false;
+    }
+  }
+  pushArrangementUndoSnapshot();
+  arrangement = snapshot;
+  sectionDetectionPreview.clear();
+  customArrangement = true;
+  notifyArrangementChanged(true);
+  repaint();
+  return true;
+}
+
 void WaveformBar::setSongActionsStateProvider(
     std::function<WaveformSongActionsState()> provider) {
   songActionsStateProvider = std::move(provider);
@@ -2295,6 +2398,7 @@ void WaveformBar::paint(juce::Graphics &g) {
     drawTempoOverlay(g, mainWaveBodyBounds);
   else
     drawArrangementOverlay(g, mainWaveBodyBounds);
+  drawSectionDetectionPreview(g, mainWaveBodyBounds);
 
   // The arrangement overlay is painted after the waveform. Draw the playback
   // limit here so it remains visible over section cards and cannot be mistaken
@@ -7176,6 +7280,39 @@ void WaveformBar::drawSectionInsertionAnchor(
   g.setColour(UITheme::accentSoft.withAlpha(0.92f));
   g.drawDashedLine(juce::Line<float>(x, top, x, waveBounds.getBottom()),
                    dashLengths, 2, 1.35f);
+}
+
+void WaveformBar::drawSectionDetectionPreview(
+    juce::Graphics &g, const juce::Rectangle<float> &waveBounds) {
+  if (sectionDetectionPreview.empty() || waveBounds.getWidth() <= 2.0f)
+    return;
+  juce::Graphics::ScopedSaveState state(g);
+  g.reduceClipRegion(waveBounds.toNearestInt());
+  const float headerHeight = juce::jmin(28.0f, waveBounds.getHeight());
+  const float dashLengths[] = {5.0f, 3.0f};
+  for (const auto &part : sectionDetectionPreview) {
+    if (!std::isfinite(part.startSec) || !std::isfinite(part.endSec) ||
+        part.endSec <= part.startSec)
+      continue;
+    const float left = sourceSecondsToWindowX(waveBounds, part.startSec);
+    const float right = sourceSecondsToWindowX(waveBounds, part.endSec);
+    if (right < waveBounds.getX() || left > waveBounds.getRight()) continue;
+    const auto body = juce::Rectangle<float>::leftTopRightBottom(
+        left, waveBounds.getY(), right, waveBounds.getBottom());
+    g.setColour(UITheme::accentSoft.withAlpha(0.14f));
+    g.fillRect(body);
+    g.setColour(UITheme::accentSoft.withAlpha(0.90f));
+    for (const float x : {left, right})
+      g.drawDashedLine({x, body.getY(), x, body.getBottom()}, dashLengths, 2, 1.5f);
+    const auto header = body.withHeight(headerHeight).getIntersection(waveBounds);
+    g.setColour(UITheme::panelDark.withAlpha(0.88f));
+    g.fillRect(header.reduced(1.0f, 0.0f));
+    g.setColour(UITheme::accentSoft);
+    g.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
+    g.drawFittedText(L10n::tr("Sugerencia · ", "Suggested · ") + part.name,
+                     header.toNearestInt().reduced(5, 2),
+                     juce::Justification::centredLeft, 1);
+  }
 }
 
 void WaveformBar::drawArrangementOverlay(

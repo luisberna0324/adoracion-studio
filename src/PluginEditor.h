@@ -6,6 +6,7 @@
 #include "data/AppleLinkFlow.h"
 #include "data/CloudLibraryClient.h"
 #include "data/CloudSettingsClient.h"
+#include "data/ProjectStore.h"
 #include "data/SongData.h"
 #include "data/SongSyncService.h"
 #include "data/TeamsClient.h"
@@ -19,6 +20,7 @@
 #include "ui/learning/DemoLearningProgress.h"
 #include <JuceHeader.h>
 
+#include <optional>
 #include <unordered_set>
 
 class TopBar;
@@ -34,6 +36,7 @@ class SettingsPanel;
 class SettingsVersionsSheet;
 class AppModal;
 class PracticePanel;
+class SectionDetectionPanel;
 class LearningGuideOverlay;
 class SongLoadProgressOverlay;
 class TeamsPanel;
@@ -66,6 +69,8 @@ public:
                                          bool clearSnapshotFile);
 
 private:
+  void showSectionDetection();
+  void closeSectionDetection();
   void updateTeamsOnboarding();
   void processTeamsRevocations();
   juce::var teamsPendingRevocations;
@@ -189,6 +194,7 @@ private:
   WaveformBar *waveformBarPtr = nullptr;
   std::function<bool(const ImportedSongData &, int)> loadSongAction;
   std::function<void(const ImportedSongData &, int)> requestSongLoadAction;
+  std::optional<ProjectDocument> preparedProjectForNextSongLoad;
   std::function<void(int, bool)> loadSongByIndexAction;
   bool wasSongPlaying = false;
   juce::File pendingExternalProjectFile;
@@ -236,6 +242,7 @@ private:
   juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
   std::unique_ptr<juce::Component> settingsOverlay;
   std::unique_ptr<PracticePanel> practiceOverlay;
+  std::unique_ptr<SectionDetectionPanel> sectionDetectionPanel;
   playworship::remote::RemoteSession remoteSession;
   std::string remotePracticeOwner;
   std::string remoteSectionAutomationOwner;
@@ -327,6 +334,7 @@ private:
   juce::int64 missingAudioDeviceSinceMs = 0;
   juce::int64 nextAudioDeviceFallbackAttemptMs = 0;
   juce::String lastObservedAudioDeviceKey;
+  juce::BigInteger lastObservedActiveOutputChannels;
   juce::Rectangle<int> padsDrawerBackgroundBounds;
   juce::String trackedSongWindowSongId;
   double trackedSongWindowStartSec = 0.0;

@@ -26,6 +26,7 @@ private:
 };
 
 struct WaveformSongActionsState {
+  bool localAnalysisAvailable = true;
   bool cloudLinked = false;
   bool settingsPending = false;
   bool settingsActionBusy = false;
@@ -103,6 +104,15 @@ public:
   void setOnTempoMapChanged(TempoMapChangedCallback cb);
   void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
   void setOnExportMixRequested(std::function<void(juce::String)> cb);
+  void setSectionDetectionAvailability(bool available, juce::String reason = {});
+  void setOnSectionDetectionRequest(std::function<void()> cb);
+  // Transient review blocks never enter the player, persistence or edit history.
+  void setSectionDetectionPreview(std::vector<SongArrangementPartSnapshot> parts);
+  void clearSectionDetectionPreview();
+  SongArrangementSnapshot getArrangementSnapshot() const { return arrangement; }
+  // Confirms only additive, non-overlapping annotations, preserving every
+  // existing part/cue and entering the ordinary arrangement undo history once.
+  bool applyDetectedSections(const SongArrangementSnapshot &snapshot);
   void setSongActionsStateProvider(
       std::function<WaveformSongActionsState()> provider);
   void setOnCloudSettingsSyncRequested(std::function<void()> cb);
@@ -348,6 +358,10 @@ private:
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
   std::function<void(juce::String)> onExportMixRequested;
   std::function<WaveformSongActionsState()> songActionsStateProvider;
+  std::function<void()> onSectionDetectionRequest;
+  bool sectionDetectionAvailable = false;
+  juce::String sectionDetectionUnavailableReason;
+  std::vector<SongArrangementPartSnapshot> sectionDetectionPreview;
   std::function<void()> onCloudSettingsSyncRequested;
   std::function<void(juce::Rectangle<int>)>
       onCloudSettingsVersionsRequested;
@@ -650,6 +664,8 @@ private:
       float windowSpan) const;
   void drawArrangementOverlay(juce::Graphics &g,
                               const juce::Rectangle<float> &mainWaveBounds);
+  void drawSectionDetectionPreview(juce::Graphics &g,
+                                  const juce::Rectangle<float> &waveBounds);
   void drawTempoOverlay(juce::Graphics &g,
                         const juce::Rectangle<float> &mainWaveBounds);
   void drawMiniMap(juce::Graphics &g,

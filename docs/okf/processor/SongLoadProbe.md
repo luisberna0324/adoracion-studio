@@ -33,6 +33,7 @@ Las sub-etapas bracketeadas con `juce::Time::getHighResolutionTicks()` en el pat
 |---|---|---|
 | `loadSong.total` | `total` | Tiempo total del swap end-to-end (UI thread) |
 | `loadSong.project.open` | `project.open` | Apertura del .pwproj: lectura del manifest, validación de recursos, extracción de stems desde el ZIP al `project-cache/<id>/audio/` |
+| `loadSong.project.prepared` | `project.prepared` | Evento de activación de un proyecto importado y validado en background; reutiliza su documento y omite la segunda apertura del ZIP |
 | `loadSong.processor.loadSongStems` | `processor.loadSongStems` | Total del pipeline en el audio processor (suma de las sub-etapas siguientes) |
 | `loadSongStems.stem#N.cache.lookup` | `stem#N.cache.lookup` | Selección de source/cache para el stem N. `sourceFlac=1` implica bypass directo de `StemCache`; los callers legacy consultan hit/miss. |
 | `loadSongStems.stem#N.createReader` | `stem#N.createReader` | `playbackFormatManager.createReaderFor()` — apertura del archivo de reproducción (FLAC canónico; otros formatos sólo para callers legacy/no canónicos). |
@@ -45,6 +46,14 @@ Las sub-etapas bracketeadas con `juce::Time::getHighResolutionTicks()` en el pat
 | `loadSong.settings.restore` | `settings.restore` | Restauración de mix, click, guide y arrangement post-load. El pack global de guía se reutiliza si ya está cargado. |
 
 CSV: `song_load_<ts>.csv`, una fila por sub-stage. Columnas: `wall_ms, phase, sub_phase, duration_us, rss_kb, extra`. `extra` carga metadata variante (hit/miss, ext, size, etc).
+
+La importación explícita desde disco realiza copia/validación/extracción antes
+de `loadSong`, en un worker con progreso por bytes. Esa parte no pertenece al
+bracket UI de swap. La activación publica `project.prepared` y conserva el
+bracket de preparación del procesador y restauración de ajustes. No comparar
+ese swap caliente con el costo total de una importación fría. El callback de
+progreso de `ProjectStore::open` se serializa en su hilo llamador, incluso
+cuando los stems se extraen en paralelo; no es un callback del audio thread.
 
 ### 2. StemCache hit/miss (one-shot events)
 

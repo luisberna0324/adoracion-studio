@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-10-11T00:00:00-03:00
+timestamp: 2026-10-12T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -18,7 +18,28 @@ En iPhone, el plist admite
 tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
 y JUCE usa `Activity.setRequestedOrientation` para cambiarla durante la sesion.
 El manifest maneja `orientation|screenSize` mediante `configChanges`, sin
-recrear la actividad al girar. Las tablets conservan la vista horizontal.
+recrear la actividad al girar. Las tablets Android conservan la vista horizontal.
+
+En iPad, el plist y el runtime admiten ambas orientaciones verticales y ambas
+horizontales desde antes de crear la ventana. La familia nativa conserva el
+perfil tablet al girar: una ventana alta no activa el perfil de teléfono ni
+sus restricciones de edición o de presentación. UIKit determina la orientación
+y el tamaño efectivo de la escena; el editor distribuye sus controles dentro
+de esa geometría y del área segura vigente, sin imponer la proporción horizontal
+anterior. `UIRequiresFullScreen=false` permite que iPadOS cambie el tamaño de
+la escena además de rotarla. El layout responde a la superficie que UIKit
+entrega, también cuando la ventana no ocupa toda la pantalla. Esto requiere
+validar el resize y la orientación reales; no acredita por sí solo todos los
+flujos de multitarea de Split View o Stage Manager.
+
+En iPad se conserva la distribución habitual de tablet/escritorio en ambas
+orientaciones. `resized()` recibe el tamaño efectivo de la escena y aplica
+las reglas existentes de TopBar, setlist, mixer y Pads. No se introduce una
+cabecera de varias filas, un tirador distinto ni se oculta automáticamente
+el setlist al girar. Su columna, el drawer y el estado de los paneles siguen
+las mismas condiciones que antes de habilitar portrait. Girar o redimensionar
+no carga otra canción ni cambia transporte, mezcla, ruteo o el estado musical
+de las secciones.
 La ventana Android entra en fullscreen despues de asignar contenido y limites
 iniciales: cambiar sus limites despues desactiva el fullscreen del peer nativo.
 El contenido no redimensiona la ventana. Al cambiar el display se reafirma
@@ -342,7 +363,8 @@ la pausa; Detener o una nueva orden de transporte tienen prioridad.
 En iOS, el cambio de orientaciones permitidas se difiere fuera de `resized()`
 y agrupa solicitudes usando el estado más reciente del acceso y los paneles. La ventana
 standalone sincroniza su geometria con `UIWindowScene.coordinateSpace` al
-terminar la transicion nativa y al volver del background. Propaga el tamano al
+terminar la transicion nativa y al volver del background. UIKit es la autoridad
+del tamaño y la orientación de la escena, también en iPad vertical. Propaga el tamano al
 contenedor y al editor aun si los limites de la ventana no cambiaron. Una vez
 adjunto, el editor obtiene su tamano del host y no del cache de displays: este
 puede conservar temporalmente las dimensiones de la orientacion anterior.
@@ -350,8 +372,9 @@ La mascara de orientaciones puede fijarse antes de crear `UIWindowScene`.
 Por eso, en iOS 16+ tambien se compara la orientacion efectiva de la escena
 con la mascara del controlador y se solicita `requestGeometryUpdate` si no
 coinciden, aunque la mascara de JUCE no haya cambiado. Se agrupan solicitudes
-iguales hasta completar la transicion. Esto evita arrancar con la escena en
-portrait y el contenido de performance recortado a un cuadrado.
+iguales hasta completar la transicion. En iPhone evita arrancar con la escena en
+portrait y el contenido de performance recortado a un cuadrado; en iPad conserva
+la orientación válida que el sistema ya eligió, en lugar de forzar landscape.
 
 ## Deteccion
 
@@ -556,7 +579,7 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   mientras el encabezado y contenido respetan los insets seguros y del teclado.
   En tablet permanece como panel centrado.
 - La portada móvil agrupa filas de 72 pt con icono, título, descripción y flecha:
-  Personalización (Apariencia e idioma, Reproducción, Biblioteca), Audio y
+  Personalización (Apariencia e idioma, Reproducción), Audio y
   conexiones (Ruteo de salidas, Control remoto), Cuenta y
   soporte (Mi cuenta, Diagnóstico). Cada fila navega a los controles existentes;
   volver recupera el desplazamiento de la portada. Un drag sobre una fila no
@@ -569,8 +592,9 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   Local compacta la tarjeta al estado; Cliente y Servidor muestran el campo
   correspondiente. Las actualizaciones de conexión no muestran esos controles
   en otras páginas.
-  Mi cuenta apila cuotas y acciones en anchos estrechos. La preferencia de
-  expansión de ventana se mantiene en escritorio, donde tiene efecto.
+  Mi cuenta apila cuotas y acciones en anchos estrechos. En escritorio, la app
+  inicia en una ventana normal que ocupa el área de trabajo disponible; no usa
+  pantalla completa ni ofrece una preferencia para cambiar este inicio.
 - En los detalles de Configuración, Volver y Cerrar usan los mismos botones
   circulares del encabezado de Biblioteca y setlists, con objetivos táctiles
   de al menos 44 pt/dp. El contenido comienza inmediatamente bajo el encabezado.
@@ -578,14 +602,16 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   15 pt medium y ayudas de 13.5 pt regular en color secundario. Cada ayuda queda
   dentro de su tarjeta, entre 4 y 6 pt bajo el control correspondiente, con
   12 pt antes de la siguiente opción. En escritorio las etiquetas y ayudas usan
-  14 y 12.5 pt respectivamente. Apariencia, Reproducción, Biblioteca y Control
-  remoto explican cada selector o interruptor junto a él. Ruteo explica
+  14 y 12.5 pt respectivamente. Apariencia, Reproducción y Control remoto
+  explican cada selector junto a él. Ruteo explica
   el dispositivo y la asignación de canales. Mi cuenta explica las acciones,
   incluida la purga que vacía la
   Biblioteca local sin borrar proyectos `.pwproj` ni contenido en la nube.
-  Diagnóstico conserva sus notas sobre el informe y su privacidad. La opción de
-  importar la biblioteca de Prime indica que solo funciona en macOS y queda
-  deshabilitada en otras plataformas.
+  Diagnóstico conserva sus notas sobre el informe y su privacidad. No se ofrecen
+  opciones de importación de Prime ni de optimización de stems. La importación
+  de archivos compatibles optimiza el almacenamiento automáticamente cuando
+  puede hacerlo y conserva los originales si la conversión no está disponible.
+  Al retirar ambas opciones, se elimina la página de Biblioteca de Configuración.
 - El escritorio ancho conserva sus pestañas. Las ventanas de menos de 760 px
   también usan la portada agrupada para evitar pestañas comprimidas.
 - Configuración usa desplazamiento vertical con rueda/trackpad y también admite
@@ -597,8 +623,14 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   de que la ventana mida menos de 820 px. El ancho descuenta la barra vertical.
   En iOS y Android, teléfono y tablet muestran al inicio un selector de salida
   conectado al `AudioDeviceManager`; al cambiar de dispositivo se actualizan los
-  canales disponibles y las asignaciones guardadas para ese dispositivo. La
-  página separada Dispositivo de audio se omite en estas plataformas. En
+  canales disponibles y las asignaciones guardadas para ese dispositivo. El
+  número de salidas disponibles se toma de los canales activos, no del total
+  físico que anuncia el driver. Cambiar la selección de salidas dentro del mismo
+  dispositivo también reaplica el ruteo. La tabla del dispositivo se aplica
+  después de restaurar la mezcla de cada canción: Click y Cues gobiernan sus
+  stems reconocidos por categoría/nombre y también Click Dyn y Guía Dyn cuando
+  no hay stems equivalentes, sin restaurar posteriormente rutas antiguas del
+  proyecto sobre esa tabla. La página separada Dispositivo de audio se omite en estas plataformas. En
   escritorio se conserva la página técnica actual.
   Con menos de 520 px utiles por fila, la categoria queda encima de los dos
   selectores, que conservan 48 px de alto. En filas anchas los controles tienen
@@ -652,8 +684,9 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
 - Las tablets compactas conservan las funciones de tablet, pero el `TopBar`
   usa controles de `44 pt/dp` y presenta el tiempo actual/total en dos lineas,
   como telefono. El segmento numerico de BPM y el toggle de click permanecen
-  siempre visibles; el espacio se recupera reduciendo el contador y la tarjeta
-  central de la cancion.
+  siempre visibles. En iPad se conserva esta misma cabecera de una fila al
+  girar; el ancho disponible determina la visibilidad mediante las reglas
+  responsive existentes. Las acciones adicionales permanecen disponibles en Más.
 - En Android, los limites del panel incorporan el safe area. En iPhone, el
   fondo del mixer y la banda del titulo se extienden por el safe area inferior
   para evitar una franja vacia. En ambos casos la banda queda fija al borde
@@ -670,13 +703,27 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
 
 ## Verificacion
 
-Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
+Probar ambas direcciones landscape en iPhone y las cuatro orientaciones en iPad,
+incluida una rotación durante reproducción y el regreso desde background.
+Comprobar también un cambio de tamaño de ventana, el drawer, Pads y que los
+últimos controles del mixer sigan accesibles. Como mínimo, revisar estos tamaños
+con sus insets vigentes:
 
 - `667 x 375` (telefono pequeno)
 - `844 x 390` (telefono regular)
 - `874 x 402` (iPhone Pro actual)
 - `912 x 420` y `956 x 440` (telefonos grandes)
+- iPad mini: ventanas `744 x 1133` y `1133 x 744`
+- iPad de 9.ª generación: ventanas `810 x 1080` y `1080 x 810`
+- iPad con ventana redimensionada: comprobar los límites reales de la escena
+  y las reglas responsive existentes, sin activar una distribución especial
+  por orientación
 - Android compacto, medio y tablet con cutout/navigation insets activos
+
+En iPad, verificar que la cabecera conserva una fila, que el setlist mantiene
+su estado y que mixer y Pads se ajustan al rectángulo disponible usando su
+distribución habitual. Las comprobaciones de layout no sustituyen la revisión
+de orientación, tamaño de escena, área segura, drawer y Pads en el dispositivo.
 
 ## Rendimiento en Android
 

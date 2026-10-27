@@ -57,11 +57,8 @@ rechaza `MTCONTROLS_BUNDLE_FFMPEG=ON`, y el gestor de assets no devuelve un
 encoder ni intenta descargarlo aunque encuentre una copia de una version
 anterior. Ver [SongMixExporter](../audio-systems/SongMixExporter.md).
 
-La importacion directa de la biblioteca de Prime esta deshabilitada en esta
-variante porque depende del contenedor de otra app y de un proceso SQLite.
-Configuracion indica usar el selector de audio de Biblioteca. No se cambia
-esa integracion en el escritorio habitual. Ver
-[Prime Local Library Import](../importing/PrimeLocalLibraryImport.md).
+La creacion de canciones usa el selector de audio de Biblioteca en todas las
+variantes. No se consulta el almacenamiento privado de otras aplicaciones.
 
 ## Configuracion y verificacion
 

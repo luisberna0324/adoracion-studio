@@ -37,6 +37,7 @@
 #include "ui/panels/PadsComponent.h"
 #include "ui/panels/PracticeAccompaniment.h"
 #include "ui/panels/PracticePanel.h"
+#include "ui/panels/SectionDetectionPanel.h"
 #include "ui/panels/SettingsPanel.h"
 #include "ui/components/AccountDeletionModal.h"
 #include "data/AccountDeletionApi.h"
@@ -1303,8 +1304,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           currentDevice != nullptr) {
         auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
         processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
-            juce::jmax(1, currentDevice->getOutputChannelNames().size()));
+            juce::jmax(1, currentDevice->getActiveOutputChannels().countNumberOfSetBits()));
+        lastObservedActiveOutputChannels = currentDevice->getActiveOutputChannels();
       } else {
+        lastObservedActiveOutputChannels.clear();
         missingAudioDeviceSinceMs = nowMs;
       }
     }
@@ -1333,33 +1336,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
 #endif
 
-    const auto userArea =
-        juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
 #if JUCE_IOS || JUCE_ANDROID
     fitMobileEditorToHost();
 #else
-#if MTCONTROLS_NATIVE_APP && !JUCE_ANDROID
     juce::MessageManager::callAsync(
         [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
           if (safe != nullptr)
             expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
         });
-#else
-    const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
-    const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
-    const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
-    const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
-    if (AppSettings::getExpandWindowOnLaunch()) {
-      juce::MessageManager::callAsync(
-          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
-               this)] {
-            if (safe != nullptr)
-              expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
-        });
-    } else {
-      setSize(w, h);
-    }
-#endif
 #endif
 
     applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
@@ -1526,6 +1510,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     resized();
     repaint();
   });
+  {
+    const playworship::analysis::SectionDetectionService detection;
+    waveformBarRaw->setSectionDetectionAvailability(detection.available(), detection.unavailableReason());
+    waveformBarRaw->setOnSectionDetectionRequest([this] { showSectionDetection(); });
+  }
   waveformBarRaw->setOnWaveformHeightToggle([this](bool expanded) {
     isWaveformHeightExpanded = expanded;
     resized();
@@ -1582,6 +1571,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [this](const juce::String &format) { beginExportCurrentSongMix(format); });
   waveformBarRaw->setSongActionsStateProvider([this] {
     WaveformSongActionsState state;
+    state.localAnalysisAvailable = hasCurrentLoadedSong && !playbackSession.isRemote();
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
       return state;
     CloudProjectLink link;
@@ -1701,7 +1691,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
             currentDevice != nullptr) {
           processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
-              juce::jmax(1, currentDevice->getOutputChannelNames().size()));
+              juce::jmax(1, currentDevice->getActiveOutputChannels().countNumberOfSetBits()));
+          editor->lastObservedAudioDeviceKey = getCurrentDeviceKey(audioCtx);
+          editor->lastObservedActiveOutputChannels = currentDevice->getActiveOutputChannels();
         }
 
         processorRef.refreshPadsRoutingFromSettings();
@@ -2076,6 +2068,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (playbackSession.isRemote()) { playbackSession.send("song.load", {}, song.id); return true; }
     if (songLoadBusy)
       return false;
+    if (songListPanelRaw != nullptr &&
+        songListPanelRaw->isProjectImportInProgress() &&
+        !preparedProjectForNextSongLoad)
+      return false;
+    // Keep the prepared result local before the progress redraw can dispatch
+    // another activation. Its validated resources must not be opened twice.
+    auto preparedProject = std::move(preparedProjectForNextSongLoad);
+    preparedProjectForNextSongLoad.reset();
     // Bug fix: the previous version returned false here for any
     // !isProjectBackedSong(song), which short-circuited the lambda
     // before applyRoutingDefaultsToSong ran. The audio thread kept
@@ -2152,7 +2152,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     const auto projectId = projectIdentityForSong(song);
     juce::File projectFile(isProjectSong ? song.projectPath : juce::String{});
     if (isProjectSong) {
-      if (projectFile.existsAsFile()) {
+      if (preparedProject && preparedProject->projectFile == projectFile &&
+          projectIdentityForSong(preparedProject->song) == projectId) {
+        sourceSong = std::move(preparedProject->song);
+        sourceSong.id = localLibrarySongId;
+        projectSettings = std::move(preparedProject->settings);
+        restoredProjectSettings = true;
+        SongLoadProbe::instance().recordEvent(
+            "loadSong", "project.prepared", "projectId=" + projectId);
+      } else if (projectFile.existsAsFile()) {
         ProjectDocument document;
         juce::String projectError;
         // SongLoadProbe: time the ZIP open + stem extraction from .pwproj.
@@ -2446,15 +2454,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         "isProject=" + juce::String(hasProjectSettings ? 1 : 0) +
             " songStems=" + juce::String(loadedSong.stems.size()));
 
-    // The gate used to skip this call for project songs, which left
-    // the per-stem outputWidth at the default (1 = mono) until the
-    // user opened the routing panel. Routing defaults now drive the
-    // width for both legacy and project songs; the project's per-stem
-    // mix (outputChannel) still owns the channel.
+    // Device routing is applied after song mix restoration so legacy/project
+    // snapshots cannot override Click/Cues mono or the selected output channel.
     applyRoutingDefaultsToSong(currentLoadedSong);
     p.refreshPadsRoutingFromSettings();
-    p.setMetronomeOutputRouting(clickDynMix.outputChannel,
-                                clickDynMix.outputWidth);
     p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
     trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
     juce::StringArray automationStemIds;
@@ -2564,6 +2567,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (cachedBins.empty() == false) {
       waveformBarRaw->setWaveformBins(std::move(cachedBins));
     }
+    closeSectionDetection();
     waveformBarRaw->setSongRhythm(static_cast<double>(loadedSong.bpm),
                                   loadedSong.timeSignature);
     waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
@@ -2596,7 +2600,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     const bool isSameLoadedSong =
         hasCurrentLoadedSong && requestedSongIdentity.isNotEmpty() &&
         requestedSongIdentity == loadedSongIdentity;
-    if (!isSameLoadedSong && loadSongAction)
+    // An explicit disk import has a freshly validated document even when the
+    // path/identity matches the loaded song. Consume it rather than retaining
+    // stale audio or settings; ordinary repeated navigation still stays a no-op.
+    if ((!isSameLoadedSong || preparedProjectForNextSongLoad) && loadSongAction)
       (void)loadSongAction(song, songIndex);
   };
 
@@ -2607,6 +2614,17 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         deferredStartupSongLoadAtMs = 0;
         if (requestSongLoadAction)
           requestSongLoadAction(song, songIndex);
+      });
+  songListRaw->setOnProjectActivated(
+      [this](ProjectDocument document, const int songIndex) {
+        deferredStartupSongLoadPending = false;
+        deferredStartupSongIndex = -1;
+        deferredStartupSongLoadAtMs = 0;
+        const auto song = document.song;
+        preparedProjectForNextSongLoad = std::move(document);
+        if (requestSongLoadAction)
+          requestSongLoadAction(song, songIndex);
+        preparedProjectForNextSongLoad.reset();
       });
   songListRaw->setOnSongEditStarted([this](const juce::String &songId) {
     if (isSongCurrentlyLoaded(songId))
@@ -3030,14 +3048,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
       });
 #elif !JUCE_IOS && !JUCE_ANDROID
-  if (AppSettings::getExpandWindowOnLaunch()) {
-    juce::MessageManager::callAsync(
-        [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
-             this)] {
-          if (safe != nullptr)
-            expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
-        });
-  }
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+        if (safe != nullptr)
+          expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+      });
 #endif
 
   setWantsKeyboardFocus(true);
@@ -3414,14 +3429,6 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
           songListPanelRaw->refreshLanguageTexts();
         repaint();
       },
-      AppSettings::getExpandWindowOnLaunch(),
-      [](const bool expandOnLaunch) {
-        AppSettings::setExpandWindowOnLaunch(expandOnLaunch);
-      },
-      AppSettings::getPrimeImportEnabled(),
-      [](const bool enabled) { AppSettings::setPrimeImportEnabled(enabled); },
-      AppSettings::getStemOptimizationEnabled(),
-      [](const bool enabled) { AppSettings::setStemOptimizationEnabled(enabled); },
       AppSettings::getPadsCrossfadePreset(),
       [this](const PadsCrossfadePreset preset) {
         AppSettings::setPadsCrossfadePreset(preset);
@@ -4176,6 +4183,51 @@ void MTControlsAudioProcessorEditor::closePractice() {
   resized();
 }
 
+void MTControlsAudioProcessorEditor::showSectionDetection() {
+  if (sectionDetectionPanel || !hasCurrentLoadedSong || playbackSession.isRemote() || !waveformBarPtr)
+    return;
+  const auto arrangement = waveformBarPtr->getArrangementSnapshot();
+  // Providers analyze original synchronized files. A reordered source map
+  // needs a separate projection; never apply source times to that arrangement.
+  for (const auto &part : arrangement.parts)
+    if (part.sourcePartId.isNotEmpty() ||
+        (part.sourceEndSec > part.sourceStartSec &&
+         (std::abs(part.startSec-part.sourceStartSec)>0.000001 || std::abs(part.endSec-part.sourceEndSec)>0.000001)))
+      return;
+  SectionDetectionPanel::Actions actions;
+  const auto id = currentLoadedSong.id;
+  auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  actions.preview = [safe,id](std::vector<SongArrangementPartSnapshot> preview) {
+    if(safe && safe->hasCurrentLoadedSong && safe->currentLoadedSong.id==id && safe->waveformBarPtr)
+      safe->waveformBarPtr->setSectionDetectionPreview(std::move(preview));
+  };
+  actions.listen = [safe,id](double time) {
+    if(safe && safe->hasCurrentLoadedSong && safe->currentLoadedSong.id==id) {
+      auto &p=static_cast<MTControlsAudioProcessor&>(safe->processor);
+      p.seekSongTo(time); p.playSong();
+    }
+  };
+  actions.accept = [safe,id](const auto &suggestions, double duration, juce::String &error) {
+    if(!safe || !safe->hasCurrentLoadedSong || safe->currentLoadedSong.id!=id || !safe->waveformBarPtr || safe->playbackSession.isRemote()) {
+      error=juce::String::fromUTF8("La canción cambió; vuelve a analizar la canción actual."); return false;
+    }
+    auto plan=playworship::analysis::appendConfirmedSuggestions(safe->waveformBarPtr->getArrangementSnapshot(), suggestions, duration);
+    if(plan.error.isNotEmpty()) { error=plan.error; return false; }
+    if(!safe->waveformBarPtr->applyDetectedSections(plan.arrangement)) { error=juce::String::fromUTF8("El arreglo cambió o hay un conflicto con secciones existentes."); return false; }
+    return true;
+  };
+  actions.close = [safe] { juce::MessageManager::callAsync([safe] { if(safe) safe->closeSectionDetection(); }); };
+  sectionDetectionPanel = std::make_unique<SectionDetectionPanel>(currentLoadedSong,std::move(actions));
+  addAndMakeVisible(*sectionDetectionPanel);
+  sectionDetectionPanel->setBounds(getLocalBounds().removeFromBottom(std::min(430,std::max(260,getHeight()-150))));
+  sectionDetectionPanel->toFront(true);
+}
+
+void MTControlsAudioProcessorEditor::closeSectionDetection() {
+  if(waveformBarPtr) waveformBarPtr->clearSectionDetectionPreview();
+  sectionDetectionPanel.reset();
+}
+
 bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
   if (settingsOverlay == nullptr || settingsPanelRaw == nullptr)
     return false;
@@ -4680,64 +4732,30 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
     const ImportedSongData &song) {
   if (playbackSession.isRemote()) return;
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
-  const int stemCount = processorRef.getLoadedStemCount();
-  const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
+  const auto audioCtx = getStandaloneAudioContext(processorRef);
   const auto deviceKey = getCurrentDeviceKey(audioCtx);
   const auto defaults = AppSettings::getRoutingDefaultsForDevice(deviceKey);
   const auto clickRouting = routingForCategory(defaults, "Click");
-
-  // ---- Routing probe: enter ------------------------------------------
-  // Records the device key, how many stems the processor has loaded
-  // and how many the song says are included, plus the click routing
-  // we are about to push. Discrepancies between the two counts would
-  // show up as a hidden off-by-one in the load pipeline.
+  const auto guideRouting = routingForCategory(defaults, "Cues");
   SongLoadProbe::instance().recordEvent(
       "routing", "apply.enter",
-      "deviceKey=" + deviceKey + " stemCount=" + juce::String(stemCount) +
+      "deviceKey=" + deviceKey +
+          " stemCount=" + juce::String(processorRef.getLoadedStemCount()) +
           " clickW=" + juce::String(clickRouting.width) +
-          " clickC=" + juce::String(clickRouting.baseChannel));
+          " clickC=" + juce::String(clickRouting.baseChannel) +
+          " guideW=" + juce::String(guideRouting.width) +
+          " guideC=" + juce::String(guideRouting.baseChannel));
 
-  processorRef.setMetronomeOutputRouting(clickRouting.baseChannel,
-                                         clickRouting.width);
+  processorRef.applySongOutputRoutingDefaults(song, defaults);
 
-  int stemIndex = 0;
-  for (const auto &stem : song.stems) {
-    if (!stem.include)
-      continue;
-    if (!juce::isPositiveAndBelow(stemIndex, stemCount))
-      break;
-
-    const auto routing = routingForCategory(defaults, stem.category);
-
-    // Snapshot the atomics BEFORE we mutate, so the row exposes both
-    // the previous and the requested state. The bug shows up as
-    // prevW=1 newW=1 on load (defaults never pushed) and prevW=1
-    // newW=2 after touching the routing panel.
-    const int prevW = processorRef.getStemOutputWidth(stemIndex);
-    const int prevC = processorRef.getStemOutputChannel(stemIndex);
-
-    processorRef.setStemOutputWidth(stemIndex, routing.width);
-    processorRef.setStemOutputChannel(stemIndex, routing.baseChannel);
-
-    SongLoadProbe::instance().recordEvent(
-        "routing", "apply.stem",
-        "idx=" + juce::String(stemIndex) + " cat=" + stem.category +
-            " prevW=" + juce::String(prevW) +
-            " newW=" + juce::String(routing.width) +
-            " prevC=" + juce::String(prevC) +
-            " newC=" + juce::String(routing.baseChannel));
-
-    ++stemIndex;
-  }
-
-  // ---- Routing probe: exit -------------------------------------------
   SongLoadProbe::instance().recordEvent(
-      "routing", "apply.exit", "stemsApplied=" + juce::String(stemIndex));
-
-  // refreshPadsRoutingFromSettings used to be called here. It is now
-  // the caller's responsibility so each call site reads the JSON
-  // exactly once per user action. The dedup is visible at the two
-  // call sites (loadSong and the routing panel onChanged).
+      "routing", "apply.exit",
+      "stemsApplied=" + juce::String(juce::jmin(
+          processorRef.getLoadedStemCount(),
+          static_cast<int>(std::count_if(song.stems.begin(), song.stems.end(),
+              [](const auto &stem) { return stem.include; })))));
+  // Pads remain the caller's responsibility, avoiding an extra settings read
+  // on each song load or routing-table change.
 }
 
 bool MTControlsAudioProcessorEditor::unloadActiveSongForLocalPurge() {
@@ -4964,7 +4982,8 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   updateTeamsOnboarding();
   updateLearningGuideTarget();
   if (pendingExternalProjectFile != juce::File{} && !songLoadBusy &&
-      songListPanelRaw != nullptr) {
+      songListPanelRaw != nullptr &&
+      !songListPanelRaw->isProjectImportInProgress()) {
     const auto projectFile = pendingExternalProjectFile;
     pendingExternalProjectFile = juce::File{};
 
@@ -4988,6 +5007,8 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   if (deferredStartupSongLoadPending && !songLoadBusy &&
+      (songListPanelRaw == nullptr ||
+       !songListPanelRaw->isProjectImportInProgress()) &&
       nowMs >= deferredStartupSongLoadAtMs) {
     const int index = deferredStartupSongIndex;
     deferredStartupSongLoadPending = false;
@@ -5013,23 +5034,29 @@ void MTControlsAudioProcessorEditor::timerCallback() {
       if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
           currentDevice != nullptr) {
         processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
-            juce::jmax(1, currentDevice->getOutputChannelNames().size()));
+            juce::jmax(1, currentDevice->getActiveOutputChannels().countNumberOfSetBits()));
         missingAudioDeviceSinceMs = 0;
         nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceMissingGraceMs;
 
+        const auto activeOutputs = currentDevice->getActiveOutputChannels();
+        const bool deviceChanged = currentDeviceKey != lastObservedAudioDeviceKey;
+        const bool activeOutputsChanged =
+            activeOutputs != lastObservedActiveOutputChannels;
         if (currentDeviceKey.isNotEmpty() &&
-            currentDeviceKey != lastObservedAudioDeviceKey) {
+            (deviceChanged || activeOutputsChanged)) {
           playworship::telemetry::capture(
               playworship::telemetry::Incident::audioDeviceChanged);
-          // Routing probe: device change. The polling loop re-applies
-          // routing whenever the device key changes; a row here
-          // explains why the same apply can run outside of song load.
+          // A changed active-channel mask can alter routing while keeping the
+          // same driver/device name, including a mono/stereo selection change.
           SongLoadProbe::instance().recordEvent(
               "routing", "device.change",
               "deviceKey=" + currentDeviceKey +
                   " prev=" + lastObservedAudioDeviceKey +
+                  " activeOutputs=" + activeOutputs.toString(16) +
+                  " previousActiveOutputs=" + lastObservedActiveOutputChannels.toString(16) +
                   " hasSong=" + juce::String(hasCurrentLoadedSong ? 1 : 0));
           lastObservedAudioDeviceKey = currentDeviceKey;
+          lastObservedActiveOutputChannels = activeOutputs;
           processorRef.refreshPadsRoutingFromSettings();
           if (hasCurrentLoadedSong)
             applyRoutingDefaultsToSong(currentLoadedSong);
@@ -5039,6 +5066,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
         }
       } else {
         lastObservedAudioDeviceKey.clear();
+        lastObservedActiveOutputChannels.clear();
         if (missingAudioDeviceSinceMs <= 0)
           missingAudioDeviceSinceMs = nowMs;
 
@@ -5366,6 +5394,9 @@ void MTControlsAudioProcessorEditor::resized() {
     settingsOverlay->setBounds(getLocalBounds());
   if (practiceOverlay != nullptr)
     practiceOverlay->setBounds(getLocalBounds());
+
+  if (sectionDetectionPanel != nullptr)
+    sectionDetectionPanel->setBounds(getLocalBounds().removeFromBottom(std::min(430,std::max(260,getHeight()-150))));
 
   int topBarH = kDefaultTopBarH;
   int waveformH = kDefaultWaveformH;

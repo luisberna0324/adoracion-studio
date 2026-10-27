@@ -308,6 +308,12 @@ el canal y el ancho configurados para ese stem (vía
 `getDynamicGuideOutputChannel` / `getDynamicGuideOutputWidth`). En ese caso
 los defaults de mono Out 1 no aplican y la guía sigue al stem.
 
+Al cargar una canción, la tabla de Ruteo del dispositivo se aplica después de
+restaurar el snapshot de la guía. Cues gobierna tanto el stem guía reconocido por
+nombre/categoría/archivo como el bus dinámico sin stem. Así una ruta estéreo
+guardada en otra canción o dispositivo no invalida el Mono seleccionado en
+Configuración. La herencia del stem continúa durante la reproducción.
+
 ## Estado compartido con arrange
 
 La lista de anuncios consumidos es almacenamiento fijo para

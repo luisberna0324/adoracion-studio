@@ -585,9 +585,27 @@ if(MTCONTROLS_BUILD_TESTS)
         juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     add_test(NAME demo_song COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsDemoSongTests>")
+    juce_add_console_app(MTControlsProjectImportTests PRODUCT_NAME "Project Import Tests")
+    target_sources(MTControlsProjectImportTests PRIVATE tests/project_import_tests.cpp
+        src/data/AppSettings.cpp src/data/SongLibraryStore.cpp
+        src/data/SessionPersistence.cpp src/data/SessionAuthLogger.cpp)
+    juce_generate_juce_header(MTControlsProjectImportTests)
+    target_include_directories(MTControlsProjectImportTests PRIVATE src)
+    target_compile_definitions(MTControlsProjectImportTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MTControlsProjectImportTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME project_import COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsProjectImportTests>")
+    set_tests_properties(project_import PROPERTIES TIMEOUT 45)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(project_import PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     if(MSVC)
         target_compile_options(MTControlsDemoLearningTests PRIVATE /utf-8)
         target_compile_options(MTControlsDemoSongTests PRIVATE /utf-8)
+        target_compile_options(MTControlsProjectImportTests PRIVATE /utf-8)
     endif()
     juce_add_console_app(MTControlsRemoteLearningTests PRODUCT_NAME "Remote Learning Tests")
     target_sources(MTControlsRemoteLearningTests PRIVATE tests/remote_learning_action_tests.cpp)
@@ -662,7 +680,7 @@ if(MTCONTROLS_BUILD_TESTS)
         target_sources(MTControlsMacAppStoreTests PRIVATE
             tests/mac_app_store_tests.cpp
             src/data/AssetBootstrapManager.cpp src/data/AppSettings.cpp
-            src/data/SongData.cpp src/data/PrimeLibrarySource.cpp
+            src/data/SongData.cpp
             src/data/MobileImportStaging.cpp src/data/PortableFlacConversion.cpp
             src/telemetry/Telemetry.cpp)
         target_include_directories(MTControlsMacAppStoreTests PRIVATE src)
@@ -958,6 +976,30 @@ if(MTCONTROLS_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsStandaloneAudioRuntimeTests>")
 
+    foreach(_section_test IN ITEMS Domain Service Panel)
+        if(_section_test STREQUAL "Domain")
+            set(_section_test_source tests/section_detection_tests.cpp)
+            set(_section_test_name section_detection)
+        elseif(_section_test STREQUAL "Service")
+            set(_section_test_source tests/section_detection_service_tests.cpp)
+            set(_section_test_name section_detection_service)
+        else()
+            set(_section_test_source tests/section_detection_panel_tests.cpp)
+            set(_section_test_name section_detection_panel)
+        endif()
+        juce_add_console_app(MTControlsSection${_section_test}Tests PRODUCT_NAME "Section Detection ${_section_test} Tests")
+        target_sources(MTControlsSection${_section_test}Tests PRIVATE ${_section_test_source})
+        target_include_directories(MTControlsSection${_section_test}Tests PRIVATE src)
+        target_compile_definitions(MTControlsSection${_section_test}Tests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+        if(MSVC)
+            target_compile_options(MTControlsSection${_section_test}Tests PRIVATE /utf-8)
+        endif()
+        target_link_libraries(MTControlsSection${_section_test}Tests PRIVATE
+            MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+        juce_generate_juce_header(MTControlsSection${_section_test}Tests)
+        add_test(NAME ${_section_test_name} COMMAND "$<TARGET_FILE:MTControlsSection${_section_test}Tests>")
+    endforeach()
+
     # Build only the regression executables in CI; this avoids packaging and
     # signing the standalone app while still building MTControls where needed.
     get_property(_mtcontrols_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
@@ -993,7 +1035,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # (SongListPanel::importProjectUrlToSandbox); external files are not edited
     # in place and the app does not implement UIDocumentBrowserViewController.
     set(MTCONTROLS_PLIST_TO_MERGE
-        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSSupportsOpeningDocumentsInPlace</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><true/></dict></plist>")
+        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSSupportsOpeningDocumentsInPlace</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><false/></dict></plist>")
 elseif(MTCONTROLS_MAC_APP_STORE)
     set(MTCONTROLS_PLIST_TO_MERGE
         "<plist><dict><key>CFBundleVersion</key><string>${MTCONTROLS_MAC_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string></dict></plist>")
@@ -1021,11 +1063,13 @@ juce_add_gui_app(MTControls_Standalone
     PLIST_TO_MERGE "${MTCONTROLS_PLIST_TO_MERGE}"
     DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
-    # Performance uses both landscape directions. iPhone also allows portrait
-    # for Library/setlist management; the editor switches the runtime mask.
+    # iPad follows its scene's actual size in every orientation. iPhone keeps
+    # its contextual portrait/landscape mask for authentication and panels.
     IPAD_SCREEN_ORIENTATIONS
         UIInterfaceOrientationLandscapeLeft
         UIInterfaceOrientationLandscapeRight
+        UIInterfaceOrientationPortrait
+        UIInterfaceOrientationPortraitUpsideDown
     IPHONE_SCREEN_ORIENTATIONS
         UIInterfaceOrientationLandscapeLeft
         UIInterfaceOrientationLandscapeRight
@@ -1254,8 +1298,6 @@ target_sources(MTControls
         src/data/SecuenciasClient.cpp
         src/data/SecuenciasClient.h
         src/data/Localization.h
-        src/data/PrimeLibrarySource.cpp
-        src/data/PrimeLibrarySource.h
         src/data/SongProjectCreation.cpp
         src/data/SongProjectCreation.h
         src/data/ProjectStore.cpp
@@ -1346,6 +1388,8 @@ target_sources(MTControls
         src/ui/components/AuthenticationStyle.h
 )
 
+include(cmake/SectionDetection.cmake)
+
 if(APPLE)
     target_sources(MTControls PRIVATE
         src/data/CloudSignedUpload.mm
@@ -1398,7 +1442,6 @@ target_compile_definitions(MTControls
         JUCE_MODAL_LOOPS_PERMITTED=1
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
-        JUCE_USE_MP3AUDIOFORMAT=1
         MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_RESOLVED_API_BASE_URL}\"
         MTCONTROLS_AUTH_BASE_URL=\"${MTCONTROLS_AUTH_BASE_URL}\"
         MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"
@@ -1411,6 +1454,8 @@ target_compile_definitions(MTControls
         MTCONTROLS_SENTRY_ENVIRONMENT="${MTCONTROLS_SENTRY_ENVIRONMENT}"
         MTCONTROLS_SENTRY_RELEASE="playworship-app@${MTCONTROLS_APP_VERSION}+${MTCONTROLS_IOS_BUILD_NUMBER}.${MTCONTROLS_GIT_COMMIT}"
     PUBLIC
+        # JUCE modules must share codec configuration with their consumers.
+        JUCE_USE_MP3AUDIOFORMAT=1
         # Public processor headers must use the same audio backend and sample
         # type as the library, including when compiled by regression tests.
         SOUNDTOUCH_FLOAT_SAMPLES=1

@@ -6,9 +6,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -1028,6 +1031,9 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
         juce::jlimit(1, 4, juce::jmax(1, numCpus - 1)));
     const size_t effectiveWorkers =
         juce::jmin(numWorkers, work.size());
+    std::mutex extractionWaitMutex;
+    std::condition_variable extractionFinished;
+    size_t remainingWorkers = effectiveWorkers;
     std::vector<std::thread> workers;
     workers.reserve(effectiveWorkers);
     for (size_t w = 0; w < effectiveWorkers; ++w) {
@@ -1040,7 +1046,7 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
           const size_t i =
               nextIndex.fetch_add(1, std::memory_order_acq_rel);
           if (i >= work.size())
-            return;
+            break;
           StemWork &sw = work[i];
           if (!sw.needsExtraction) {
             // Already on disk; no I/O, just count the bytes for the
@@ -1069,10 +1075,40 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                             })) {
             sw.ok = false;
             anyError.store(true, std::memory_order_release);
-            return;
+            break;
           }
         }
+        {
+          const std::lock_guard<std::mutex> lock(extractionWaitMutex);
+          --remainingWorkers;
+        }
+        extractionFinished.notify_one();
       });
+    }
+    // Keep the caller as the only progress publisher. The workers only add
+    // actual copied bytes; waiting directly in join() hid all of that work
+    // until extraction was complete. Wake at most every 75 ms, or when a
+    // worker finishes, without polling the message loop or touching audio.
+    {
+      std::unique_lock<std::mutex> lock(extractionWaitMutex);
+      while (remainingWorkers > 0) {
+        const auto previouslyRemaining = remainingWorkers;
+        extractionFinished.wait_for(
+            lock, std::chrono::milliseconds(75), [&] {
+              return remainingWorkers != previouslyRemaining;
+            });
+        lock.unlock();
+        if (!anyError.load(std::memory_order_acquire)) {
+          const auto resourceProgress =
+              static_cast<double>(processedResourceBytes.load(
+                  std::memory_order_acquire)) /
+              static_cast<double>(totalResourceBytes);
+          progress.publish(
+              0.05 + 0.90 * juce::jlimit(0.0, 1.0, resourceProgress),
+              L10n::tr("Extrayendo stems...", "Extracting stems..."));
+        }
+        lock.lock();
+      }
     }
     for (auto &t : workers)
       t.join();

@@ -1,10 +1,12 @@
 #include "ui/panels/SettingsPanel.h"
 #include "data/ApplicationDataPaths.h"
+#include "data/Localization.h"
 #include "data/SongData.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <utility>
 
 namespace {
 void expect(bool condition, const char *message) {
@@ -21,9 +23,108 @@ juce::MouseEvent mouseEvent(juce::Component &component, bool dragged = false) {
           1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &component, &component,
           now, position, now, 1, dragged};
 }
+
+class RoutingTestDevice final : public juce::AudioIODevice {
+public:
+  RoutingTestDevice() : AudioIODevice("Routing output", "Routing test") {}
+  juce::StringArray getOutputChannelNames() override {
+    return {"Out 1", "Out 2", "Out 3", "Out 4", "Out 5", "Out 6", "Out 7", "Out 8"};
+  }
+  juce::StringArray getInputChannelNames() override { return {}; }
+  juce::Array<double> getAvailableSampleRates() override { return {48000.0}; }
+  juce::Array<int> getAvailableBufferSizes() override { return {64}; }
+  int getDefaultBufferSize() override { return 64; }
+  juce::String open(const juce::BigInteger &, const juce::BigInteger &out,
+                    double, int) override {
+    outputs = out;
+    opened = true;
+    return {};
+  }
+  void close() override { stop(); opened = false; }
+  bool isOpen() override { return opened; }
+  void start(juce::AudioIODeviceCallback *next) override {
+    stop();
+    callback = next;
+    if (callback != nullptr) callback->audioDeviceAboutToStart(this);
+  }
+  void stop() override {
+    if (auto *old = std::exchange(callback, nullptr)) old->audioDeviceStopped();
+  }
+  bool isPlaying() override { return callback != nullptr; }
+  juce::String getLastError() override { return {}; }
+  int getCurrentBufferSizeSamples() override { return 64; }
+  double getCurrentSampleRate() override { return 48000.0; }
+  int getCurrentBitDepth() override { return 32; }
+  juce::BigInteger getActiveOutputChannels() const override { return outputs; }
+  juce::BigInteger getActiveInputChannels() const override { return {}; }
+  int getOutputLatencyInSamples() override { return 0; }
+  int getInputLatencyInSamples() override { return 0; }
+private:
+  bool opened = false;
+  juce::BigInteger outputs;
+  juce::AudioIODeviceCallback *callback = nullptr;
+};
+
+class RoutingTestDeviceType final : public juce::AudioIODeviceType {
+public:
+  RoutingTestDeviceType() : AudioIODeviceType("Routing test") {}
+  void scanForDevices() override {}
+  juce::StringArray getDeviceNames(bool) const override { return {"Routing output"}; }
+  int getDefaultDeviceIndex(bool) const override { return 0; }
+  int getIndexOfDevice(juce::AudioIODevice *, bool) const override { return 0; }
+  bool hasSeparateInputsAndOutputs() const override { return false; }
+  juce::AudioIODevice *createDevice(const juce::String &, const juce::String &) override {
+    return new RoutingTestDevice();
+  }
+};
 }
 
 struct SettingsPanelTestAccess {
+  static void testActiveRoutingChannels() {
+    juce::AudioDeviceManager manager;
+    manager.addAudioDeviceType(std::make_unique<RoutingTestDeviceType>());
+    const auto setup = juce::parseXML(
+        "<DEVICESETUP deviceType=\"Routing test\" audioOutputDeviceName=\"Routing output\" "
+        "audioDeviceRate=\"48000\" audioDeviceBufferSize=\"64\" audioDeviceOutChans=\"11\"/>");
+    expect(manager.initialise(0, 8, setup.get(), false).isEmpty(),
+           "routing mock device opens without hardware");
+    expect(manager.getCurrentAudioDevice()->getOutputChannelNames().size() == 8,
+           "routing device exposes more physical outputs than active outputs");
+    SettingsPanel panel(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
+        PadsCrossfadePreset{}, {}, MetronomeClickStyle{}, {}, {}, {}, {}, {}, {},
+        8, {}, &manager, 0, 8);
+
+    // A device can expose eight outputs while JUCE only supplies two callback
+    // channels. Routing must never offer the six disabled outputs.
+    for (const int activeCount : {2, 1, 4}) {
+      juce::AudioDeviceManager::AudioDeviceSetup next;
+      manager.getAudioDeviceSetup(next);
+      next.useDefaultOutputChannels = false;
+      next.outputChannels.clear();
+      next.outputChannels.setRange(0, activeCount, true);
+      expect(manager.setAudioDeviceSetup(next, true).isEmpty(),
+             "active output mask changes on the routing device");
+      panel.refreshRoutingForDevice();
+      expect(panel.availableOutputChannels == activeCount,
+             "routing follows active callback channels rather than device capacity");
+      for (auto *row : panel.routingContent.getChildren()) {
+        AdaptiveComboBox *mode = nullptr, *channels = nullptr;
+        for (auto *child : row->getChildren()) {
+          if (auto *selector = dynamic_cast<AdaptiveComboBox *>(child)) {
+            if (selector->getItemText(0) == "Mono") mode = selector;
+            else channels = selector;
+          }
+        }
+        expect(mode != nullptr && channels != nullptr, "routing row exposes mode and channel selectors");
+        const bool stereo = mode->getSelectedId() == 2;
+        expect(channels->getNumItems() == activeCount - (stereo ? 1 : 0),
+               "channel choices exclude disabled outputs in both routing modes");
+        expect(activeCount > 1 || (!mode->isItemEnabled(2) && !stereo),
+               "a single active output disables stereo routing");
+      }
+    }
+  }
+
   static void snapshot(SettingsPanel &panel, const juce::String &name) {
     const auto output = juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_SETTINGS_SNAPSHOTS", {});
     if (output.isEmpty()) return;
@@ -39,9 +140,10 @@ struct SettingsPanelTestAccess {
   }
 
   static void run() {
+    testActiveRoutingChannels();
     int routingChanges = 0;
     SettingsPanel panel(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
-        false, {}, false, {}, false, {}, PadsCrossfadePreset{}, {},
+        PadsCrossfadePreset{}, {},
         MetronomeClickStyle{}, {}, {}, {}, {}, {}, {}, 8,
         [&](const auto &, const auto &) { ++routingChanges; }, nullptr, 0, 8);
     panel.setVisible(true);
@@ -130,8 +232,12 @@ struct SettingsPanelTestAccess {
     auto *home = panel.settingsViewport.getViewedComponent();
     expect(home != &panel.tabs && !panel.generalTabButton.isVisible() &&
                !panel.backButton.isVisible(), "compact settings opens with the grouped index");
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9),
-           "ordinary accounts do not have a Teams settings entry");
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 7 : 8),
+           "ordinary accounts expose only available settings destinations");
+    for (auto *child : home->getChildren())
+      if (auto *button = dynamic_cast<juce::Button *>(child))
+        expect(button->getButtonText() != "Biblioteca",
+               "removed import preferences leave no empty Library settings page");
     int learningRequests = 0;
     panel.onLearningRequested = [&] { ++learningRequests; };
     int teamsRequests = 0;
@@ -142,7 +248,7 @@ struct SettingsPanelTestAccess {
                !panel.teamsLabel.isVisible() && !panel.teamsHelp.isVisible(),
            "default denied Teams cannot be opened through navigation or a direct callback");
     panel.setTeamsManagementEnabled(true);
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 9 : 10),
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9),
            "enabled management profile gains exactly one Teams settings entry");
     snapshot(panel, "settings-home");
 
@@ -220,15 +326,14 @@ struct SettingsPanelTestAccess {
 
     for (const auto width : {320, 390, 560}) {
       panel.setSize(width, 640);
-      for (const auto page : {Destination::Appearance, Destination::Playback, Destination::Library}) {
+      for (const auto page : {Destination::Appearance, Destination::Playback}) {
         panel.showSettingsPage(page);
         for (auto *control : panel.generalPage.getChildren())
           if (control->isVisible())
             expect(!control->getBounds().isEmpty() && panel.generalPage.getLocalBounds().contains(control->getBounds()),
                    "every visible preference fits in narrow pages");
         const juce::Label *const helps[] = {
-            &panel.themeHelp, &panel.languageHelp, &panel.expandLaunchHelp,
-            &panel.primeImportHelp, &panel.stemOptimizationHelp,
+            &panel.themeHelp, &panel.languageHelp,
             &panel.padsCrossfadeHelp, &panel.metronomeClickStyleHelp};
         int visibleHelps = 0;
         for (const auto *help : helps)
@@ -244,11 +349,6 @@ struct SettingsPanelTestAccess {
                      panel.languageHelp.getY() - panel.languageBox.getBottom() == 6 &&
                      panel.languageLabel.getY() - panel.themeHelp.getBottom() == 12,
                  "choice explanations stay directly below their controls");
-        }
-        if (page == Destination::Library) {
-          expect(panel.primeImportHelp.getY() - panel.primeImportToggle.getBottom() == 4 &&
-                     panel.stemOptimizationHelp.getY() - panel.stemOptimizationToggle.getBottom() == 4,
-                 "toggle explanations stay directly below their controls");
         }
       }
       panel.showSettingsPage(Destination::Account);
@@ -299,15 +399,27 @@ struct SettingsPanelTestAccess {
     expect(panel.generalTabButton.isVisible() && !panel.backButton.isVisible() &&
                panel.themeBox.isVisible() && panel.remoteModeControl.isVisible(),
            "wide desktop retains its full settings navigation and controls");
+    for (auto *child : panel.generalPage.getChildren()) {
+      expect(dynamic_cast<juce::ToggleButton *>(child) == nullptr,
+             "removed startup, Prime and optimization options leave no hidden toggles");
+      if (auto *label = dynamic_cast<juce::Label *>(child))
+        expect(!label->getText().containsIgnoreCase("Prime") &&
+                   !label->getText().containsIgnoreCase("Ventana al iniciar") &&
+                   !label->getText().containsIgnoreCase("Optimización de stems"),
+               "removed options have no leftover labels or help text");
+    }
     expect(panel.learningButton.isVisible() && panel.learningButton.getHeight() >= 36 &&
                panel.generalPage.getLocalBounds().contains(panel.learningButton.getBounds()),
            "desktop General retains an accessible guide entry after compact navigation");
     panel.learningButton.onClick();
     expect(learningRequests == 2,
            "the desktop guide button shares the same learning request as the grouped row");
-    expect(panel.teamsButton.isVisible() && panel.teamsHelp.getText().containsIgnoreCase("usuarios") &&
+    expect(panel.teamsButton.isVisible() &&
+               panel.teamsHelp.getText() == L10n::tr(
+                   "Consulta tu Team o administra el acceso a tu nube compartida.",
+                   "View your Team or manage access to your shared cloud.") &&
                panel.generalPage.getLocalBounds().contains(panel.teamsButton.getBounds()),
-           "enabled desktop profile exposes Teams with user administration help");
+           "authorized desktop profile exposes Teams with shared Cloud access help");
     panel.teamsButton.onClick();
     expect(teamsRequests == 2, "desktop Teams action uses the same enabled navigation guard");
     snapshot(panel, "settings-desktop");
