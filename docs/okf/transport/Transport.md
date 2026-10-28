@@ -130,6 +130,13 @@ double getOriginalSongBpm() const noexcept;
 ```
 
 Cambia el tempo de reproducción sin alterar el pitch (time stretch).
+Los editores de BPM del reproductor y del mapa de tempo admiten punto o coma
+decimal y solicitan teclado decimal en movil. Los valores se validan completos:
+una entrada mal formada no aplica un prefijo numerico. La visualizacion elimina
+ceros finales y muestra hasta seis decimales; abrir el control no redondea a
+BPM enteros. Ensayo conserva y muestra tambien la fraccion al avanzar sus pasos
+de un BPM. Los limites del motor y su rampa de tempo no cambian.
+
 El BPM base del formulario de edicion corresponde al BPM original de la cancion.
 Al guardarlo, si el tempo de reproduccion persistido aun coincide con el BPM
 base anterior, se actualiza al nuevo BPM base. Un tempo personalizado se

@@ -47,7 +47,7 @@ conservando el checkout externo de JUCE. Para campos marcados con
 `playworshipContinuousTextInput`, mantiene el first responder, notifica los
 cambios de texto/seleccion y llama a `reloadInputViews` al transferir el foco.
 `playworshipReturnKeyNext` decide la etiqueta nativa Siguiente/Listo. El resto
-de los editores conserva el comportamiento original de JUCE. BPM usa NumberPad
+de los editores conserva el comportamiento original de JUCE. BPM solicita teclado decimal
 en iOS, con la accion Listo de la barra para terminar la entrada. La configuracion
 falla si cambia el codigo fuente esperado de JUCE, para revisar esta adaptacion
 al actualizar la dependencia. Android reutiliza la actualizacion del IME de JUCE.
@@ -176,7 +176,9 @@ de compases y el ratio para el audio. El control de tempo del reproductor es el
 valor de reproduccion. Al corregir el BPM base, el tempo guardado se mueve al
 nuevo valor solo si aun coincidia con el BPM base anterior; un tempo ajustado
 por el usuario se conserva. El formulario admite BPM vacio (desconocido) o de
-20 a 300, el rango aceptado por el reproductor. El mapa de tempo automatico
+20 a 300, el rango aceptado por el reproductor. Se pueden escribir decimales
+con punto o coma (por ejemplo `120.5` o `120,5`); se conserva el valor numerico
+en biblioteca, proyecto y nube, sin convertirlo en entero. El mapa de tempo automatico
 de una sola region sigue el BPM y compas base corregidos; un mapa de tempo
 personalizado se conserva.
 

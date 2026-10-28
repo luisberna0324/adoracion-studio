@@ -3,6 +3,7 @@
 #include "data/ApplicationDataPaths.h"
 #include "data/ArrangementSourceMapping.h"
 #include "network/RemoteStateCodec.h"
+#include "platform/NativeSongLyricsEditor.h"
 
 #include <algorithm>
 #include <atomic>
@@ -575,7 +576,7 @@ ProjectDocument makeDocument(const Fixtures &fixtures, const juce::File &stem,
   document.song.projectId = fixtures.projectId;
   document.song.title = juce::String::fromUTF8(u8"Canción de integración");
   document.song.artist = "Artista de prueba";
-  document.song.bpm = 92;
+  document.song.bpm = 92.375;
   document.song.key = "Bb";
   document.song.timeSignature = "6/8";
   document.song.createdMs = 1700000000000;
@@ -593,7 +594,7 @@ ProjectDocument makeDocument(const Fixtures &fixtures, const juce::File &stem,
   track.channels = 1;
   document.song.stems.push_back(track);
 
-  document.settings.tempoBpm = 96.0;
+  document.settings.tempoBpm = 96.125;
   document.settings.pitchSemitones = -2;
   document.settings.mix.master.volume = 0.67f;
   document.settings.mix.master.gain = 1.12f;
@@ -826,10 +827,68 @@ void runRoundtripAndFailureChecks(Fixtures &fixtures) {
   expect(ProjectStore::open(fixtures.archive, opened, &error),
          "real ProjectStore::open succeeds without original source files");
   expect(opened.song.title == document.song.title && opened.song.artist == document.song.artist &&
-             opened.song.bpm == 92 && opened.song.key == "Bb" &&
+             opened.song.bpm == 92.375 && opened.song.key == "Bb" &&
              opened.song.timeSignature == "6/8" &&
              opened.song.projectId == fixtures.projectId && opened.song.stems.size() == 1,
-         "opening preserves song metadata and identity");
+         "opening preserves fractional base tempo, song metadata and identity");
+  const auto remoteValue = juce::JSON::parse(juce::JSON::toString(
+      playworship::remote::encodeSong(opened.song, false)));
+  expect(playworship::remote::decodeSong(remoteValue).bpm == 92.375,
+         "remote song metadata preserves fractional BPM through JSON");
+  CloudUploadRequest upload;
+  expect(CloudProjectArchive::buildUpload(fixtures.archive, "fractional-tempo", 0,
+                                        upload, &error) &&
+             upload.descriptor.bpm == 92.375,
+         "cloud preparation retains the portable project's fractional base BPM");
+  auto publishedDescriptor = upload.descriptor;
+  publishedDescriptor.revision = 1;
+  CloudProjectDescriptor decodedDescriptor;
+  expect(CloudSyncJson::fromVar(juce::JSON::parse(
+             CloudSyncJson::toJsonString(publishedDescriptor)), decodedDescriptor) &&
+             decodedDescriptor.bpm == 92.375 &&
+             CloudSyncJson::fingerprint(decodedDescriptor) ==
+                 CloudSyncJson::fingerprint(publishedDescriptor),
+         "cloud descriptor JSON preserves fractional BPM and its content fingerprint");
+  auto integerDescriptor = publishedDescriptor;
+  integerDescriptor.bpm = 120.0;
+  auto historicalDescriptor = CloudSyncJson::toVar(publishedDescriptor);
+  auto *historicalObject = historicalDescriptor.getDynamicObject();
+  historicalObject->setProperty("bpm", 120);
+  historicalObject->setProperty("songId", "");
+  historicalObject->setProperty("revision", 0);
+  historicalObject->setProperty("createdAt", "");
+  const auto historicalJson = juce::JSON::toString(historicalDescriptor);
+  const auto historicalFingerprint = juce::SHA256(
+      historicalJson.toRawUTF8(), historicalJson.getNumBytesAsUTF8()).toHexString().toLowerCase();
+  expect(CloudSyncJson::toVar(integerDescriptor).getProperty("bpm", {}).isInt() &&
+             CloudSyncJson::fingerprint(integerDescriptor) == historicalFingerprint,
+         "whole BPM descriptors retain the historical integer JSON fingerprint");
+  const auto lyricsConfig = NativeSongLyricsEditor::presentationConfig(
+      {opened.song.title, {}, opened.song.artist, opened.song.bpm});
+  expect(lyricsConfig.getProperty("tempoText", {}).toString() == "92.375 BPM" &&
+             lyricsConfig.getProperty("subtitle", {}).toString().endsWith("92.375 BPM"),
+         "native lyrics metadata shows every fractional tempo digit");
+  for (const double invalidBpm : {std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::infinity()}) {
+    auto invalidSong = SongLibraryStore::songDataToVar(opened.song);
+    invalidSong.getDynamicObject()->setProperty("bpm", invalidBpm);
+    bool repaired = false;
+    expect(SongLibraryStore::songDataFromVar(invalidSong, repaired).bpm == 0.0 && repaired,
+           "non-finite library tempo becomes unknown and schedules metadata repair");
+    auto invalidRemote = playworship::remote::encodeSong(opened.song, false);
+    invalidRemote.getDynamicObject()->setProperty("bpm", invalidBpm);
+    expect(playworship::remote::decodeSong(invalidRemote).bpm == 120.0,
+           "non-finite remote song tempo uses the existing missing-tempo fallback");
+    auto invalidDescriptor = CloudSyncJson::toVar(publishedDescriptor);
+    invalidDescriptor.getDynamicObject()->setProperty("bpm", invalidBpm);
+    expect(!CloudSyncJson::fromVar(invalidDescriptor, decodedDescriptor),
+           "cloud descriptor rejects a non-finite BPM");
+  }
+  auto unknownRemote = playworship::remote::encodeSong(opened.song, false);
+  unknownRemote.getDynamicObject()->setProperty("bpm", 0);
+  expect(playworship::remote::decodeSong(unknownRemote).bpm == 0.0,
+         "explicit unknown remote BPM remains zero for legacy compatibility");
+  CloudProjectArchive::cleanupUploadStaging(upload.stagingDirectory);
   expect(ProjectStore::settingsJsonEqual(opened.settings, document.settings),
          "opening preserves all nondefault mixer/performance settings");
   expect(opened.song.arrangement.parts.size() == 1 &&
@@ -934,7 +993,7 @@ void testAutomaticLegacyStemStorage(const Fixtures &fixtures) {
   draft.id = juce::Uuid().toString();
   draft.title = "Automatic legacy storage";
   draft.fileType = "WAV";
-  draft.bpm = 96;
+  draft.bpm = 96.75;
   auto makeStem = [](const juce::File &file, const char *id) {
     ImportedStemData stem;
     stem.stemId = id;
@@ -994,6 +1053,33 @@ void testAutomaticLegacyStemStorage(const Fixtures &fixtures) {
   };
 
   auto imported = readSong();
+  expect(imported.bpm == 96.75,
+         "legacy song metadata retains fractional BPM after database reload");
+  const auto tempoSetlist = SongLibraryStore::createSetlist("Fractional legacy tempo");
+  expect(SongLibraryStore::addSongToSetlist(tempoSetlist, imported.id) &&
+             SongLibraryStore::setActiveSetlistId(tempoSetlist),
+         "legacy fractional fixture joins an active setlist");
+  imported.bpm = 97.25;
+  double savedTempo = 0.0;
+  expect(SongLibraryStore::updateSongMetadata(imported, &error) &&
+             !SongLibraryStore::getActiveSetlistTempoBpm(imported.id, savedTempo) &&
+             readSong().bpm == 97.25,
+         "unset legacy tempo keeps following the edited fractional base without creating an override");
+  expect(SongLibraryStore::updateTempoBpmForActiveSetlist(imported.id, imported.bpm),
+         "persist the current fractional base as the active performance tempo");
+  imported.bpm = 97.5;
+  expect(SongLibraryStore::updateSongMetadata(imported, &error) &&
+             SongLibraryStore::getActiveSetlistTempoBpm(imported.id, savedTempo) &&
+             savedTempo == 97.5,
+         "a stored performance tempo equal to the previous fractional base follows its edit");
+  expect(SongLibraryStore::updateTempoBpmForActiveSetlist(imported.id, 97.505),
+         "persist a nearby explicit fractional override");
+  imported.bpm = 98.125;
+  expect(SongLibraryStore::updateSongMetadata(imported, &error) &&
+             SongLibraryStore::getActiveSetlistTempoBpm(imported.id, savedTempo) &&
+             savedTempo == 97.505 && readSong().bpm == 98.125,
+         "base metadata edits retain nearby explicit fractional setlist overrides");
+  imported = readSong();
   expectStoredAudio(imported);
   // A replacement WAV must optimize during editing as well. Clearing the
   // cached path makes the existing production source-selection path use it.
@@ -1393,6 +1479,7 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
   verse.id = "blank-verse"; verse.name = "Verso"; verse.startSec = 8.0; verse.endSec = 40.0;
   song.arrangement.parts = {intro, verse};
   ProjectDocument document; document.song = song;
+  document.settings.tempoBpm = song.bpm;
   document.settings.arrangement = song.arrangement;
   document.settings.arrangementCustomized = true;
   document.settings.blankPadEnabled = true;
@@ -1414,6 +1501,24 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
   const auto list = SongLibraryStore::createSetlist("Blank fixture setlist");
   expect(SongLibraryStore::addSongToSetlist(list, reopened.song.id), "blank song joins a regular setlist");
   expect(SongLibraryStore::setActiveSetlistId(list), "blank setlist opens");
+  auto editedMetadata = reopened.song;
+  editedMetadata.bpm = 96.75;
+  ProjectSongSettings fractionalSettings;
+  expect(SongLibraryStore::updateSongMetadata(editedMetadata, &error) &&
+             ProjectStore::getCachedSettings(archive, fractionalSettings) &&
+             fractionalSettings.tempoBpm == 96.75,
+         "project default tempo follows an edited fractional base BPM in its sidecar");
+  expect(SongLibraryStore::updateTempoBpmForActiveSetlist(reopened.song.id, 96.755),
+         "project stores a nearby fractional performance override");
+  editedMetadata.bpm = 97.25;
+  ProjectDocument fractionalReopened;
+  expect(SongLibraryStore::updateSongMetadata(editedMetadata, &error) &&
+             ProjectStore::getCachedSettings(archive, fractionalSettings) &&
+             fractionalSettings.tempoBpm == 96.755 &&
+             ProjectStore::open(archive, fractionalReopened, &error) &&
+             fractionalReopened.song.bpm == 97.25 &&
+             fractionalReopened.settings.tempoBpm == 96.755,
+         "project base edits preserve nearby fractional overrides through package reopen");
   ClickDynMixSnapshot mix; mix.metronomeEnabled = true;
   expect(SongLibraryStore::updateClickDynMixForActiveSetlist(reopened.song.id, mix), "blank click toggles through existing persistence");
   ProjectSongSettings saved;
@@ -1427,7 +1532,7 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
       "zero bars round-trip as an open-ended blank song without a synthetic duration");
   bool changed = false;
   const auto legacy = SongLibraryStore::songDataFromVar(juce::JSON::parse(R"({"id":"legacy","title":"Missing audio","bpm":120,"stems":[]})"), changed);
-  expect(!legacy.blankSong && !isValidBlankSong(legacy), "legacy metadata-only entries never migrate into blank playback");
+  expect(legacy.bpm == 120.0 && !legacy.blankSong && !isValidBlankSong(legacy), "legacy integer BPM stays readable without migrating missing audio into blank playback");
   document.song = legacy;
   expect(!ProjectStore::save(document, fixtures.directory.getChildFile("invalid-legacy.pwproj"), &error), "legacy no-audio project still rejects missing audio");
   song.bpm = -1; document.song = song;

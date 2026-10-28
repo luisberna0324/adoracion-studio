@@ -155,7 +155,7 @@ private:
     juce::String artist;
     juce::String artworkPath;
     juce::String key;
-    int bpm = 0;
+    double bpm = 0.0;
     int stemCount = 0;
     juce::String songId;
     bool autoPlayNext = false;

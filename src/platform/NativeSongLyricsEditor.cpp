@@ -1,5 +1,6 @@
 #include "NativeSongLyricsEditor.h"
 #include "../data/Localization.h"
+#include "../data/TempoValue.h"
 #include "../ui/UiCommon.h"
 #include <algorithm>
 #include <cmath>
@@ -68,7 +69,7 @@ juce::var presentationConfig(const Options &options) {
   const auto artist = options.artist.trim();
   const auto tempo = std::isfinite(options.tempoBpm) && options.tempoBpm > 0.0 ? options.tempoBpm : 0.0;
   const auto tempoText = tempo > 0.0
-      ? juce::String(tempo, std::abs(tempo - std::round(tempo)) < 0.0001 ? 0 : 1) + " BPM"
+      ? TempoValue::formatBpm(tempo) + " BPM"
       : juce::String();
   auto subtitle = artist;
   if (tempoText.isNotEmpty()) {

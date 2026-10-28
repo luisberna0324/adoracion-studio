@@ -110,6 +110,33 @@ incluido puede reproducirse.
    que la cancion permanece en Biblioteca y que puede reproducirse.
 5. Repetir la instalacion para comprobar que la migracion es idempotente.
 
+## Tempo decimal
+
+El BPM base de `ImportedSongData` se conserva como `double` en `songs.json`
+y en `song.bpm` del `manifest.json` de `.pwproj`. Los documentos anteriores
+con BPM entero se leen con el mismo codec; no se cambia la versión del formato.
+Un BPM no finito en Biblioteca se repara a `0` (tempo desconocido); el snapshot
+remoto usa `120` si falta el tempo o es no finito, conservando un `0` explícito.
+Un descriptor Cloud con BPM no finito se rechaza.
+Los ajustes de tempo del proyecto/sidecar y del setlist siguen siendo números
+decimales independientes del BPM base. El catálogo local y Cloud, las filas de
+canción y el snapshot remoto conservan esa precisión; el formato visible usa
+`TempoValue::formatBpm` para evitar ceros finales innecesarios.
+
+Al editar el BPM base, los tempos que aún coinciden con el valor base anterior
+siguen el nuevo valor. Se usa una tolerancia de `0.000001` BPM para distinguirlos
+de ajustes explícitos cercanos (por ejemplo, base `96.75` y override `96.755`);
+las tolerancias de posiciones/duración del mapa de tempo no cambian.
+Un mapa de tempo predeterminado de una sola región sigue el nuevo BPM base,
+pero uno con un BPM modificado de forma independiente se conserva.
+
+El descriptor Cloud y los metadatos de commit conservan el BPM decimal del
+paquete, sin convertirlo a entero. La representación JSON sigue usando el campo
+numérico `bpm`; no se altera el esquema del protocolo remoto ni del descriptor.
+Cuando el BPM Cloud es un entero exacto representable como `int`, su JSON sigue
+escribiendo un entero para conservar los fingerprints de descriptores históricos
+y evitar que una lectura/guardado sin cambios provoque una nueva publicación.
+
 ## Automatización de secciones
 
 Cada `SongArrangementPartSnapshot` puede incluir un objeto `automation` con

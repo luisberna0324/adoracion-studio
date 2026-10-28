@@ -160,7 +160,7 @@ struct ImportedSongData {
   juce::String projectId;
   juce::String title;
   juce::String artist;
-  int bpm = 0;
+  double bpm = 0.0;
   juce::String key;
   juce::String timeSignature;
   juce::String fileType;

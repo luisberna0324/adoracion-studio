@@ -5,6 +5,7 @@
 #include "../../data/Localization.h"
 #include "../../data/SessionPersistence.h"
 #include "../../data/SongLibraryStore.h"
+#include "../../data/TempoValue.h"
 #include "../../data/TeamsLocalStore.h"
 #include "../../data/TeamsPreparationService.h"
 
@@ -772,7 +773,7 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
 
     const auto metadataText =
         (item.key.isNotEmpty() ? item.key : "-") + u8" • " +
-        (item.bpm > 0 ? juce::String(item.bpm) : "--") + " BPM" + u8" • " +
+        (item.bpm > 0 ? TempoValue::formatBpm(item.bpm) : "--") + " BPM" + u8" • " +
         (item.blankSong ? L10n::tr("En blanco", "Blank") : juce::String(item.stemCount) + " stems") + u8" • " +
         (item.blankSong && item.durationSeconds == 0.0 ? L10n::tr("Libre", "Free") : formatDurationMMSS(item.durationSeconds));
     g.setColour(UITheme::textSecondary.withAlpha(0.76f * rowAlpha));

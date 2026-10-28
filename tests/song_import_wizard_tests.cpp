@@ -5,6 +5,8 @@
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/Localization.h"
+#include "data/TempoValue.h"
+#include <limits>
 
 #include <atomic>
 #include <cmath>
@@ -136,6 +138,41 @@ struct SongListPanelTestAccess {
 struct SongImportWizardTestAccess {
   using Wizard = SongImportWizardComponent;
   using Step = Wizard::Step;
+
+  static void testDecimalTempoInput() {
+    double parsed = 123.0;
+    for (const auto *invalid : {"", ".", ",", "0", "-120.5", "120..5",
+                                "120,5.2", "120 5", "120bpm", "nan", "inf", "1e2"}) {
+      expect(!TempoValue::parseBpm(invalid, parsed) && parsed == 123.0,
+             "invalid BPM cannot silently apply a numeric prefix or change the output");
+    }
+    expect(TempoValue::formatBpm(120.0) == "120" &&
+               TempoValue::formatBpm(120.625) == "120.625" &&
+               TempoValue::formatBpm(120.123456) == "120.123456" &&
+               TempoValue::formatBpm(std::numeric_limits<double>::infinity()).isEmpty(),
+           "decimal BPM displays compactly without integer rounding or nonfinite text");
+
+    ImportedSongData initial;
+    initial.id = "decimal-tempo-editor";
+    initial.title = "Decimal BPM";
+    initial.bpm = 120.625;
+    Wizard wizard({}, Wizard::Mode::Edit, initial);
+    expect(wizard.bpmEditor.getText() == "120.625" &&
+               wizard.bpmEditor.getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+           "editing a song restores fractional BPM and requests a decimal keyboard");
+    for (const auto *input : {"120.5", "120,625", "20.125", "299,999999", "300"}) {
+      wizard.bpmEditor.clear();
+      wizard.bpmEditor.insertTextAtCaret(input);
+      expect(wizard.bpmEditor.getText() == input && wizard.validateStepMetadata(),
+             "typing the decimal separator and fractional digits survives the actual field filter");
+      expect(TempoValue::parseBpm(input, parsed) &&
+                 std::abs(wizard.buildSongData().bpm - parsed) < 1.0e-9,
+             "the song creation/edit draft keeps the entered fractional BPM");
+    }
+    wizard.bpmEditor.clear();
+    expect(wizard.validateStepMetadata() && wizard.buildSongData().bpm == 0.0,
+           "an empty original BPM still means unknown");
+  }
 
   static void testBlankCreation(const AudioFixtures &files) {
     int dismissed = 0, destinations = 0;
@@ -690,13 +727,15 @@ struct SongImportWizardTestAccess {
       pumpUntil([&] { return dismissed == 1 && !wizard.isSubmissionInProgress(); },
                 "portable edit completes and closes the wizard");
       expect(saveError.isEmpty(), "portable edit reports no persistence error");
+      double expectedBpm = 0.0;
+      expect(TempoValue::parseBpm(bpm, expectedBpm), "parse the edited decimal fixture BPM");
       const auto library = SongLibraryStore::loadSongs();
       expect(library.size() == 1 && library.front().id == songId &&
                  library.front().title == title &&
-                 library.front().bpm == bpm.getIntValue() &&
+                 library.front().bpm == expectedBpm &&
                  library.front().tempoMap.regions.size() == 1 &&
                  std::abs(library.front().tempoMap.regions.front().bpm -
-                          bpm.getIntValue()) < 0.01,
+                          expectedBpm) < 0.01,
              "edited metadata persists under the same library identity");
       const auto artwork = juce::ImageFileFormat::loadFrom(
           juce::File(library.front().artworkPath));
@@ -711,7 +750,7 @@ struct SongImportWizardTestAccess {
       const auto packagedArtwork = juce::ImageFileFormat::loadFrom(
           juce::File(reopened.song.artworkPath));
       expect(reopened.song.title == title &&
-                 reopened.song.bpm == bpm.getIntValue() &&
+                 reopened.song.bpm == expectedBpm &&
                  packagedArtwork.isValid() &&
                  packagedArtwork.getPixelAt(4, 4) == artwork.getPixelAt(4, 4),
              "portable manifest and embedded artwork match the library");
@@ -720,14 +759,14 @@ struct SongImportWizardTestAccess {
                "full edit persists the mapped stem name inside the project");
     };
 
-    edit(firstCover, "Edited once", "132", true);
+    edit(firstCover, "Edited once", "132.375", true);
     ProjectSongSettings settings;
     expect(ProjectStore::getCachedSettings(project, settings) &&
-               settings.tempoBpm == 132.0,
+               settings.tempoBpm == 132.375,
            "changing the original BPM updates playback tempo when it was unchanged");
-    edit(secondCover, "Edited twice", "144", false);
+    edit(secondCover, "Edited twice", "144,625", false);
     expect(ProjectStore::getCachedSettings(project, settings) &&
-               settings.tempoBpm == 144.0,
+               settings.tempoBpm == 144.625,
            "full edit also preserves the new BPM in project settings");
   }
 
@@ -1018,6 +1057,7 @@ int main() {
     detailRejected = detail.tracks.empty() && error.type != SecuenciasError::Type::None;
   });
   expect(searchRejected && detailRejected, "retired catalog cannot return remote metadata");
+  SongImportWizardTestAccess::testDecimalTempoInput();
   AudioFixtures fixtures;
   SongImportWizardTestAccess::testStepLayouts(fixtures);
   SongImportWizardTestAccess::testDesktopEditLayout();

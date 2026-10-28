@@ -7,6 +7,7 @@
 #include "../../data/ArrangementSourceMapping.h"
 #include "../../data/ArrangementIdentity.h"
 #include "../../data/Localization.h"
+#include "../../data/TempoValue.h"
 #include "../WaveformCacheWindow.h"
 #include "../SectionAutomationVisuals.h"
 #include "../LiveLoopBorder.h"
@@ -364,7 +365,7 @@ juce::Colour tempoRegionColourForIndex(const int index) {
 
 juce::String tempoRegionDisplayLabel(const SongTempoRegionSnapshot &region,
                                      const bool compact) {
-  const auto bpm = juce::String(region.bpm, 0);
+  const auto bpm = TempoValue::formatBpm(region.bpm);
   if (compact)
     return bpm + " " + region.timeSignature;
   return bpm + " BPM " + region.timeSignature;
@@ -1342,7 +1343,8 @@ WaveformBar::WaveformBar() {
   tempoBpmLabel.setText("BPM", juce::dontSendNotification);
   tempoBpmLabel.setJustificationType(juce::Justification::centred);
   addAndMakeVisible(tempoBpmLabel);
-  tempoBpmEditor.setInputRestrictions(6, "0123456789.");
+  tempoBpmEditor.setInputRestrictions(10, "0123456789.,");
+  tempoBpmEditor.setKeyboardType(juce::TextInputTarget::decimalKeyboard);
   tempoBpmEditor.setJustification(juce::Justification::centred);
   tempoBpmEditor.setFont(makeAppFont(12.5f, AppFontWeight::SemiBold));
   tempoBpmEditor.onReturnKey = [this] { applyTempoControlsToSelection(); };
@@ -7633,7 +7635,7 @@ void WaveformBar::drawTempoOverlay(
       const bool compact = body.getWidth() < 92.0f;
       auto visibleLabel = tempoRegionDisplayLabel(region, compact);
       if (body.getWidth() < 52.0f)
-        visibleLabel = juce::String(region.bpm, 0);
+        visibleLabel = TempoValue::formatBpm(region.bpm);
 
       const auto labelFont = makeAppFont(compact ? 9.4f : 10.8f,
                                          AppFontWeight::SemiBold);
@@ -8622,7 +8624,7 @@ void WaveformBar::updateTempoControlsFromSelection() {
     return;
 
   const auto &region = tempoMap.regions[static_cast<size_t>(selectedTempoRegionIndex)];
-  tempoBpmEditor.setText(juce::String(region.bpm, 1),
+  tempoBpmEditor.setText(TempoValue::formatBpm(region.bpm),
                          juce::dontSendNotification);
   const auto signature = region.timeSignature.trim();
   for (int i = 0; i < tempoSignatureBox.getNumItems(); ++i) {
@@ -8638,9 +8640,12 @@ void WaveformBar::applyTempoControlsToSelection() {
                                 static_cast<int>(tempoMap.regions.size())))
     return;
   auto &region = tempoMap.regions[static_cast<size_t>(selectedTempoRegionIndex)];
-  const double bpm = tempoBpmEditor.getText().getDoubleValue();
-  if (bpm > 0.0)
-    region.bpm = juce::jlimit(20.0, 300.0, bpm);
+  double bpm = 0.0;
+  if (!TempoValue::parseBpm(tempoBpmEditor.getText(), bpm)) {
+    updateTempoControlsFromSelection();
+    return;
+  }
+  region.bpm = juce::jlimit(20.0, 300.0, bpm);
   if (tempoSignatureBox.getSelectedItemIndex() >= 0)
     region.timeSignature = tempoSignatureBox.getText().trim();
   notifyTempoMapChanged();

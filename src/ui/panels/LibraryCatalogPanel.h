@@ -112,7 +112,7 @@ private:
     bool blankSong = false;
     double durationSeconds = 0.0;
     int64_t createdMs = 0;
-    int bpm = 0;
+    double bpm = 0.0;
     int stemCount = 0;
     int setlistUsageCount = 0;
     juce::Colour accentColour = UITheme::accent;

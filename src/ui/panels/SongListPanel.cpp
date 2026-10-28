@@ -8,6 +8,7 @@
 #include "../../data/Localization.h"
 #include "../../data/SessionAuthLogger.h"
 #include "../../data/SongProjectCreation.h"
+#include "../../data/TempoValue.h"
 #include "../../data/MobileImportStaging.h"
 
 #include <algorithm>
@@ -2123,7 +2124,7 @@ juce::String SongListPanel::formatDurationHMS(const double totalSeconds) {
 void SongListPanel::refreshSongsHeaderSummary() {
   double total = 0.0;
   int bpmCount = 0;
-  int bpmAccum = 0;
+  double bpmAccum = 0.0;
   for (const int idx : activeSongIndices) {
     if (!juce::isPositiveAndBelow(idx, static_cast<int>(librarySongs.size())))
       continue;
@@ -2414,7 +2415,7 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
     g.setColour(UITheme::textSecondary.withAlpha(0.76f));
     g.setFont(makeAppFont(10.8f, AppFontWeight::Regular));
     const auto detail = (rowData.key.isNotEmpty() ? rowData.key : "-") + u8" • " +
-                        (rowData.bpm > 0 ? juce::String(rowData.bpm) : "--") +
+                        (rowData.bpm > 0 ? TempoValue::formatBpm(rowData.bpm) : "--") +
                         " BPM" + u8" • " + juce::String(rowData.stemCount) + " stems" +
                         u8" • " + formatDurationMMSS(rowData.durationSeconds);
     g.drawFittedText(detail, metaRect, juce::Justification::centredLeft, 1);
@@ -3429,7 +3430,7 @@ private:
       meta << song.key << u8" • ";
     }
     if (song.bpm > 0) {
-      meta << juce::String(song.bpm) << " BPM" << u8" • ";
+      meta << TempoValue::formatBpm(song.bpm) << " BPM" << u8" • ";
     }
     meta << juce::String(includedStems) << " stems";
 

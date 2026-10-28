@@ -2388,17 +2388,29 @@ void testPitchSelectorCancelledDrag() {
 
 void testTempoSelectorDragAndFractionalOriginal() {
   Fixture fixture;
+  // JUCE exposes native accessibility only when a window handle exists.
+  // Provide a hidden peer, as in the instrument-wheel accessibility fixture.
+  fixture.panel->setVisible(false);
+  fixture.panel->addToDesktop(juce::ComponentPeer::windowIsTemporary);
   fixture.playing = true;
   fixture.bpm = fixture.tempo = 120.5;
   PracticePanelGestureTestAccess::updateControls(*fixture.panel);
   auto &selector = PracticePanelGestureTestAccess::tempoSelector(*fixture.panel);
   expectNear(selector.getValue(), 120.5,
              "opening the tempo selector preserves fractional source BPM");
-  expect(fixture.tempoChanges.empty() && selector.getTextFromValue(120.0) == "120 BPM",
+  expect(fixture.tempoChanges.empty() && selector.getTextFromValue(120.0) == "120 BPM" &&
+             selector.getTextFromValue(120.5) == "120.5 BPM" &&
+             selector.getTextFromValue(120.125) == "120.125 BPM",
          "tempo synchronization is silent and accessible values include BPM");
+  expect(selector.getItemSpacing() > 44.0f,
+         "fractional tempo labels receive room instead of clipping their decimals");
+  auto *accessibility = selector.getAccessibilityHandler();
+  expect(accessibility != nullptr && accessibility->getValueInterface() != nullptr &&
+             accessibility->getValueInterface()->getCurrentValueAsString() == "120.5 BPM",
+         "native accessibility announces the exact fractional tempo");
   pumpFor(180);
   const auto start = selector.getLocalBounds().getCentre();
-  const auto finish = start.translated(-95, 0);
+  const auto finish = start.translated(juce::roundToInt(-2.0f * selector.getItemSpacing()), 0);
   selector.mouseDown(pointerEvent(selector, start, start));
   selector.mouseDrag(pointerEvent(selector, finish, start, 1, true));
   PracticePanelGestureTestAccess::updateControls(*fixture.panel);
@@ -2410,12 +2422,12 @@ void testTempoSelectorDragAndFractionalOriginal() {
   expectNear(fixture.tempo, 122.5,
              "two tempo wheel steps preserve the fractional BPM origin");
   pumpFor(180);
-  const auto lower = start.translated(44, 0);
+  const auto lower = start.translated(juce::roundToInt(selector.getItemSpacing()), 0);
   selector.mouseDown(pointerEvent(selector, start, start));
   selector.mouseUp(pointerEvent(selector, lower, start));
   expect(fixture.tempoChanges.size() == 2,
          "coalesced tempo movement is committed once at mouse release");
-  expectNear(fixture.tempo, 121.5, "a 44-point rightward drag lowers tempo by one BPM");
+  expectNear(fixture.tempo, 121.5, "a one-item rightward drag lowers tempo by one BPM");
   selector.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
   expectNear(fixture.tempo, 122.5, "tempo keyboard input increases by exactly one BPM");
   selector.mouseDoubleClick(pointerEvent(selector, start, start, 2));
@@ -2424,7 +2436,7 @@ void testTempoSelectorDragAndFractionalOriginal() {
   selector.keyPressed(juce::KeyPress(juce::KeyPress::homeKey));
   expectNear(fixture.tempo, 120.5, "Home also restores the exact original tempo");
   pumpFor(180);
-  const auto right = start.translated(44, 0);
+  const auto right = start.translated(juce::roundToInt(selector.getItemSpacing()), 0);
   selector.mouseDown(pointerEvent(selector, right, right));
   selector.mouseUp(pointerEvent(selector, right, right));
   expectNear(fixture.tempo, 121.5, "tapping the adjacent tempo value selects one BPM higher");

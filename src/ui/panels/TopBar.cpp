@@ -2,6 +2,7 @@
 
 #include "../../PluginProcessor.h"
 #include "../../data/Localization.h"
+#include "../../data/TempoValue.h"
 #include "../../data/SongLibraryStore.h"
 
 #include <algorithm>
@@ -1774,9 +1775,10 @@ void TopBar::timerCallback() {
 }
 
 void TopBar::updateBpmDisplay() {
-  const int bpm =
-      static_cast<int>(std::round(session.getPlaybackTempoBpm()));
-  setButtonTextIfChanged(bpmSegmentButton, bpm > 0 ? juce::String(bpm) : "120");
+  const double bpm = session.getPlaybackTempoBpm();
+  setButtonTextIfChanged(bpmSegmentButton,
+                        std::isfinite(bpm) && bpm > 0.0
+                            ? TempoValue::formatBpm(bpm) : "120");
 }
 
 void TopBar::applyTimeSignature(const juce::String &sigText) {
@@ -1791,7 +1793,7 @@ void TopBar::applyTimeSignature(const juce::String &sigText) {
 }
 
 void TopBar::setBpmAbsolute(double bpm) {
-  if (bpm <= 0.0)
+  if (!std::isfinite(bpm) || bpm <= 0.0)
     return;
   session.setPlaybackTempoBpm(bpm);
   const auto songId = songIdProvider ? songIdProvider() : juce::String{};
@@ -1885,7 +1887,8 @@ void TopBar::showMetronomePopover() {
       addAndMakeVisible(minusButton);
       addAndMakeVisible(plusButton);
 
-      bpmEditor.setInputRestrictions(4, "0123456789.");
+      bpmEditor.setInputRestrictions(10, "0123456789.,");
+      bpmEditor.setKeyboardType(juce::TextInputTarget::decimalKeyboard);
       bpmEditor.setJustification(juce::Justification::centred);
       bpmEditor.onReturnKey = [this] { submitBpmEditor(); };
       bpmEditor.onFocusLost = [this] { submitBpmEditor(); };
@@ -1955,15 +1958,15 @@ void TopBar::showMetronomePopover() {
       if (!bpmProvider)
         return;
       bpmEditor.setText(
-          juce::String(static_cast<int>(std::round(bpmProvider()))),
+          TempoValue::formatBpm(bpmProvider()),
           juce::dontSendNotification);
     }
 
     void submitBpmEditor() {
       if (!onSetBpm)
         return;
-      const double bpm = bpmEditor.getText().trim().getDoubleValue();
-      if (bpm > 0.0)
+      double bpm = 0.0;
+      if (TempoValue::parseBpm(bpmEditor.getText(), bpm))
         onSetBpm(bpm);
       syncBpmEditor();
     }
@@ -1975,7 +1978,7 @@ void TopBar::showMetronomePopover() {
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
       [this] { return session.getPlaybackTempoBpm(); }, timeSignature);
-  panel->setSize(230, 92);
+  panel->setSize(270, 92);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)

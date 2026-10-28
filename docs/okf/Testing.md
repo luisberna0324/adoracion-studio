@@ -926,3 +926,25 @@ Logs locales: `/workspace/scratch/blank-collapsed-final-build.log`,
 `blank-collapse-gate-output.log`, `blank-conversion-offline-test.log` y
 `blank-collapse-waveform-regressions.log`. Capturas en
 `build/blank-waveform-collapse-qa/`. Sin push, PR, Actions, publicación o deploy.
+
+
+### BPM decimal en edicion y persistencia (2026-10-28)
+
+Compilacion macOS Release arm64 y cinco suites CTest verificadas:
+
+- `song_import_wizard`: teclado decimal, filtro real al escribir punto/coma,
+  validacion de texto completo y guardado/reapertura de BPM base fraccional.
+- `waveform_editing`: popover real de TopBar, Return/perdida de foco,
+  reapertura, hasta seis decimales, limites del motor, entradas mal formadas,
+  popover de metronomo y seleccion de regiones de tempo.
+- `song_project_creation`: proyecto real, biblioteca legacy, remoto, metadatos
+  de letras, descriptor Cloud, compatibilidad JSON/fingerprints enteros,
+  reparacion/rechazo de valores no finitos y overrides fraccionales cercanos.
+- `practice_panel_gestures`: texto/valor accesible decimal, espacio para la
+  etiqueta, pasos de un BPM conservando la fraccion y restauracion del original.
+- `metronome_engine`: regresion del clic y tempo fraccional existente.
+
+Resultado local: 5/5 suites correctas. Las pruebas de I/O usan raices temporales
+privadas; el handler de accesibilidad usa un peer nativo oculto. Esto no acredita
+el teclado del iPhone/Android fisico ni un despliegue Cloud. El backend necesita
+aceptar/persistir BPM sin `Math.floor` antes de subir canciones de BPM decimal.

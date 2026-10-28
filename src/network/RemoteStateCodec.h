@@ -1,6 +1,7 @@
 #pragma once
 #include "../data/SongData.h"
 #include "../data/SongLibraryStore.h"
+#include <cmath>
 #include <map>
 
 namespace playworship::remote {
@@ -116,7 +117,9 @@ inline ImportedSongData decodeSong(const juce::var &v) {
   ImportedSongData song;
   song.id = v.getProperty("id", {}).toString(); song.projectId = v.getProperty("projectId", {}).toString();
   song.title = v.getProperty("title", {}).toString(); song.artist = v.getProperty("artist", {}).toString();
-  song.bpm = static_cast<int>(v.getProperty("bpm", 120)); song.key = v.getProperty("key", {}).toString();
+  song.bpm = static_cast<double>(v.getProperty("bpm", 120.0));
+  if (!std::isfinite(song.bpm)) song.bpm = 120.0;
+  song.key = v.getProperty("key", {}).toString();
   song.timeSignature = v.getProperty("timeSignature", {}).toString();
   song.blankSong = static_cast<bool>(v.getProperty("blankSong", false));
   song.blankSongBars = static_cast<int>(v.getProperty("blankSongBars", 0));

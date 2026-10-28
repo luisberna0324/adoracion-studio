@@ -21,6 +21,8 @@
 namespace {
 constexpr double kMinPartDurationSec = 0.25;
 constexpr double kArrangementEpsilon = 0.0001;
+// Base tempo comparisons must distinguish explicit fractional overrides.
+constexpr double kTempoBpmEpsilon = 0.000001;
 
 // Internal song storage is portable and lossless on every platform.  Keeping
 // this uniform prevents a project created on macOS from reintroducing ALAC in
@@ -429,7 +431,7 @@ void followEditedBaseTempoInDefaultMap(ImportedSongData &edited,
                             : juce::String("4/4");
   if (std::abs(oldRegion.startSec) > 0.01 ||
       std::abs(oldRegion.endSec - estimateSongLengthSeconds(previous)) > 0.05 ||
-      std::abs(oldRegion.bpm - oldBpm) > 0.01 ||
+      std::abs(oldRegion.bpm - oldBpm) > kTempoBpmEpsilon ||
       oldRegion.timeSignature != oldMeter ||
       oldRegion.clickDivision != ClickDivision::Quarter ||
       !oldRegion.accentEnabled)
@@ -1205,7 +1207,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     settings.arrangement = reconcileArrangementForSong(settings.arrangement,
                                                        song, arrangementChanged);
     const double previousBaseBpm = previousSong.bpm > 0 ? previousSong.bpm : 120.0;
-    if (std::abs(settings.tempoBpm - previousBaseBpm) < 0.01)
+    if (std::abs(settings.tempoBpm - previousBaseBpm) < kTempoBpmEpsilon)
       settings.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
 
     bool stemsChanged = song.stems.size() != previousSong.stems.size();
@@ -1307,7 +1309,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
           item.window = createDefaultWindowForSong(reopened.song);
         item.arrangement = reconcileArrangementForSong(item.arrangement,
                                                        reopened.song, itemChanged);
-        if (std::abs(item.tempoBpm - previousBaseBpm) < 0.01) {
+        if (std::abs(item.tempoBpm - previousBaseBpm) < kTempoBpmEpsilon) {
           item.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
           itemChanged = true;
         }
@@ -1592,7 +1594,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
         item.window = createDefaultWindowForSong(song);
       item.arrangement = reconcileArrangementForSong(item.arrangement, song,
                                                      itemChanged);
-      if (std::abs(item.tempoBpm - previousBaseBpm) < 0.01) {
+      if (std::abs(item.tempoBpm - previousBaseBpm) < kTempoBpmEpsilon) {
         item.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
         itemChanged = true;
       }
@@ -1726,7 +1728,7 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
     bool changed = false;
     for (auto &item : setlist.items) {
       if (item.songId == song.id &&
-          std::abs(item.tempoBpm - previousBaseBpm) < 0.01) {
+          std::abs(item.tempoBpm - previousBaseBpm) < kTempoBpmEpsilon) {
         item.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
         item.updatedMs = now;
         changed = true;
@@ -3068,7 +3070,11 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   song.projectId = obj->getProperty("projectId").toString();
   song.title = obj->getProperty("title").toString();
   song.artist = obj->getProperty("artist").toString();
-  song.bpm = static_cast<int>(obj->getProperty("bpm"));
+  song.bpm = static_cast<double>(obj->getProperty("bpm"));
+  if (!std::isfinite(song.bpm)) {
+    song.bpm = 0.0;
+    changed = true;
+  }
   song.key = obj->getProperty("key").toString();
   song.timeSignature = obj->getProperty("timeSignature").toString();
   song.fileType = obj->getProperty("fileType").toString();

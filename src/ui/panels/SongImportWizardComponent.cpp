@@ -1,6 +1,7 @@
 #include "SongImportWizardComponent.h"
 
 #include "../../data/Localization.h"
+#include "../../data/TempoValue.h"
 #include "../../data/SessionAuthLogger.h"
 #include "../../data/SongLibraryStore.h"
 #include "../UiCommon.h"
@@ -551,11 +552,11 @@ SongImportWizardComponent::SongImportWizardComponent(
                       L10n::tr(u8"Título de canción", "Song title"));
   configureTextEditor(artistEditor, L10n::tr("Artista", "Artist"));
   configureTextEditor(bpmEditor, "BPM");
-  bpmEditor.setInputRestrictions(3, "0123456789");
-  bpmEditor.setKeyboardType(juce::TextInputTarget::numericKeyboard);
+  bpmEditor.setInputRestrictions(10, "0123456789.,");
+  bpmEditor.setKeyboardType(juce::TextInputTarget::decimalKeyboard);
   bpmEditor.setTooltip(L10n::tr(
-      "BPM original de la canción: ajusta la referencia musical. El tempo de reproducción se cambia en el reproductor.",
-      "Original song BPM: changes the musical reference. Playback tempo is adjusted in the player."));
+      "BPM original de la canción: admite decimales con punto o coma (120.5 o 120,5). El tempo de reproducción se cambia en el reproductor.",
+      "Original song BPM: accepts decimals with a dot or comma (120.5 or 120,5). Playback tempo is adjusted in the player."));
   addAndMakeVisible(songTitleEditor);
   addAndMakeVisible(artistEditor);
   addAndMakeVisible(bpmEditor);
@@ -1975,7 +1976,7 @@ void SongImportWizardComponent::handleSelectedStemFiles(
 void SongImportWizardComponent::preloadFromExistingSong() {
   songTitleEditor.setText(initialSong.title, juce::dontSendNotification);
   artistEditor.setText(initialSong.artist, juce::dontSendNotification);
-  bpmEditor.setText(initialSong.bpm > 0 ? juce::String(initialSong.bpm)
+  bpmEditor.setText(initialSong.bpm > 0 ? TempoValue::formatBpm(initialSong.bpm)
                                         : juce::String(),
                     juce::dontSendNotification);
   if (initialSong.key.isNotEmpty())
@@ -2373,13 +2374,14 @@ bool SongImportWizardComponent::validateStepMetadata() {
     return false;
   }
   const auto bpmText = bpmEditor.getText().trim();
+  double bpm = 0.0;
   if (bpmText.isNotEmpty() &&
-      (bpmText.getIntValue() < 20 || bpmText.getIntValue() > 300)) {
+      (!TempoValue::parseBpm(bpmText, bpm) || bpm < 20.0 || bpm > 300.0)) {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
         L10n::tr("BPM fuera de rango", "BPM out of range"),
-        L10n::tr("Usa un BPM original entre 20 y 300, o déjalo vacío si es desconocido.",
-                 "Use an original BPM between 20 and 300, or leave it empty if unknown."));
+        L10n::tr("Usa un BPM original entre 20 y 300; admite decimales con punto o coma. Déjalo vacío si es desconocido.",
+                 "Use an original BPM between 20 and 300; decimals may use a dot or comma. Leave it empty if unknown."));
     return false;
   }
   return true;
@@ -2419,7 +2421,8 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
 
   song.title = songTitleEditor.getText().trim();
   song.artist = artistEditor.getText().trim();
-  song.bpm = bpmEditor.getText().getIntValue();
+  song.bpm = 0.0;
+  TempoValue::parseBpm(bpmEditor.getText(), song.bpm);
   song.key = keyBox.getText().trim();
   song.timeSignature = timeSignatureBox.getText().trim();
   song.fileType = (creatingBlankSong || song.blankSong) ? "blank"

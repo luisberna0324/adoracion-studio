@@ -6,6 +6,7 @@
 #include "data/AssetBootstrapManager.h"
 #include "data/Localization.h"
 #include "ui/components/ChannelStripCard.h"
+#include "ui/components/MetronomePanel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -56,6 +57,13 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static juce::String bpmText(TopBar &bar) {
+    bar.updateBpmDisplay();
+    return bar.bpmSegmentButton.getButtonText();
+  }
+  static juce::TextEditor &tempoEditor(WaveformBar &bar) { return bar.tempoBpmEditor; }
+  static const SongTempoMapSnapshot &tempoMap(const WaveformBar &bar) { return bar.tempoMap; }
+  static void selectTempoRegion(WaveformBar &bar, int index) { bar.selectTempoRegion(index); }
   static bool hasNoWaveform(const WaveformBar &bar) { return bar.waveformBins.empty(); }
   static bool blankEditEnabled(const WaveformBar &bar) { return bar.editButton.isEnabled(); }
 
@@ -1476,6 +1484,165 @@ void testLoopBorderPhaseAndCorners() {
     if (moving.getPixelAt(x, 3) != stopped.getPixelAt(x, 3)) ++differences;
   }
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
+}
+
+juce::TextEditor *findTempoEditor(juce::Component &parent) {
+  for (auto *child : parent.getChildren()) {
+    if (auto *editor = dynamic_cast<juce::TextEditor *>(child))
+      return editor;
+    if (auto *editor = findTempoEditor(*child))
+      return editor;
+  }
+  return nullptr;
+}
+
+void typeTempo(juce::TextEditor &editor, const juce::String &value) {
+  editor.selectAll();
+  editor.insertTextAtCaret(value);
+  expect(editor.getText() == value,
+         "the actual tempo field accepts every digit and decimal separator");
+}
+
+void testTopbarDecimalTempoEditing() {
+  ProcessorFixture fixture;
+  struct TempoHostEditor final : juce::AudioProcessorEditor {
+    explicit TempoHostEditor(MTControlsAudioProcessor &processor)
+        : juce::AudioProcessorEditor(processor) {}
+  };
+  TempoHostEditor host(fixture.processor);
+  TopBar bar(fixture.processor);
+  host.setSize(1200, 700);
+  host.addAndMakeVisible(bar);
+  bar.setBounds(0, 0, 1200, 80);
+  fixture.processor.setPlaybackTempoBpm(120.125);
+  expect(WaveformEditingTestAccess::bpmText(bar) == "120.125",
+         "the main tempo button displays the fractional engine value");
+
+  const auto open = [&]() -> juce::TextEditor & {
+    bar.triggerMetronomePopoverFromMidi();
+    auto *editor = findTempoEditor(host);
+    expect(editor != nullptr, "opening the real BPM popover exposes its text field");
+    expect(editor->getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+           "the player requests the platform decimal keyboard");
+    return *editor;
+  };
+  auto &editor = open();
+  expect(editor.getText() == "120.125",
+         "opening the BPM field preserves the displayed fractional value");
+  typeTempo(editor, "120.5");
+  editor.onReturnKey();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 120.5,
+             "Return submits a point-separated decimal to the real audio processor");
+  expect(WaveformEditingTestAccess::bpmText(bar) == "120.5" && editor.getText() == "120.5",
+         "the button and field agree after decimal submission");
+  typeTempo(editor, "121,375");
+  editor.onFocusLost();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 121.375,
+             "focus loss submits a comma-separated decimal without truncation");
+  editor.onFocusLost();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 121.375,
+             "repeated focus loss cannot round the current tempo");
+  for (const auto *invalid : {"121..5", "121,5.2", "", "."}) {
+    typeTempo(editor, invalid);
+    editor.onReturnKey();
+    expectNear(fixture.processor.getPlaybackTempoBpm(), 121.375,
+               "an invalid decimal cannot partially replace the playback tempo");
+    expect(editor.getText() == "121.375", "invalid playback input restores the current value");
+  }
+  typeTempo(editor, "1.5");
+  editor.onReturnKey();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 90.0,
+             "decimal input retains the engine minimum of 0.75 times the original BPM");
+  typeTempo(editor, "999.5");
+  editor.onReturnKey();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 240.0,
+             "decimal input retains the engine maximum of twice the original BPM");
+  typeTempo(editor, "120.123456");
+  editor.onReturnKey();
+  expect(std::abs(fixture.processor.getPlaybackTempoBpm() - 120.123456) < 1.0e-9,
+         "the player accepts a full six-place fractional BPM");
+  dismissActiveActionPopover();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  auto &reopened = open();
+  expect(reopened.getText() == "120.123456",
+         "closing and reopening the BPM editor retains all displayed decimal places");
+  reopened.onFocusLost();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 120.123456,
+             "opening and leaving the field keeps the engine tempo unchanged");
+  dismissActiveActionPopover();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+}
+
+void testMetronomePopoverDecimalTempoEditing() {
+  double bpm = 120.125;
+  int changes = 0;
+  MetronomePanel::MetronomePopover panel("4/4", [] {}, [](const auto &) {},
+      [&](double value) { bpm = value; ++changes; },
+      [&](double delta) { bpm += delta; }, [&] { return bpm; });
+  auto *editor = findTempoEditor(panel);
+  expect(editor != nullptr && editor->getText() == "120.125",
+         "the metronome popover opens with its exact fractional BPM");
+  expect(editor->getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+         "the metronome field requests the decimal keyboard");
+  typeTempo(*editor, "120,75");
+  editor->onReturnKey();
+  expectNear(bpm, 120.75, "metronome Return accepts comma-separated decimals");
+  typeTempo(*editor, "121.625");
+  editor->onFocusLost();
+  expectNear(bpm, 121.625, "metronome focus loss keeps point-separated decimals");
+  const int validChanges = changes;
+  for (const auto *invalid : {"121..5", "121,5.2", "", "."}) {
+    typeTempo(*editor, invalid);
+    editor->onReturnKey();
+    expectNear(bpm, 121.625, "invalid metronome input leaves the previous tempo intact");
+    expect(changes == validChanges && editor->getText() == "121.625",
+           "invalid metronome input neither submits a prefix nor clears the display");
+  }
+}
+
+void testRegionalDecimalTempoEditing() {
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  SongTempoMapSnapshot map;
+  SongTempoRegionSnapshot first;
+  first.id = "fractional-first";
+  first.startSec = 0.0;
+  first.endSec = 15.0;
+  first.bpm = 120.125;
+  first.timeSignature = "4/4";
+  auto second = first;
+  second.id = "fractional-second";
+  second.startSec = 15.0;
+  second.endSec = 30.0;
+  second.bpm = 96.75;
+  map.regions = {first, second};
+  wave.setTempoMap(map);
+  SongTempoMapSnapshot published;
+  wave.setOnTempoMapChanged([&](const auto &updated) { published = updated; });
+  auto &editor = WaveformEditingTestAccess::tempoEditor(wave);
+  expect(editor.getText() == "120.125", "regional tempo selection shows its fractional BPM");
+  expect(editor.getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+         "the regional tempo field requests the platform decimal keyboard");
+  typeTempo(editor, "123,625");
+  editor.onReturnKey();
+  expect(published.regions.size() == 2, "regional Return publishes the existing tempo map");
+  expectNear(published.regions[0].bpm, 123.625,
+             "regional tempo submission preserves a comma-separated decimal");
+  expectNear(published.regions[1].bpm, 96.75,
+             "editing one regional tempo preserves the other region");
+  WaveformEditingTestAccess::selectTempoRegion(wave, 1);
+  expect(editor.getText() == "96.75", "switching regions retains each exact fractional value");
+  WaveformEditingTestAccess::selectTempoRegion(wave, 0);
+  expect(editor.getText() == "123.625", "returning to an edited region retains its decimal tempo");
+  editor.onFocusLost();
+  expectNear(WaveformEditingTestAccess::tempoMap(wave).regions[0].bpm, 123.625,
+             "regional focus loss cannot round an unchanged fractional value");
+  for (const auto *invalid : {"123..5", "123,5.2", "", "."}) {
+    typeTempo(editor, invalid);
+    editor.onReturnKey();
+    expectNear(WaveformEditingTestAccess::tempoMap(wave).regions[0].bpm, 123.625,
+               "invalid regional decimal input cannot replace a valid tempo with a prefix");
+  }
 }
 
 void testDesktopToolbarPreservesActionsAndTitle() {
@@ -3275,6 +3442,9 @@ int main() {
       std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
     }
   };
+  run("topbar decimal tempo entry and reopening", testTopbarDecimalTempoEditing);
+  run("metronome decimal tempo entry", testMetronomePopoverDecimalTempoEditing);
+  run("regional decimal tempo entry", testRegionalDecimalTempoEditing);
   run("playback dirty regions match complete waveform paint", testPlaybackDirtyRegionsMatchFullPaint);
   run("playback cache reuse and source invalidation", testPlaybackCacheReuseAndInvalidation);
   run("playback limits reuse cache without baked shading", testPlaybackLimitsReuseCacheWithoutBakingShading);
