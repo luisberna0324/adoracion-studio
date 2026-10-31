@@ -34,6 +34,11 @@ public:
   void setLiveModeControls(std::function<void()> toggle,
                            std::function<bool()> state,
                            std::function<bool()> enabled);
+#if !JUCE_IOS && !JUCE_ANDROID
+  void setLyricsViewControls(std::function<void(bool)> select,
+                             std::function<bool()> state,
+                             std::function<bool()> enabled);
+#endif
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
   void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
@@ -73,6 +78,10 @@ private:
   std::function<void()> onLiveModeToggle;
   std::function<bool()> liveModeState;
   std::function<bool()> liveModeEnabled;
+#if !JUCE_IOS && !JUCE_ANDROID
+  std::function<void(bool)> onLyricsViewSelect;
+  std::function<bool()> lyricsViewState, lyricsViewEnabled;
+#endif
   using IconButton = TransportIconButton;
 
   class RoundedLabel : public juce::Label {
@@ -112,6 +121,9 @@ private:
     void paintButton(juce::Graphics &, bool, bool) override;
   } waveformViewButton{"timeline-waveform"}, sectionsViewButton{"timeline-sections"},
       helpButton{"learning-help"};
+#if !JUCE_IOS && !JUCE_ANDROID
+  DesktopTextButton lyricsViewButton{"timeline-lyrics"};
+#endif
   // The parent paints the song card; this button supplies touch/keyboard access.
   class SongPickerButton final : public juce::Button {
   public:

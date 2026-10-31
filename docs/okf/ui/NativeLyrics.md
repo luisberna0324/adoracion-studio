@@ -15,6 +15,10 @@ En iOS y Android, el menú de una canción local de Biblioteca o del setlist ofr
 no depende del índice visual de la fila. iOS abre un `UITextView` en un
 `UINavigationController` a pantalla completa. Android presenta un editor nativo
 con un único `EditText`. Escritorio conserva la letra, pero no ofrece esta acción.
+El documento nativo `lyrics` es independiente de las marcas de proyección
+`freeShowCues` de FreeShow en escritorio. Ambos se conservan juntos en la
+canción y el proyecto; guardar texto o acordes no sustituye los destinos de
+proyección, y editar marcas de FreeShow no modifica la letra nativa.
 Una canción sin letra sigue siendo válida; el editor vacío invita a pegar o
 escribir y explica cómo marcar un fragmento. No inserta texto de ejemplo.
 

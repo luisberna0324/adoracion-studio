@@ -210,6 +210,12 @@ public:
                                     const SongArrangementSnapshot &arrangement,
                                     bool isCustomArrangement);
   static bool resetSongArrangement(const juce::String &songId);
+  static bool getSongFreeShowCues(const juce::String &songId,
+                            playworship::lyrics::SongLyrics &outLyrics);
+  static bool updateSongFreeShowCues(
+      const juce::String &songId,
+      const playworship::lyrics::SongLyrics &lyrics,
+      juce::String *errorMessage = nullptr);
   static bool getActiveSetlistArrangement(const juce::String &songId,
                                           SongArrangementSnapshot &outArrangement,
                                           bool &outIsCustomArrangement);

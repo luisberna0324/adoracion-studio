@@ -11,6 +11,7 @@
 #include "ui/panels/PadsComponent.h"
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/SongImportWizardComponent.h"
+#include "ui/panels/LyricsPanel.h"
 #include "network/RemoteStateCodec.h"
 
 #include <atomic>
@@ -193,6 +194,23 @@ struct LocalDemoAccessTestAccess {
     editor.refreshCloudLibrary("offline demo regression");
     editor.updateTeamsOnboarding();
   }
+#if !JUCE_IOS && !JUCE_ANDROID
+  static void installLyricsPreview(MTControlsAudioProcessorEditor &editor,
+                                  MTControlsAudioProcessor &processor,
+                                  const playworship::lyrics::SongLyrics &lyrics) {
+    juce::String error;
+    expect(SongLibraryStore::updateSongFreeShowCues(editor.currentLoadedSong.id, lyrics, &error),
+           "preview persists independent lyric marks through the project store");
+    editor.currentLoadedSong.freeShowCues = lyrics;
+    processor.setSongLyrics(lyrics);
+    expect(editor.lyricsPanel != nullptr, "desktop lyric panel is present");
+    editor.lyricsPanel->setSongLyrics(lyrics);
+    editor.lyricsPanel->setDuration(processor.getSongLengthSeconds());
+    editor.lyricsPanel->setArrangement(processor.getSongArrangementSnapshot());
+    editor.lyricsViewActive = true;
+    editor.resized();
+  }
+#endif
   static bool teamsAndCatalogRemainInactive(const MTControlsAudioProcessorEditor &editor) {
     return !editor.teamsOnboardingPending && !editor.hasTeamsMembership &&
         !editor.canManageSharedCloud && editor.cloudCatalogSongs.empty() &&
@@ -730,7 +748,7 @@ void testLocalSessionIsolationAndRestart() {
          "all local credential, session restart and Teams scenarios make zero Firebase requests");
 }
 
-void previewLocalDemoLogin(int seconds) {
+void previewLocalDemoLogin(int seconds, bool lyricsPreview = false) {
   // The optional real peer starts at Welcome, with no account fixture and
   // private app storage. It supports manual typing/navigation/transport and
   // is never shown by CTest. Reusing the production editor gives visual QA
@@ -742,20 +760,70 @@ void previewLocalDemoLogin(int seconds) {
   MTControlsAudioProcessor processor;
   class PreviewWindow final : public juce::DocumentWindow {
   public:
-    explicit PreviewWindow(MTControlsAudioProcessor &processor)
-        : juce::DocumentWindow("PlayWorship - Acceso local (prueba aislada)",
+    explicit PreviewWindow(MTControlsAudioProcessor &processor, bool lyricsView)
+        : juce::DocumentWindow(lyricsView ? "PlayWorship - Editor real (prueba aislada)"
+                                        : "PlayWorship - Acceso local (prueba aislada)",
                                juce::Colour(0xff14221b),
                                juce::DocumentWindow::closeButton) {
       setUsingNativeTitleBar(true);
       setResizable(true, false);
       setContentOwned(new MTControlsAudioProcessorEditor(processor), false);
-      setContentComponentSize(1200, 760);
+      setContentComponentSize(lyricsView ? 1440 : 1200, lyricsView ? 900 : 760);
       centreWithSize(getWidth(), getHeight());
       setVisible(true);
       toFront(true);
     }
     void closeButtonPressed() override { setVisible(false); }
-  } window(processor);
+  } window(processor, lyricsPreview);
+
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (lyricsPreview) {
+    auto &editor = *static_cast<MTControlsAudioProcessorEditor *>(window.getContentComponent());
+    // The existing local-demo login flow is exercised unchanged. Only this
+    // optional isolated test prepares data; no production authentication path changes.
+    LocalDemoAccessTestAccess::login(editor, "usuarioplay0324", "usuarioplay0324");
+    assertPreparedDemo(processor, editor);
+    auto &client = processor.getFreeShowClient();
+    std::atomic<bool> connected{false}, connectionFinished{false}, catalogueFinished{false};
+    client.testConnection([&](bool ok, juce::String) {
+      connected.store(ok); connectionFinished.store(true);
+    });
+    waitFor([&] { return connectionFinished.load(); }, "real FreeShow connection completes");
+    expect(connected.load(), "lyrics preview requires the real local FreeShow API");
+    playworship::lyrics::ShowCatalog catalogue;
+    client.requestShow("pw-synthetic-validation", [&](auto result) {
+      catalogue = std::move(result); catalogueFinished.store(true);
+    });
+    waitFor([&] { return catalogueFinished.load(); }, "real FreeShow catalogue completes");
+    expect(catalogue.ok(), "real synthetic FreeShow show is resolved");
+    const playworship::lyrics::Layout *layout = nullptr;
+    for (const auto &candidate : catalogue.layouts)
+      if (candidate.id == "principal") layout = &candidate;
+    expect(layout != nullptr && layout->slides.size() == 7,
+           "fixture contains two chorus screens repeated twice and literal Coro2");
+    playworship::lyrics::SongLyrics lyrics;
+    lyrics.enabled = true;
+    lyrics.showId = catalogue.id; lyrics.showName = catalogue.name;
+    lyrics.layoutId = layout->id; lyrics.layoutName = layout->name;
+    const double times[] = {0.0, 13.3, 19.4, 35.2, 49.8, 58.9, 75.2};
+    for (size_t i = 0; i < layout->slides.size(); ++i) {
+      playworship::lyrics::Mark mark;
+      mark.id = "preview-mark-" + juce::String(static_cast<int>(i + 1));
+      mark.seconds = times[i]; mark.target = layout->slides[i].target;
+      lyrics.marks.push_back(std::move(mark));
+    }
+    playworship::lyrics::Mark hide;
+    hide.id = "preview-hide"; hide.seconds = 86.0;
+    hide.target.hide = true; hide.target.title = "Ocultar letras";
+    lyrics.marks.push_back(std::move(hide));
+    LocalDemoAccessTestAccess::installLyricsPreview(editor, processor, lyrics);
+    std::cout << "Lyrics preview: real production editor and FreeShow v1.6.6 API; "
+                 "own synthetic lyrics; existing bundled demo audio; no output command sent.\n"
+              << std::flush;
+  }
+#else
+  juce::ignoreUnused(lyricsPreview);
+#endif
 
   std::cout << "Local demo preview: real editor; private storage; enter "
             << "usuarioplay0324 / usuarioplay0324. Closes in " << seconds
@@ -836,10 +904,11 @@ int main(int argc, char **argv) {
     }
     const bool environmentPreview = juce::SystemStats::getEnvironmentVariable(
         "PLAYWORSHIP_LOCAL_DEMO_PREVIEW", {}) == "1";
-    if (environmentPreview || (argc > 1 && juce::String(argv[1]) == "--preview")) {
+    const bool lyricsPreview = argc > 1 && juce::String(argv[1]) == "--lyrics-preview";
+    if (environmentPreview || lyricsPreview || (argc > 1 && juce::String(argv[1]) == "--preview")) {
       const int seconds = argc > 2 ? juce::jlimit(15, 300, juce::String(argv[2]).getIntValue())
                                   : (environmentPreview ? 300 : 180);
-      previewLocalDemoLogin(seconds);
+      previewLocalDemoLogin(seconds, lyricsPreview);
       return 0;
     }
     testPhoneDrawerTextInputSurvivesRelayout();

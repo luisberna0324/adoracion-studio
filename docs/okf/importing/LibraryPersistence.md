@@ -229,7 +229,15 @@ habituales del reproductor. El botón nuevo guarda cero compases y arreglo vací
 `ImportedSongData::lyrics` es opcional. El editor nativo de la lista de canciones
 conserva texto y marcas sobre ese texto; iOS añade acordes desde su menú contextual.
 No guarda vínculos con el timeline, la guía, FreeShow o `SongArrangementSnapshot`
-ni añade un editor de escritorio. El esquema 1 histórico permanece sin cambios:
+ni añade un editor de escritorio.
+
+La proyección de FreeShow conserva por separado `freeShowCues` en la metadata y
+en los ajustes del proyecto. Guardar la letra nativa conserva esas marcas;
+guardar las marcas conserva `song.lyrics`, incluidos sus acordes. Los paquetes
+de la rama FreeShow anterior con marcas bajo `lyrics` se distinguen por su
+formato, no por el nombre de la vista. Véase [FreeShow](../integrations/FreeShow.md).
+
+El esquema 1 histórico permanece sin cambios:
 
 ```json
 {

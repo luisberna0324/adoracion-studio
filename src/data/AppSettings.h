@@ -27,6 +27,11 @@ struct AssetsBootstrapState {
   juce::int64 updatedAtMs = 0;
 };
 
+struct FreeShowEndpointSettings {
+  juce::String host = "127.0.0.1";
+  int port = 5506;
+};
+
 enum class MidiBindingMode { Absolute = 0, Toggle = 1, Momentary = 2 };
 enum class MidiBindingSourceType { CC = 0, Note = 1 };
 
@@ -85,6 +90,8 @@ public:
   static void setLastSelectedSongId(const juce::String &songId);
   static juce::String getRemoteServerAlias();
   static void setRemoteServerAlias(const juce::String &alias);
+  static FreeShowEndpointSettings getFreeShowEndpoint();
+  static bool setFreeShowEndpoint(const FreeShowEndpointSettings &);
   static juce::int64 getLastSuccessfulLoginMs();
   static void setLastSuccessfulLoginMs(juce::int64 value);
   static juce::int64 getReauthGraceDeadlineMs();

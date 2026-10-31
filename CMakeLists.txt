@@ -312,6 +312,12 @@ if(MTCONTROLS_USE_BUNGEE)
     message(STATUS "Bungee backend: required and enabled (${MTCONTROLS_BUNGEE_DIR})")
 endif()
 
+add_library(PlayWorshipLyricsModel STATIC src/integrations/FreeShowModel.cpp)
+target_include_directories(PlayWorshipLyricsModel PUBLIC src)
+target_compile_definitions(PlayWorshipLyricsModel PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(PlayWorshipLyricsModel PUBLIC juce::juce_core)
+set_target_properties(PlayWorshipLyricsModel PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
     add_test(NAME native_auth_provider_policy
@@ -1041,6 +1047,57 @@ if(MTCONTROLS_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsStandaloneAudioRuntimeTests>")
 
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT ANDROID)
+        juce_add_console_app(MTControlsFreeShowProtocolTests PRODUCT_NAME "FreeShow Protocol Tests")
+        target_sources(MTControlsFreeShowProtocolTests PRIVATE tests/freeshow_protocol_tests.cpp
+            src/integrations/FreeShowClient.cpp)
+        target_include_directories(MTControlsFreeShowProtocolTests PRIVATE src)
+        target_link_libraries(MTControlsFreeShowProtocolTests PRIVATE PlayWorshipLyricsModel)
+        add_test(NAME freeshow_protocol COMMAND "$<TARGET_FILE:MTControlsFreeShowProtocolTests>")
+
+        juce_add_console_app(MTControlsLyricsCueTests PRODUCT_NAME "Lyrics Cue Scheduler Tests")
+        target_sources(MTControlsLyricsCueTests PRIVATE tests/lyrics_cue_scheduler_tests.cpp)
+        target_include_directories(MTControlsLyricsCueTests PRIVATE src)
+        target_link_libraries(MTControlsLyricsCueTests PRIVATE juce::juce_core)
+        add_test(NAME lyrics_cue_scheduler COMMAND "$<TARGET_FILE:MTControlsLyricsCueTests>")
+
+        juce_add_console_app(MTControlsLyricsPersistenceTests PRODUCT_NAME "Lyrics Persistence Tests")
+        target_sources(MTControlsLyricsPersistenceTests PRIVATE tests/lyrics_persistence_tests.cpp
+            src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+        target_include_directories(MTControlsLyricsPersistenceTests PRIVATE src)
+        target_compile_definitions(MTControlsLyricsPersistenceTests PRIVATE
+            JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+        target_link_libraries(MTControlsLyricsPersistenceTests PRIVATE MTControls MTControlsAssets
+            juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+        juce_generate_juce_header(MTControlsLyricsPersistenceTests)
+        add_test(NAME lyrics_persistence COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+            "$<TARGET_FILE:MTControlsLyricsPersistenceTests>")
+
+        foreach(_lyrics_case IN ITEMS Panel Processor)
+            string(TOLOWER "${_lyrics_case}" _lyrics_file)
+            juce_add_console_app(MTControlsLyrics${_lyrics_case}Tests
+                PRODUCT_NAME "Lyrics ${_lyrics_case} Tests")
+            target_sources(MTControlsLyrics${_lyrics_case}Tests PRIVATE
+                tests/lyrics_${_lyrics_file}_tests.cpp
+                src/data/SongLibraryStore.cpp src/data/AppSettings.cpp
+                src/data/SessionAuthLogger.cpp src/data/AssetBootstrapManager.cpp)
+            target_include_directories(MTControlsLyrics${_lyrics_case}Tests PRIVATE src)
+            target_compile_definitions(MTControlsLyrics${_lyrics_case}Tests PRIVATE
+                JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+            target_link_libraries(MTControlsLyrics${_lyrics_case}Tests PRIVATE
+                MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp
+                juce::juce_cryptography)
+            juce_generate_juce_header(MTControlsLyrics${_lyrics_case}Tests)
+            add_test(NAME lyrics_${_lyrics_file} COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+                "$<TARGET_FILE:MTControlsLyrics${_lyrics_case}Tests>")
+        endforeach()
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(lyrics_panel PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endif()
+
     # Build only the regression executables in CI; this avoids packaging and
     # signing the standalone app while still building MTControls where needed.
     get_property(_mtcontrols_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
@@ -1051,6 +1108,7 @@ if(MTCONTROLS_BUILD_TESTS)
             # Linux tests must not acquire an unused GTK/WebKit dependency.
             target_compile_definitions(${_mtcontrols_target} PRIVATE
                 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+            target_link_libraries(${_mtcontrols_target} PRIVATE PlayWorshipLyricsModel)
             list(APPEND _mtcontrols_test_targets "${_mtcontrols_target}")
         endif()
     endforeach()
@@ -1453,6 +1511,13 @@ target_sources(MTControls PRIVATE
     src/platform/NativeSongLyricsEditor.cpp src/platform/NativeSongLyricsEditor.h
     src/platform/NativeSongLyricsEditing.cpp src/platform/NativeSongLyricsEditing.h
     src/platform/NativeSongLyricsEditor_android.cpp)
+
+target_link_libraries(MTControls PUBLIC PlayWorshipLyricsModel)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT ANDROID)
+    target_sources(MTControls PRIVATE
+        src/integrations/FreeShowClient.cpp
+        src/ui/panels/LyricsPanel.cpp)
+endif()
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(MTControls PRIVATE "-framework SystemConfiguration")

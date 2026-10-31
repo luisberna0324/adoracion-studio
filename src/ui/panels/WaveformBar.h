@@ -4,6 +4,7 @@
 #include "../UiCommon.h"
 #include "../components/AppModal.h"
 #include "PracticeTimelineRuler.h"
+#include "TimelineInsertionAnchor.h"
 #include <JuceHeader.h>
 
 #include <array>
@@ -443,8 +444,7 @@ private:
   bool dragAnchorActive = false;
   bool dragAnchorEdgeIsStart = true;
   double dragAnchoredBoundarySec = 0.0;
-  bool sectionInsertionAnchorValid = false;
-  double sectionInsertionAnchorSec = 0.0;
+  TimelineInsertionAnchor sectionInsertionAnchor;
   float dragViewportStart = 0.0f;
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;

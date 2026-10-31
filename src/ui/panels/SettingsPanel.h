@@ -4,6 +4,10 @@
 #include "../../data/AppSettings.h"
 #include "../../network/RemoteSession.h"
 #include "../learning/LearningGuideModel.h"
+#include "../../integrations/FreeShowClient.h"
+#if !JUCE_IOS && !JUCE_ANDROID
+#include "FreeShowConnectionPanel.h"
+#endif
 #include <JuceHeader.h>
 
 #include <functional>
@@ -83,6 +87,8 @@ public:
                          const juce::String &status,
                          const juce::String &selectedServerName = {});
   void setDiagnosticsBusy(bool busy);
+  void setFreeShowClient(playworship::lyrics::FreeShowClient *);
+  void showFreeShowSettings();
   bool isLearningRemotePageOpen() const;
   juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   void revealLearningTarget(playworship::learning::Anchor);
@@ -135,7 +141,7 @@ private:
   class RoutingRow;
   class SettingsCard;
   class SettingsRowSeparator;
-  enum class Destination { Home, Appearance, Playback, Audio, Routing, Remote, Account, Diagnostics, Learning, Teams };
+  enum class Destination { Home, Appearance, Playback, Audio, Routing, Remote, Account, Diagnostics, Learning, Teams, Integrations };
   class SettingsHomePage;
   juce::Component *getLearningTargetComponent(playworship::learning::Anchor) const;
 
@@ -157,6 +163,7 @@ private:
   SettingsTabButton audioTabButton;
   SettingsTabButton routingTabButton;
   SettingsTabButton diagnosticsTabButton;
+  SettingsTabButton integrationsTabButton;
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtLeft};
   juce::Viewport settingsViewport;
   juce::Component generalPage;
@@ -170,6 +177,9 @@ private:
   juce::Component audioPage;
   juce::Component routingPage;
   juce::Component diagnosticsPage;
+#if !JUCE_IOS && !JUCE_ANDROID
+  std::unique_ptr<FreeShowConnectionPanel> freeShowPage;
+#endif
   juce::Label diagnosticsSectionLabel;
   juce::Label diagnosticsHint;
   juce::Label diagnosticsPrivacyHint;

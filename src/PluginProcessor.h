@@ -20,6 +20,10 @@
 #include "audio/StemOutputRoutingState.h"
 #include "audio/TimeStretchProcessor.h"
 #include "audio/TransportClock.h"
+#if !JUCE_IOS && !JUCE_ANDROID
+#include "audio/LyricsCueScheduler.h"
+#include "integrations/FreeShowClient.h"
+#endif
 #include <JuceHeader.h>
 #include <thread>
 #include <array>
@@ -120,6 +124,12 @@ public:
   double getSongFadeOutSeconds() const noexcept;
   void setSongArrangement(const SongArrangementSnapshot &arrangement,
                           bool isCustomArrangement);
+#if !JUCE_IOS && !JUCE_ANDROID
+  // Desktop control/message-thread API. Lyrics do not own musical sections.
+  void setSongLyrics(const playworship::lyrics::SongLyrics &lyrics);
+  playworship::lyrics::SongLyrics getSongLyrics() const;
+  playworship::lyrics::FreeShowClient &getFreeShowClient() noexcept { return freeShowClient; }
+#endif
   void setSectionAutomationStemIds(const juce::StringArray &stemIds);
   bool beginSectionAutomationEditing(const juce::String &partId, bool remoteOwned = false);
   bool finishSectionAutomationEditing(bool save);
@@ -701,6 +711,17 @@ private:
   // during the incremental engine-v2 migration.
   playworship::audio::TransportClock transportClock;
   playworship::audio::SectionScheduler sectionScheduler;
+#if !JUCE_IOS && !JUCE_ANDROID
+  friend struct LyricsRuntimeTestAccess;
+  playworship::audio::LyricsCueScheduler lyricsCueScheduler;
+  playworship::lyrics::FreeShowClient freeShowClient;
+  mutable juce::CriticalSection lyricsStateLock;
+  playworship::lyrics::SongLyrics songLyrics;
+  uint64_t lyricsRevision = 0, lyricsSongEpoch = 1;
+  std::atomic<bool> lyricsSeekSynchroniseCurrent{true};
+  void rebuildLyricsCueScheduler();
+  void dispatchLyricsCueEvents();
+#endif
   std::atomic<uint64_t> arrangementStructurePublicationSequence{0};
   const juce::String arrangementControlEpoch{juce::Uuid().toString()};
   playworship::audio::SectionScheduler::Snapshot audioSectionSnapshot;
@@ -776,6 +797,7 @@ private:
   double lastBungeeGapUsMicros[maxStemCount]{};
   uint32_t lastBungeeCount[maxStemCount]{};
 
+  void seekSongToInternal(double positionSeconds, bool synchroniseLyrics);
   void clearLoadedSongState();
   void removeAllStemSources();
   void resetStemControls(int activeStemCount) noexcept;

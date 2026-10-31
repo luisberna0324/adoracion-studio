@@ -4,12 +4,18 @@ title: MTControlsAudioProcessor
 description: Procesador principal del plugin - JUCE AudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, processor, audio, plugin, main]
-timestamp: 2026-08-17T02:00:00Z
+timestamp: 2026-10-17T00:00:00Z
 ---
 
 # MTControlsAudioProcessor
 
 Clase principal que extiende `juce::AudioProcessor`. Gestiona toda la pipeline de audio incluyendo stems, mezcla, metrónomo, pads y guías dinámicas.
+
+En escritorio también posee el cliente local FreeShow y el scheduler de marcas
+independientes de letras. `setSongLyrics`, `getSongLyrics` y
+`getFreeShowClient` pertenecen a la capa de control. Audio sólo evalúa tablas
+numéricas acotadas sobre segmentos efectivos y publica eventos; el dispatcher
+y el worker realizan toda comunicación externa. Véase [FreeShow](../integrations/FreeShow.md).
 
 > **Performance**: la captura de telemetría de performance de `processBlock` (stages, gaps, decode, render) está documentada en [`AudioDiagnostics`](AudioDiagnostics.md). Toda métrica de rendimiento del plugin pasa por ese módulo.
 
