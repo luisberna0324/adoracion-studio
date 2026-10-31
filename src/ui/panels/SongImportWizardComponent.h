@@ -51,6 +51,8 @@ public:
   void setProjectDestinationPrompt(ProjectDestinationPrompt prompt) {
     promptProjectDestination = std::move(prompt);
   }
+  using RecoverySubmit = std::function<bool(ImportedSongData, juce::String &, const SongImportProgressFn &)>;
+  void setProjectRecoverySubmit(RecoverySubmit callback) { recoverySubmit = std::move(callback); }
   bool isSubmissionInProgress() const { return isSubmitting; }
 
 private:
@@ -115,9 +117,8 @@ private:
   void styleSecondaryButton(juce::TextButton &button);
   bool usesPhoneCreationLayout() const;
   bool usesCreationLayout() const {
-    return phoneCreationLayout ||
-           (mode == Mode::Import &&
-            (embeddedLibraryPage || !useTouchOptimisedControls()));
+    return phoneCreationLayout || embeddedLibraryPage ||
+           (mode == Mode::Import && !useTouchOptimisedControls());
   }
   void timerCallback() override;
   void revealFocusedMappingEditor();
@@ -163,6 +164,10 @@ private:
   bool isSubmitting = false;
   std::unique_ptr<SongLoadProgressOverlay> submissionOverlay;
   Step currentStep = Step::Metadata;
+  void promptMissingProject(ImportedSongData song);
+  RecoverySubmit recoverySubmit;
+  bool recoveryRequested = false;
+  std::unique_ptr<juce::FileChooser> recoveryChooser;
   std::unique_ptr<juce::FileChooser> stemChooser;
   std::unique_ptr<juce::FileChooser> artworkChooser;
   std::shared_ptr<MobileImportStaging> mobileImportStaging;

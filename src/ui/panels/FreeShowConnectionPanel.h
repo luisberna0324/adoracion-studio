@@ -23,7 +23,9 @@ public:
     help.setJustificationType(juce::Justification::topLeft);
     help.setMinimumHorizontalScale(1.0f);
     for (auto *editor : {&hostEditor, &portEditor, &tokenEditor}) {
-      addAndMakeVisible(*editor); editor->setFont(makeAppFont(15.0f));
+      addAndMakeVisible(*editor);
+      editor->setMultiLine(false);
+      editor->setReturnKeyStartsNewLine(false);
     }
     hostEditor.setTitle("IP FreeShow"); portEditor.setTitle("Puerto REST FreeShow");
     tokenEditor.setTitle("Token FreeShow"); tokenEditor.setPasswordCharacter(0x2022);

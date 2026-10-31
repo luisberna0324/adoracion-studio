@@ -664,6 +664,10 @@ void applyTextEditorTheme(juce::TextEditor &editor,
   editor.setColour(juce::TextEditor::focusedOutlineColourId,
                    UITheme::accent.withAlpha(useTouchOptimisedControls() ? 0.82f
                                                                          : 0.64f));
+  if (!editor.isMultiLine())
+    editor.setJustification(juce::Justification(
+        editor.getJustificationType().getOnlyHorizontalFlags()
+        | juce::Justification::verticallyCentred));
   editor.setIndents(useTouchOptimisedControls() ? 14 : 12,
                     editor.isMultiLine() ? (useTouchOptimisedControls() ? 12 : 10)
                                          : 0);

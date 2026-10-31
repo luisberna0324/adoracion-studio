@@ -8,6 +8,12 @@ timestamp: 2026-10-12T00:00:00-03:00
 
 # Creacion de canciones
 
+El guardado completo de Editar vuelve a empaquetar el proyecto y regenera la onda mixta desde los stems incluidos, aunque no hayan cambiado sus archivos o categorías. No reutiliza los bins del proyecto anterior; actualiza la onda del paquete y su caché local al confirmar el guardado. Conserva los ajustes musicales y las letras existentes.
+
+Al guardar una edición cuyo `.pwproj` falta, el asistente conserva el borrador y ofrece Localizar proyecto, Crear nuevo proyecto o Cancelar. Localizar valida la identidad antes de actualizar; Crear exige una ruta nueva y audios disponibles, recupera ajustes del caché o setlist y conserva la identidad de biblioteca. No se muestra este aviso al abrir Editar.
+
+En Archivos, cada fila muestra el nombre visible del stem (`displayName`), con el nombre físico como tooltip y fallback si no hay título. Los nombres internos UUID de proyectos optimizados no sustituyen los títulos guardados al editar.
+
 El asistente mantiene un borrador al recorrer Detalles, Archivos, Secciones
 (mapeo de pistas) y Revisar. Retroceder no descarta nombres, categorias ni la
 seleccion Cargar. Cancelar el selector de archivos conserva los archivos previos.
@@ -17,7 +23,7 @@ area segura/teclado. Detalles tiene viewport; Archivos una lista desplazable;
 el mapeo filas apiladas; Revisar un resumen desplazable. Agregar cancion en
 escritorio usa esa misma jerarquia, indicador Detalles/Archivos/Secciones/Revisar
 y navegacion inferior. Solo reduce controles (campos de 36 px, filas de archivos
-de 48 px y mapeo de 80 px). La edicion de escritorio conserva su disposicion.
+de 48 px y mapeo de 80 px). La edicion de escritorio reutiliza el mismo formulario desplazable y la pagina interna de Agregar, con datos precargados y callbacks de actualizacion.
 El `+` del encabezado de Biblioteca abre Detalles como pagina interna de
 `SongListPanel` en escritorio, telefono y tablet, a continuacion de Biblioteca en su
 `PageContainer`. La pagina entra desde la derecha con la misma transicion
@@ -27,8 +33,7 @@ del panel y sigue sus redimensiones. La pagina de creacion se libera al terminar
 la animacion de retorno. Se conserva el contexto de busqueda/seleccion y la
 lista se recarga antes del retorno al guardar. La creacion incrustada usa el
 formulario desplazable tambien en tablets y escritorios tactiles, de modo que
-sus controles se ajustan al ancho del panel. Los accesos externos y la edicion
-mantienen su presentacion previa.
+sus controles se ajustan al ancho del panel. La pagina regresa a la vista de origen al cancelar o guardar. Los accesos externos y la edicion movil mantienen su presentacion previa.
 
 Los controles compartidos son JUCE y la entrada de texto movil usa el teclado
 del sistema. El telefono adapta el viewport y muestra la barra sobre el teclado.

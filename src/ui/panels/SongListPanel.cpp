@@ -334,6 +334,8 @@ void SongListPanel::SwipeHintHandle::mouseUp(const juce::MouseEvent &event) {
 class SongListPanel::PageContainer final : public juce::Component,
                                            private juce::Timer {
 public:
+  int getCurrentPageIndex() const noexcept { return currentIndex; }
+
   PageContainer() {
     for (auto &page : pages)
       page = std::make_unique<juce::Component>();
@@ -3738,14 +3740,15 @@ void SongListPanel::showLibraryCreationPage(
     std::unique_ptr<SongImportWizardComponent> panel) {
   if (panel == nullptr || libraryCreationWizard != nullptr)
     return;
+  const int returnPage = pageContainer->getCurrentPageIndex();
   panel->setEmbeddedLibraryPage(true);
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
-  panel->setOnDismissRequested([safeThis] {
+  panel->setOnDismissRequested([safeThis, returnPage] {
     // Defer destruction until the wizard's button/completion callback returns.
-    juce::MessageManager::callAsync([safeThis] {
+    juce::MessageManager::callAsync([safeThis, returnPage] {
       if (safeThis == nullptr)
         return;
-      safeThis->pageContainer->showPage(2, true, [safeThis] {
+      safeThis->pageContainer->showPage(returnPage, true, [safeThis] {
         if (safeThis != nullptr)
           safeThis->libraryCreationWizard.reset();
       });
@@ -4378,8 +4381,18 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         refreshEditedSong();
         return true;
       });
+  panel->setProjectRecoverySubmit([editedSongId = trimmedSongId, refreshEditedSong](ImportedSongData song, juce::String &error, const SongImportProgressFn &progress) {
+    song.id = editedSongId;
+    if (!SongLibraryStore::updateSong(std::move(song), &error, progress, true)) return false;
+    juce::MessageManager::callAsync(refreshEditedSong);
+    return true;
+  });
   panel->refreshThemeColours();
+#if !JUCE_IOS && !JUCE_ANDROID
+  showLibraryCreationPage(std::move(panel));
+#else
   showSongImportOverlay(std::move(panel));
+#endif
 }
 
 void SongListPanel::openSetlistManager() {

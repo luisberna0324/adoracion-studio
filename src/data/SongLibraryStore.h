@@ -152,7 +152,8 @@ public:
       const juce::String &legacySongId, ImportedSongData projectSong,
       juce::String *errorMessage = nullptr);
   static bool updateSong(ImportedSongData song, juce::String *errorMessage = nullptr,
-                         const SongImportProgressFn &onProgress = {});
+                         const SongImportProgressFn &onProgress = {},
+                         bool recoverMissingProject = false);
   static bool updateSongMetadata(ImportedSongData song,
                                  juce::String *errorMessage = nullptr);
   /** Background content-only save; final library RMW is on the message thread. */

@@ -1150,7 +1150,7 @@ bool SongLibraryStore::finalizeLegacyProjectMigration(
 }
 
 bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMessage,
-                                  const SongImportProgressFn &onProgress) {
+                                  const SongImportProgressFn &onProgress, bool recoverMissingProject) {
   song.id = song.id.trim();
   if (song.id.isEmpty()) {
     if (errorMessage != nullptr) {
@@ -1186,8 +1186,41 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   ensureSongHasStemIds(song);
 
   if (isProjectBackedSong(previousSong)) {
-    const juce::File projectFile(previousSong.projectPath);
+    const bool missing = !juce::File(previousSong.projectPath).existsAsFile();
+    const juce::File projectFile(missing && recoverMissingProject ? song.projectPath : previousSong.projectPath);
     ProjectDocument original;
+    if (missing && recoverMissingProject && !projectFile.existsAsFile()) {
+      original.song = song;
+      original.song.id = previousSong.id;
+      original.song.projectId = projectIdentityForSong(previousSong);
+      original.song.freeShowCues = previousSong.freeShowCues;
+      original.song.projectPath = projectFile.getFullPathName();
+      original.song.stems.erase(std::remove_if(original.song.stems.begin(), original.song.stems.end(),
+          [](const ImportedStemData &stem) { return !stem.include; }), original.song.stems.end());
+      original.settings = projectSettingsFromItem(createSetlistItem(previousSong), {});
+      original.settings.tempoBpm = previousSong.bpm;
+      bool recoveredSettings = ProjectStore::getCachedSettings(projectIdentityForSong(previousSong), original.settings);
+      if (!recoveredSettings) {
+        for (const auto &setlist : library.setlists) {
+          for (const auto &item : setlist.items) {
+            if (item.songId == previousSong.id) {
+              original.settings = projectSettingsFromItem(item, original.settings);
+              recoveredSettings = true;
+              break;
+            }
+          }
+          if (recoveredSettings) break;
+        }
+      }
+      original.settings.freeShowCues = previousSong.freeShowCues;
+      for (const auto &stem : song.stems) {
+        if (stem.include && !juce::File(stem.storedPath).existsAsFile() && !juce::File(stem.sourcePath).existsAsFile()) {
+          if (errorMessage) *errorMessage = L10n::tr("Falta el audio del stem: ", "Missing stem audio: ") + stem.displayName;
+          return false;
+        }
+      }
+      if (!ProjectStore::save(original, projectFile, errorMessage, nullptr, onProgress)) return false;
+    }
     juce::String projectError;
     if (!ProjectStore::open(projectFile, original, &projectError, false)) {
       if (errorMessage != nullptr)
@@ -1195,12 +1228,17 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
       return false;
     }
 
+    if (missing && recoverMissingProject &&
+        projectIdentityForSong(original.song) != projectIdentityForSong(previousSong)) {
+      if (errorMessage) *errorMessage = L10n::tr("El proyecto seleccionado pertenece a otra canción.", "The selected project belongs to another song.");
+      return false;
+    }
     song.title = song.title.trim();
     song.artist = song.artist.trim();
     song.key = song.key.trim();
     song.timeSignature = song.timeSignature.trim();
     song.projectId = projectIdentityForSong(previousSong);
-    song.projectPath = previousSong.projectPath;
+    song.projectPath = projectFile.getFullPathName();
     song.createdMs = previousSong.createdMs;
     song.fileType = "FLAC";
     if (song.artworkSource.trim() != previousSong.artworkSource.trim())
@@ -1237,22 +1275,14 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     if (std::abs(settings.tempoBpm - previousBaseBpm) < kTempoBpmEpsilon)
       settings.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
 
-    bool stemsChanged = song.stems.size() != previousSong.stems.size();
-    for (size_t i = 0; !stemsChanged && i < song.stems.size(); ++i) {
-      const auto &oldStem = previousSong.stems[i];
-      const auto &newStem = song.stems[i];
-      stemsChanged = oldStem.stemId != newStem.stemId ||
-                     oldStem.storedPath != newStem.storedPath ||
-                     oldStem.sourcePath != newStem.sourcePath ||
-                     oldStem.category != newStem.category;
-    }
-
     ProjectDocument updated;
     updated.song = song;
     updated.settings = settings;
-    updated.waveformBins = stemsChanged
-                               ? buildMixedWaveformBins(song, kWaveformPreviewBinCount)
-                               : original.waveformBins;
+    // An explicit full edit rebuilds derived visuals even when the same audio
+    // files remain selected; never retain a stale project waveform.
+    if (onProgress)
+      onProgress(0.04, L10n::tr("Regenerando onda...", "Regenerating waveform..."));
+    updated.waveformBins = buildMixedWaveformBins(song, kWaveformPreviewBinCount);
     const auto suffix = juce::Uuid().toString().substring(0, 8);
     const auto baseName = projectFile.getFileNameWithoutExtension();
     const auto stagedProject = projectFile.getSiblingFile(

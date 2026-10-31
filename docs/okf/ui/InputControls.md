@@ -33,12 +33,12 @@ con renderizado JUCE en todas las plataformas, sin presentar selectores UIKit.
 - El campo reserva padding inicial para el texto y espacio final para el
   chevron o una accion accesoria.
 - Los editores de una linea no tienen indentacion superior asimetrica; su
-  alineacion vertical pertenece al formulario. Seleccion y caret usan el acento.
+  texto se centra verticalmente con el estilo compartido, conservando la alineacion horizontal del formulario. Seleccion y caret usan el acento.
 
 ## Campos de texto
 
 `applyTextEditorTheme()` solo define presentacion. No cambia si un editor es
-de una o varias lineas, su alineacion, restricciones, tecla Return ni reglas
+de una o varias lineas, su alineacion horizontal, restricciones, tecla Return ni reglas
 de validacion; esos comportamientos pertenecen al formulario que lo usa.
 
 Todo editor interactivo debe:

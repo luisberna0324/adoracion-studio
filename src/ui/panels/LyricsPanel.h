@@ -30,6 +30,7 @@ public:
   void refreshThemeColours();
   std::function<void(const SongLyrics &)> onChanged;
   std::function<void()> onConnectionSettingsRequested;
+  std::function<void(double)> onTimelinePlayRequested;
 
   void paint(juce::Graphics &) override;
   void resized() override;
@@ -94,6 +95,9 @@ private:
   TimelineInsertionAnchor insertionAnchor;
   bool draggingInsertionAnchor = false;
   double dragStartSeconds = 0.0;
+  std::vector<Placement> dragPlacements, settlingFrom;
+  juce::Point<float> dragOrigin;
+  double settlingStarted = 0.0;
   bool dragChanged = false, updating = false;
   bool loadingCatalogue = false;
   unsigned int catalogueRequest = 0;

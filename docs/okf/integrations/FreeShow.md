@@ -16,7 +16,7 @@ No se añade esta función a iOS, Android ni al control remoto.
 
 Los puntos conservan previews compactos visibles, dispuestos en filas para
 separar etiquetas próximas. Seleccionar una marca la resalta sin enviar nada;
-no hay panel inferior que repita la letra. Arrastrar cambia solamente su tiempo.
+no hay panel inferior que repita la letra. Arrastrar desde el punto o cualquier parte de la tarjeta conserva el punto de agarre y cambia solamente su tiempo al soltar. Durante el arrastre las otras tarjetas mantienen su posición y se permite la superposición; al soltar se recalculan las filas y se anima el reacomodo durante 220 ms.
 El menú de una marca conserva Cambiar destino FreeShow, Probar en FreeShow y
 Eliminar marca. Ocultar letras es un
 destino explícito (`clear_slide`); no limpia fondo, audio ni overlays.
@@ -28,9 +28,11 @@ ni un botón superior de añadir. Show muestra solo el nombre, con un ancho máx
 de 220 puntos; no añade IDs, texto contiguo ni ayuda bajo el selector. Conserva
 Actualizar catálogo, Seguir reproducción y el badge de conexión. La creación usa el puntero compartido con la
 onda de guía: colocar tiempo en regla/mapa, `+` contextual, grupo y diapositiva
-en menús en cascada. No se abre un buscador ni un panel de diapositivas.
+en menús en cascada. El clic secundario sobre un espacio vacío de la regla o del mapa coloca el puntero en ese tiempo y abre directamente el mismo selector de grupos y diapositivas (clic derecho en Windows y clic secundario con dos dedos configurado en macOS). Sobre una marca conserva su menú de edición. No se abre un buscador ni un panel de diapositivas.
 El menú contiene cada grupo del show una sola vez, con sus diapositivas hijas;
 elegir de nuevo un destino crea otro punto temporal independiente.
+
+El clic primario sobre la regla salta al tiempo señalado e inicia la reproducción mediante PlaybackSession; limpia el puntero punteado de inserción. El clic primario en el área de letras conserva el puntero punteado para añadir marcas. El clic secundario conserva el selector contextual.
 
 La regla utiliza `TimelineRulerStyle` y las marcas de `WaveformBar`, por lo que
 comparte compases, métrica y mapa de tempo con la onda. No hay botones de zoom.

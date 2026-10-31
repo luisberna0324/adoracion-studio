@@ -109,7 +109,7 @@ struct LyricsPanelTestAccess {
     expect(panel.addButton.getParentComponent() == panel.viewport.getViewedComponent(), "The + belongs to the timeline, not its header");
     return panel.insertionAnchor.seconds;
   }
-  static juce::Point<float> timelinePoint(const LyricsPanel &panel, double seconds, float y = 10.0f) {
+  static juce::Point<float> timelinePoint(const LyricsPanel &panel, double seconds, float y = 36.0f) {
     return {panel.timeToX(seconds), y};
   }
   static void checkHeader(const LyricsPanel &panel) {
@@ -280,9 +280,17 @@ struct LyricsPanelTestAccess {
       expect(std::abs(panel.xToTime(panel.timeToX(seconds)) - seconds) < 0.00005, "Zoomed pixel-to-time conversion remains precise at both endpoints and fractional times");
     expect(juce::JSON::toString(toVar(panel.lyrics), true) == saved && changed == edits,
            "Zoom and horizontal scrolling never persist an edit");
+    double requestedPlay = -1.0;
+    panel.onTimelinePlayRequested = [&](double seconds) { requestedPlay = seconds; };
+    const auto playPoint = timelinePoint(panel, 90.0, 10.0f);
+    m.mouseDown(event(m, playPoint, playPoint));
+    m.mouseUp(event(m, playPoint, playPoint));
+    expect(std::abs(requestedPlay - 90.0) < 0.001 && !panel.insertionAnchor.valid,
+           "Ruler click requests playback at its time without an insertion pointer");
+    panel.onTimelinePlayRequested = {};
     const int beforePan = panel.viewport.getViewPositionX();
     wheel.deltaX = -0.25f;
-    const auto rulerPoint = timelinePoint(panel, 90.0);
+    const auto rulerPoint = timelinePoint(panel, 90.0, 10.0f);
     m.mouseWheelMove(event(m, rulerPoint, rulerPoint), wheel);
     expect(panel.viewport.getViewPositionX() > beforePan && std::abs(panel.zoomFactor - 4.0) < 0.00001,
            "Horizontal wheel navigation also pans over the ruler without changing zoom");

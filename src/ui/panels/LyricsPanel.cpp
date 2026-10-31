@@ -41,7 +41,7 @@ public:
   explicit SongMap(LyricsPanel &panel) : owner(panel) {
     setWantsKeyboardFocus(true);
     setTitle("Mapa completo de letras");
-    setDescription("Marcas independientes. Arrastra el punto para cambiar el tiempo. Seleccionar no proyecta.");
+    setDescription("Marcas independientes. Arrastra la tarjeta o el punto para cambiar el tiempo. Seleccionar no proyecta.");
   }
   void paint(juce::Graphics &g) override { owner.paintMap(g); }
   bool keyPressed(const juce::KeyPress &key) override { return owner.keyPressed(key); }
@@ -50,6 +50,20 @@ public:
     const auto hit = owner.hitMark(e.position);
     if (e.mods.isPopupMenu()) {
       if (hit.isNotEmpty()) owner.showMapMenu(e.position, hit);
+      else {
+        owner.placeInsertionAnchor(owner.xToTime(e.position.x));
+        owner.showDestinationMenu(owner.insertionAnchor.seconds);
+      }
+      return;
+    }
+    if (e.position.y < 24.0f) {
+      owner.insertionAnchor.clear();
+      owner.dragId.clear();
+      owner.draggingInsertionAnchor = false;
+      owner.dragChanged = false;
+      owner.rebuildMapLayout();
+      if (owner.onTimelinePlayRequested)
+        owner.onTimelinePlayRequested(owner.xToTime(e.position.x));
       return;
     }
     owner.selectMark(hit);
@@ -60,7 +74,10 @@ public:
       owner.insertionAnchor.clear();
       owner.rebuildMapLayout();
     }
-    owner.dragId = owner.hitMark(e.position, true);
+    owner.dragId = hit;
+    owner.dragOrigin = e.position;
+    owner.dragPlacements = owner.placements;
+    owner.settlingFrom.clear();
     owner.dragChanged = false;
     if (const auto *mark = owner.findMark(owner.dragId)) owner.dragStartSeconds = mark->seconds;
   }
@@ -72,17 +89,40 @@ public:
     }
     if (owner.dragId.isEmpty()) return;
     owner.dragChanged = true;
-    owner.moveMark(owner.dragId, owner.xToTime(e.position.x), false);
+    const auto delta = e.position - owner.dragOrigin;
+    owner.placements = owner.dragPlacements;
+    for (auto &placement : owner.placements) {
+      if (placement.id != owner.dragId) continue;
+      const auto x = owner.timeToX(juce::jlimit(0.0, owner.duration,
+          owner.dragStartSeconds + owner.xToTime(e.position.x) - owner.xToTime(owner.dragOrigin.x)));
+      const auto dx = x - placement.point.x;
+      placement.point += juce::Point<float>(dx, delta.y);
+      placement.preview = placement.preview.translated(dx, delta.y);
+    }
+    std::stable_partition(owner.placements.begin(), owner.placements.end(), [this](const auto &p) { return p.id != owner.dragId; });
+    owner.map->repaint();
   }
   void mouseUp(const juce::MouseEvent &) override {
-    if (owner.dragChanged) owner.changed();
+    const auto released = owner.placements;
+    if (owner.dragChanged) {
+      const auto it = std::find_if(released.begin(), released.end(), [this](const auto &p) { return p.id == owner.dragId; });
+      if (it != released.end())
+        if (auto *mark = owner.findMark(owner.dragId)) mark->seconds = owner.xToTime(it->point.x);
+    }
     owner.dragId.clear();
     owner.draggingInsertionAnchor = false;
+    const bool moved = owner.dragChanged;
     owner.dragChanged = false;
     owner.rebuildMapLayout();
+    if (moved) {
+      owner.settlingFrom = released;
+      owner.settlingStarted = juce::Time::getMillisecondCounterHiRes();
+      owner.startTimerHz(60);
+      owner.changed();
+    }
   }
   void mouseMove(const juce::MouseEvent &e) override {
-    setMouseCursor(owner.hitMark(e.position, true).isNotEmpty()
+    setMouseCursor(owner.hitMark(e.position).isNotEmpty()
                      ? juce::MouseCursor::LeftRightResizeCursor
                      : juce::MouseCursor::NormalCursor);
   }
@@ -328,7 +368,16 @@ void LyricsPanel::paintMap(juce::Graphics &g) {
     g.drawText("Marca un tiempo y pulsa su +. Las secciones solo sirven de referencia.",
                area.toNearestInt().withTrimmedTop(80).withHeight(22), juce::Justification::centred);
   }
-  for (const auto &placement : placements) {
+  for (auto placement : placements) {
+    if (!settlingFrom.empty()) {
+      const auto old = std::find_if(settlingFrom.begin(), settlingFrom.end(), [&](const auto &p) { return p.id == placement.id; });
+      if (old != settlingFrom.end()) {
+        const auto t = juce::jlimit(0.0f, 1.0f, static_cast<float>((juce::Time::getMillisecondCounterHiRes() - settlingStarted) / 220.0));
+        const auto eased = t * t * (3.0f - 2.0f * t);
+        placement.point = old->point + (placement.point - old->point) * eased;
+        placement.preview.setPosition(old->preview.getPosition() + (placement.preview.getPosition() - old->preview.getPosition()) * eased);
+      }
+    }
     const auto *mark = findMark(placement.id); if (mark == nullptr) continue;
     const bool selected = mark->id == selectedId;
     const bool review = reviewReason(*mark).isNotEmpty();
@@ -581,6 +630,10 @@ void LyricsPanel::testSelected() {
 }
 
 void LyricsPanel::timerCallback() {
+  if (!settlingFrom.empty() && juce::Time::getMillisecondCounterHiRes() - settlingStarted >= 220.0) {
+    settlingFrom.clear();
+    startTimerHz(12);
+  }
   if (client != nullptr) {
     const auto status = client->getStatus();
     const bool connected = status.state == ConnectionStatus::State::connected;

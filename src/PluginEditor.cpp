@@ -1424,6 +1424,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   lyricsPanel->setTimelineMarksProvider([waveformBarRaw](juce::Range<double> visible, float width) {
     return waveformBarRaw->getPracticeTimelineMarks(visible, width);
   });
+  lyricsPanel->onTimelinePlayRequested = [this](double seconds) {
+    if (!hasCurrentLoadedSong) return;
+    playbackSession.seekSongTo(seconds);
+    if (!playbackSession.isSongPlaying()) playbackSession.toggleSongPlayPause();
+  };
   lyricsPanel->onConnectionSettingsRequested = [this] { showSettings({}, this, true); };
   lyricsPanel->onChanged = [this, &p](const playworship::lyrics::SongLyrics &lyrics) {
     if (playbackSession.isRemote() || !hasCurrentLoadedSong) return;

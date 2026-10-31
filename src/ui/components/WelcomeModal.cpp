@@ -19,14 +19,9 @@ EmailAuthenticationForm::EmailAuthenticationForm() {
   emailLabel.setText(L10n::tr("Correo", "Email"), juce::dontSendNotification);
   passwordLabel.setText(L10n::tr(u8"Contraseña de PlayWorship", "PlayWorship password"), juce::dontSendNotification);
   for (auto* editor : {&emailEditor, &passwordEditor}) {
-    editor->setLookAndFeel(&fieldStyle);
-    editor->setFont(juce::FontOptions(16));
     editor->setMultiLine(false);
     editor->setReturnKeyStartsNewLine(false);
-    editor->setIndents(14, 15);
-    editor->setColour(juce::TextEditor::textColourId, AuthUi::text);
-    editor->setColour(juce::TextEditor::highlightColourId, AuthUi::accent.withAlpha(0.3f));
-    editor->setColour(juce::CaretComponent::caretColourId, AuthUi::accent);
+    applyTextEditorTheme(*editor);
     editor->onEscapeKey = [this] { goBack(); };
     content.addAndMakeVisible(*editor);
   }
