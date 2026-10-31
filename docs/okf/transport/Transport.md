@@ -4,10 +4,16 @@ title: Transport
 description: Control de transporte y arrange en MTControlsAudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, audio, transport, playback, arrange]
-timestamp: 2026-10-03T00:00:00Z
+timestamp: 2026-10-17T00:00:00Z
 ---
 
 # Transport API
+
+En escritorio, las marcas de [Letras / FreeShow](../integrations/FreeShow.md)
+se evalúan sobre los segmentos realmente renderizados y los seeks confirmados,
+con un scheduler independiente de las secciones. Ir/seek recuperan sólo el
+cue vigente en el destino y Loop abre otra pasada. Las órdenes vencidas se
+descartan fuera del audio thread; ninguna llamada de red entra al callback.
 
 La app standalone puede exponer este transporte mediante el
 [control remoto LAN](../integrations/RemoteControl.md). El servidor sigue
@@ -593,6 +599,19 @@ Los cursores de reproducción, salto pendiente y marca de inserción conservan
 su dibujo e interacción sobre esta referencia. Las indicaciones se superponen
 a la onda y no reservan altura adicional en la regla. En teléfono la regla
 está disponible en edición y permanece oculta en performance.
+
+Letras de escritorio usa esa misma regla y solicita las marcas al mapa de tempo
+de `WaveformBar`. Ambas vistas comparten la línea fina y bandera del playhead
+mediante `TimelineRulerStyle`; el cambio es de dibujo, sin alterar posición ni
+comandos de transporte. El zoom/desplazamiento de Letras transforma píxeles a
+segundos absolutos antes de crear o arrastrar marcas. Ampliar la referencia de
+secciones no cambia sus límites ni duraciones musicales.
+La navegación con rueda comparte `TimelineNavigationGestures` con la onda:
+componente horizontal dominante desplaza, vertical amplía/aleja bajo el cursor.
+El pellizco conserva la transformación existente de Onda (`1 + amount`, entrada
+cero sin efecto). El intervalo visible mínimo compartido es 1/18 de la canción.
+Los modificadores no cambian el gesto y no se vuelve a invertir `isReversed`.
+Estos gestos no publican ediciones y se ignoran durante un arrastre temporal en Letras.
 
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la

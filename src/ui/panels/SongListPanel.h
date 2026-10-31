@@ -247,6 +247,11 @@ private:
   void showLibraryCreationPage(std::unique_ptr<SongImportWizardComponent> panel);
   void showSongImportOverlay(std::unique_ptr<SongImportWizardComponent> panel);
   void openProjectFileChooser();
+  void chooseProjectCreationDestination(
+      const ImportedSongData &song,
+      std::function<void(juce::File, juce::String)> completion,
+      std::shared_ptr<juce::URL> exportedCopy);
+  void exportProjectCopy(const juce::String &songId);
   void openProjectFileFromUrl(const juce::URL &url);
   void beginProjectImport(const juce::URL &url, bool copyToSandbox);
   void showProjectImportError(const juce::String &error);
@@ -380,6 +385,10 @@ private:
   std::unique_ptr<SongImportWizardComponent> libraryCreationWizard;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
   std::unique_ptr<juce::FileChooser> projectConversionFileChooser;
+  std::unique_ptr<juce::FileChooser> projectCreationFileChooser;
+  std::unique_ptr<juce::FileChooser> projectExportFileChooser;
+  std::unique_ptr<ProjectOpenProgressOverlay> projectExportOverlay;
+  bool projectExportBusy = false;
   std::unique_ptr<ProjectOpenProgressOverlay> projectOpenOverlay;
   std::shared_ptr<std::atomic<bool>> projectImportCancelled;
 };

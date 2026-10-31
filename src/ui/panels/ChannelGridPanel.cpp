@@ -595,6 +595,8 @@ void ChannelGridPanel::setOnLibraryImportRequested(std::function<void()> cb) {
 }
 
 void ChannelGridPanel::setMidiLearnActive(const bool active) {
+  if (active)
+    setInstrumentFadersLinked(false);
   midiLearnActive = active;
   if (!midiLearnActive)
     midiLearnPendingTargetId = -1;
@@ -605,6 +607,7 @@ void ChannelGridPanel::setMidiLearnActive(const bool active) {
     slot->setDivisionMidiLearnSelectable(midiLearnActive);
   }
   setMidiLearnPendingTarget(midiLearnPendingTargetId);
+  updateLinkedFaderState();
   repaint();
 }
 
@@ -801,6 +804,7 @@ void ChannelGridPanel::showGuideSourcePopover(juce::Component *anchorComponent) 
 }
 
 void ChannelGridPanel::timerCallback() {
+  updateLinkedFaderState();
   if (remoteMixPersistencePending &&
       juce::Time::getMillisecondCounterHiRes() >= remoteMixPersistenceDueMs &&
       !hasActivePointerInteraction())
@@ -982,6 +986,11 @@ void ChannelGridPanel::beginAutomaticRoutingDraft() {
 
 void ChannelGridPanel::setSong(const ImportedSongData &song) {
   flushPendingVolumePersistence();
+  setInstrumentFadersLinked(false);
+  linkedFaderGestureSlot = -1;
+  linkedFaderGestureWasLinked = linkedFaderGestureCancelled = false;
+  linkedFaderArrangementRevision.clear();
+  linkedFaderArrangementParts.clear();
   routingDraftActive = false;
   guideStemMuteBeforeDynamicByStemIndex.clear();
   hasPendingDynamicGuideVolumeWrite = false;
@@ -1078,15 +1087,12 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     slot->getStrip().setGain(session.getStemGain(stemIndex));
     slot->getStrip().setMuteState(session.isStemMuted(stemIndex));
     slot->getStrip().setSoloState(session.isStemSoloed(stemIndex));
+    slot->getStrip().setOnVolumeDragStarted(
+        [this, slotIndex] { beginStemVolumeGesture(slotIndex); });
     slot->getStrip().setOnVolumeChanged(
-        [this, stemIndex, stemId](float value) {
-      session.setStemVolume(stemIndex, value);
-    });
+        [this, slotIndex](float value) { changeStemVolume(slotIndex, value); });
     slot->getStrip().setOnVolumeDragEnded(
-        [this, stemIndex, stemId](float) {
-      if (!session.isRemote() && currentSongId.isNotEmpty() && stemId.isNotEmpty())
-        queueStemVolumePersistence(stemId, processor.getStemBaseVolume(stemIndex));
-    });
+        [this, slotIndex](float) { finishStemVolumeGesture(slotIndex); });
     slot->getStrip().setOnGainChanged(
         [this, stemIndex, stemId](float value) {
       session.setStemGain(stemIndex, value);
@@ -1159,6 +1165,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   applyGuideSourceModeToVisibleGuideSlots();
   dynamicGuideToggle.setVisible(dynamicGuideVirtualSlotIndex >= 0);
   setMidiLearnActive(midiLearnActive);
+  updateLinkedFaderState();
   resized();
   repaint();
 }
@@ -1194,6 +1201,217 @@ void ChannelGridPanel::nudgeFaders(float delta) {
                                   processor.getStemBaseVolume(stemIndex));
     }
   }
+}
+
+bool ChannelGridPanel::isLinkableStemSlot(const size_t slotIndex) const {
+  return slotIndex < slots.size() && slotIndex < adjustableStems.size() &&
+         adjustableStems[slotIndex] && slotIndex < slotStemIndices.size() &&
+         slotStemIndices[slotIndex] >= 0 &&
+         session.canEditSectionAutomationStem(slotStemIndices[slotIndex]);
+}
+
+bool ChannelGridPanel::canLinkInstrumentFaders() const {
+  // Remote mix snapshots acknowledge controls asynchronously. Keep this mode
+  // on the local/server mixer rather than reinterpret remote or MIDI targets.
+  if (session.isRemote() || midiLearnActive ||
+      session.isSectionAutomationEditing() || !session.canEditSectionAutomation())
+    return false;
+  size_t count = 0;
+  for (size_t i = 0; i < slots.size(); ++i)
+    if (isLinkableStemSlot(i) && ++count >= 2)
+      return true;
+  return false;
+}
+
+juce::String ChannelGridPanel::linkedFaderContextKey() {
+  const auto revision = processor.getArrangementControlRevision();
+  if (linkedFaderArrangementRevision != revision) {
+    linkedFaderArrangementRevision = revision;
+    linkedFaderArrangementParts = session.getSongArrangementSnapshot().parts;
+  }
+  const auto position = session.getSongCurrentPositionSeconds();
+  int partIndex = -1;
+  for (size_t i = 0; i < linkedFaderArrangementParts.size(); ++i) {
+    const auto &part = linkedFaderArrangementParts[i];
+    if (!part.utilityCue && position >= part.startSec && position < part.endSec) {
+      partIndex = static_cast<int>(i);
+      break;
+    }
+  }
+  return revision + ":" + juce::String(partIndex) + ":" +
+         juce::String(static_cast<juce::int64>(processor.getTransportControlRevision()));
+}
+
+bool ChannelGridPanel::linkedFaderLevelsMatchSession() const {
+  if (linkedFaderExpectedVolumes.size() != slots.size())
+    return false;
+  for (size_t i = 0; i < slots.size(); ++i) {
+    const bool eligible = isLinkableStemSlot(i);
+    if (eligible != (linkedFaderExpectedVolumes[i] >= 0.0f))
+      return false;
+    if (eligible && std::abs(session.getStemVolume(slotStemIndices[i]) -
+                              linkedFaderExpectedVolumes[i]) > 0.000001f)
+      return false;
+  }
+  return true;
+}
+
+void ChannelGridPanel::captureLinkedFaderLevels(const juce::String &context) {
+  linkedFaderExpectedVolumes.assign(slots.size(), -1.0f);
+  for (size_t i = 0; i < slots.size(); ++i) {
+    if (!isLinkableStemSlot(i))
+      continue;
+    const auto value = session.getStemVolume(slotStemIndices[i]);
+    const float level = std::isfinite(value) ? juce::jlimit(0.0f, 1.0f, value) : 0.0f;
+    linkedFaderExpectedVolumes[i] = level;
+  }
+  linkedFaderContext = context;
+}
+
+void ChannelGridPanel::setInstrumentFadersLinked(const bool requested) {
+  const bool linked = requested && canLinkInstrumentFaders();
+  if (!linked && linkedFaderGestureWasLinked && linkedFaderGestureSlot >= 0)
+    linkedFaderGestureCancelled = true;
+  instrumentFadersLinked = linked;
+  if (linked) {
+    captureLinkedFaderLevels(linkedFaderContextKey());
+  } else {
+    linkedFaderExpectedVolumes.clear();
+    linkedFaderContext.clear();
+  }
+  updateLinkedFaderState();
+}
+
+void ChannelGridPanel::updateLinkedFaderState() {
+  const bool allowed = canLinkInstrumentFaders();
+  if (instrumentFadersLinked && !allowed) {
+    instrumentFadersLinked = false;
+    if (linkedFaderGestureWasLinked && linkedFaderGestureSlot >= 0)
+      linkedFaderGestureCancelled = true;
+    linkedFaderExpectedVolumes.clear();
+    linkedFaderContext.clear();
+  }
+  if (instrumentFadersLinked) {
+    const auto context = linkedFaderContextKey();
+    if (context != linkedFaderContext || !linkedFaderLevelsMatchSession()) {
+      // A section change or independent controller wins over an in-flight
+      // gesture. Do not spread a stale drag into the new mix context.
+      if (linkedFaderGestureWasLinked && linkedFaderGestureSlot >= 0)
+        linkedFaderGestureCancelled = true;
+      captureLinkedFaderLevels(context);
+    }
+  }
+  for (size_t i = 0; i < slots.size(); ++i) {
+    auto &strip = slots[i]->getStrip();
+    strip.setFaderLinked(instrumentFadersLinked && isLinkableStemSlot(i));
+  }
+  if (juce::isPositiveAndBelow(masterSlotIndex, static_cast<int>(slots.size()))) {
+    auto &master = slots[static_cast<size_t>(masterSlotIndex)]->getStrip();
+    master.setFaderLinkButtonState(instrumentFadersLinked);
+    master.setFaderLinkButtonEnabled(allowed);
+    master.setFaderLinkButtonTooltip(session.isRemote()
+        ? L10n::tr("Vinculación disponible en el mezclador local", "Linking is available in the local mixer")
+        : session.isSectionAutomationEditing()
+        ? L10n::tr("Termina la edición de automatización para vincular instrumentos", "Finish automation editing to link instruments")
+        : midiLearnActive
+        ? L10n::tr("Sal de MIDI Learn para vincular instrumentos", "Exit MIDI Learn to link instruments")
+        : !allowed
+        ? L10n::tr("Se necesitan al menos dos pistas de instrumentos", "At least two instrument tracks are required")
+        : instrumentFadersLinked
+        ? L10n::tr("Desvincular instrumentos", "Unlink instruments")
+        : L10n::tr("Vincular instrumentos: mueve cualquiera de los faders iluminados", "Link instruments: move any highlighted fader"));
+  }
+}
+
+void ChannelGridPanel::beginStemVolumeGesture(const size_t slotIndex) {
+  if (!isLinkableStemSlot(slotIndex))
+    return;
+  if (linkedFaderGestureWasLinked && linkedFaderGestureSlot >= 0 &&
+      linkedFaderGestureSlot != static_cast<int>(slotIndex))
+    return;
+  updateLinkedFaderState();
+  if (!instrumentFadersLinked) {
+    linkedFaderGestureSlot = -1;
+    linkedFaderGestureWasLinked = linkedFaderGestureCancelled = false;
+    return;
+  }
+  linkedFaderGestureSlot = static_cast<int>(slotIndex);
+  linkedFaderGestureCancelled = false;
+  linkedFaderGestureWasLinked = instrumentFadersLinked && isLinkableStemSlot(slotIndex);
+}
+
+void ChannelGridPanel::changeStemVolume(const size_t slotIndex, const float value) {
+  if (slotIndex >= slots.size() || slotIndex >= slotStemIndices.size() ||
+      slotStemIndices[slotIndex] < 0 || !std::isfinite(value))
+    return;
+  const int stemIndex = slotStemIndices[slotIndex];
+  auto &origin = slots[slotIndex]->getStrip();
+  if (!isLinkableStemSlot(slotIndex)) {
+    // Click/guide stems remain independently usable even while another
+    // finger is moving a linked musical fader.
+    session.setStemVolume(stemIndex, value);
+    return;
+  }
+  if (linkedFaderGestureWasLinked && linkedFaderGestureSlot >= 0 &&
+      linkedFaderGestureSlot != static_cast<int>(slotIndex)) {
+    origin.setLinkedVolume(session.getStemVolume(stemIndex));
+    return;
+  }
+  updateLinkedFaderState();
+  if (linkedFaderGestureSlot == static_cast<int>(slotIndex) && linkedFaderGestureCancelled) {
+    origin.setLinkedVolume(session.getStemVolume(stemIndex));
+    return;
+  }
+  if (!instrumentFadersLinked ||
+      (linkedFaderGestureSlot == static_cast<int>(slotIndex) && !linkedFaderGestureWasLinked)) {
+    session.setStemVolume(stemIndex, value);
+    return;
+  }
+
+  // Linking deliberately equalises absolute fader levels, including tracks
+  // at zero. No previous balance or other member's ceiling limits the source.
+  const float next = juce::jlimit(0.0f, 1.0f, value);
+  for (size_t i = 0; i < slots.size(); ++i) {
+    if (!isLinkableStemSlot(i))
+      continue;
+    session.setStemVolume(slotStemIndices[i], next);
+    linkedFaderExpectedVolumes[i] = session.getStemVolume(slotStemIndices[i]);
+    slots[i]->getStrip().setLinkedVolume(linkedFaderExpectedVolumes[i]);
+  }
+  queueLinkedFaderPersistence();
+}
+
+void ChannelGridPanel::queueLinkedFaderPersistence() {
+  if (session.isRemote() || currentSongId.isEmpty())
+    return;
+  for (size_t i = 0; i < slots.size(); ++i)
+    if (isLinkableStemSlot(i) && i < slotStemIds.size() && slotStemIds[i].isNotEmpty())
+      queueStemVolumePersistence(slotStemIds[i], processor.getStemBaseVolume(slotStemIndices[i]));
+}
+
+void ChannelGridPanel::finishStemVolumeGesture(const size_t slotIndex) {
+  if (!isLinkableStemSlot(slotIndex)) {
+    if (!session.isRemote() && slotIndex < slotStemIndices.size() &&
+        slotStemIndices[slotIndex] >= 0 && slotIndex < slotStemIds.size())
+      queueStemVolumePersistence(slotStemIds[slotIndex], processor.getStemBaseVolume(slotStemIndices[slotIndex]));
+    // Only release this gesture if the same musical source became locked;
+    // ending a click/guide gesture must never release another linked source.
+    if (linkedFaderGestureSlot == static_cast<int>(slotIndex)) {
+      linkedFaderGestureSlot = -1;
+      linkedFaderGestureWasLinked = linkedFaderGestureCancelled = false;
+    }
+    return;
+  }
+  if (linkedFaderGestureWasLinked && linkedFaderGestureSlot >= 0 &&
+      linkedFaderGestureSlot != static_cast<int>(slotIndex))
+    return;
+  if (instrumentFadersLinked)
+    queueLinkedFaderPersistence();
+  else if (!session.isRemote() && slotIndex < slotStemIndices.size() &&
+           slotStemIndices[slotIndex] >= 0 && slotIndex < slotStemIds.size())
+    queueStemVolumePersistence(slotStemIds[slotIndex], processor.getStemBaseVolume(slotStemIndices[slotIndex]));
+  linkedFaderGestureSlot = -1;
+  linkedFaderGestureWasLinked = linkedFaderGestureCancelled = false;
 }
 
 void ChannelGridPanel::queueStemVolumePersistence(const juce::String &stemId,
@@ -1633,6 +1851,11 @@ void ChannelGridPanel::addMasterSlot() {
   strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
   strip.setSoloEnabled(false);
   strip.setSoloVisible(false);
+  strip.setFaderLinkButtonVisible(true);
+  strip.setFaderLinkButtonState(false);
+  strip.setOnFaderLinkToggled([this](bool linked) {
+    setInstrumentFadersLinked(linked);
+  });
   strip.setGainVisible(true);
   strip.setMuteAlignedToFader(true);
   slot->setShowOutputRouting(false);
@@ -1695,7 +1918,7 @@ void ChannelGridPanel::addDivisionSlot() {
   slot->setGuideSettingsVisible(false);
   slot->setDivisionPanelVisible(true);
   slot->setDivision(session.getClickDivision());
-  slot->setDivisionVolume(session.getMetronomeVolume());
+  slot->setDivisionVolume(session.getMetronomeVolume() * session.getMetronomeGain());
   slot->setDivisionPowerOn(session.isClickDivisionEnabled());
   slot->setDivisionMuteState(session.isMetronomeMuted());
   slot->setDivisionSoloState(session.isMetronomeSolo());
@@ -1703,11 +1926,25 @@ void ChannelGridPanel::addDivisionSlot() {
     session.setClickDivision(division);
     persistClickDynMixForCurrentSong();
   });
-  slot->setOnDivisionVolumeChanged([this](const float volume) {
-    session.setMetronomeVolume(volume);
+  slot->setOnDivisionVolumeChanged([this](const float level) {
+    // One knob controls the existing volume/gain pair. Merely displaying a
+    // legacy mix never normalises it or changes its sound.
+    const float clampedLevel = juce::jlimit(0.0f, 4.0f, level);
+    const float volume = juce::jmin(1.0f, clampedLevel);
+    const float gain = juce::jmax(1.0f, clampedLevel);
+    // Reduce gain before raising volume when normalising an older snapshot;
+    // neither intermediate state can exceed the old or requested level.
+    if (gain <= session.getMetronomeGain()) {
+      session.setMetronomeGain(gain);
+      session.setMetronomeVolume(volume);
+    } else {
+      session.setMetronomeVolume(volume);
+      session.setMetronomeGain(gain);
+    }
   });
-  slot->setOnDivisionVolumeDragEnded([this](const float volume) {
-    queueClickDynVolumePersistence(volume);
+  slot->setOnDivisionVolumeDragEnded([this](const float level) {
+    // Persist the raw 0..1 volume; the current snapshot supplies its gain.
+    queueClickDynVolumePersistence(juce::jlimit(0.0f, 1.0f, level));
   });
   slot->setOnDivisionPowerChanged([this](const bool enabled) {
     session.setClickDivisionEnabled(enabled);
@@ -1836,7 +2073,7 @@ void ChannelGridPanel::syncDivisionSlotFromProcessor() {
   auto &slot = *slots[static_cast<size_t>(divisionSlotIndex)];
   if (!slot.isUserInteracting()) {
     slot.setDivision(session.getClickDivision());
-    slot.setDivisionVolume(session.getMetronomeVolume());
+    slot.setDivisionVolume(session.getMetronomeVolume() * session.getMetronomeGain());
     slot.setDivisionPowerOn(session.isClickDivisionEnabled());
   }
   slot.setDivisionMuteState(

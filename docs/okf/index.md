@@ -47,6 +47,7 @@ docs/okf/
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
 | [ui/InputControls](ui/InputControls.md) | Campos de texto y selectores adaptativos multiplataforma |
 | [ui/SectionAutomation](ui/SectionAutomation.md) | Edición de mezcla por sección con los controles existentes |
+| [ui/LinkedFaders](ui/LinkedFaders.md) | Vinculación de instrumentos al mismo nivel desde cualquier fader |
 | [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
 | [ui/LearningGuide](ui/LearningGuide.md) | Guías interactivas sobre controles reales y progreso local por curso |
 | [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |

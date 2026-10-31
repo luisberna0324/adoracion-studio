@@ -46,6 +46,7 @@ public:
   void setOnSongEditRequested(SongEditRequested cb);
   void setOnSongLyricsRequested(SongEditRequested cb);
   void setOnSongConvertRequested(SongConvertRequested cb);
+  void setOnProjectExportRequested(SongEditRequested cb);
   void setOnProjectUploadRequested(ProjectUploadRequested cb);
   void setOnCloudDownloadRequested(CloudDownloadRequested cb);
   void setOnCloudSearchRequested(CloudSearchRequested cb);
@@ -320,6 +321,7 @@ private:
   SongEditRequested onSongEditRequested;
   SongEditRequested onSongLyricsRequested;
   SongConvertRequested onSongConvertRequested;
+  SongEditRequested onProjectExportRequested;
   ProjectUploadRequested onProjectUploadRequested;
   CloudDownloadRequested onCloudDownloadRequested;
   CloudSearchRequested onCloudSearchRequested;

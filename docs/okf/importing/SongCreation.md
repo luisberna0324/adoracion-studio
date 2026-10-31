@@ -8,6 +8,12 @@ timestamp: 2026-10-12T00:00:00-03:00
 
 # Creacion de canciones
 
+El guardado completo de Editar vuelve a empaquetar el proyecto y regenera la onda mixta desde los stems incluidos, aunque no hayan cambiado sus archivos o categorías. No reutiliza los bins del proyecto anterior; actualiza la onda del paquete y su caché local al confirmar el guardado. Conserva los ajustes musicales y las letras existentes.
+
+Al guardar una edición cuyo `.pwproj` falta, el asistente conserva el borrador y ofrece Localizar proyecto, Crear nuevo proyecto o Cancelar. Localizar valida la identidad antes de actualizar; Crear exige una ruta nueva y audios disponibles, recupera ajustes del caché o setlist y conserva la identidad de biblioteca. No se muestra este aviso al abrir Editar.
+
+En Archivos, cada fila muestra el nombre visible del stem (`displayName`), con el nombre físico como tooltip y fallback si no hay título. Los nombres internos UUID de proyectos optimizados no sustituyen los títulos guardados al editar.
+
 El asistente mantiene un borrador al recorrer Detalles, Archivos, Secciones
 (mapeo de pistas) y Revisar. Retroceder no descarta nombres, categorias ni la
 seleccion Cargar. Cancelar el selector de archivos conserva los archivos previos.
@@ -17,7 +23,7 @@ area segura/teclado. Detalles tiene viewport; Archivos una lista desplazable;
 el mapeo filas apiladas; Revisar un resumen desplazable. Agregar cancion en
 escritorio usa esa misma jerarquia, indicador Detalles/Archivos/Secciones/Revisar
 y navegacion inferior. Solo reduce controles (campos de 36 px, filas de archivos
-de 48 px y mapeo de 80 px). La edicion de escritorio conserva su disposicion.
+de 48 px y mapeo de 80 px). La edicion de escritorio reutiliza el mismo formulario desplazable y la pagina interna de Agregar, con datos precargados y callbacks de actualizacion.
 El `+` del encabezado de Biblioteca abre Detalles como pagina interna de
 `SongListPanel` en escritorio, telefono y tablet, a continuacion de Biblioteca en su
 `PageContainer`. La pagina entra desde la derecha con la misma transicion
@@ -27,8 +33,7 @@ del panel y sigue sus redimensiones. La pagina de creacion se libera al terminar
 la animacion de retorno. Se conserva el contexto de busqueda/seleccion y la
 lista se recarga antes del retorno al guardar. La creacion incrustada usa el
 formulario desplazable tambien en tablets y escritorios tactiles, de modo que
-sus controles se ajustan al ancho del panel. Los accesos externos y la edicion
-mantienen su presentacion previa.
+sus controles se ajustan al ancho del panel. La pagina regresa a la vista de origen al cancelar o guardar. Los accesos externos y la edicion movil mantienen su presentacion previa.
 
 Los controles compartidos son JUCE y la entrada de texto movil usa el teclado
 del sistema. El telefono adapta el viewport y muestra la barra sobre el teclado.
@@ -68,9 +73,21 @@ prioridad posterior. El cierre sólo se ejecuta por la acción explícita existe
    ser legibles por JUCE. Escritorio admite tambien M4A (AAC o ALAC); si la
    plataforma no dispone de lector nativo, su decodificacion se valida en el
    worker de creacion antes de guardar. Revalidar antes del guardado definitivo.
-2. Elegir un nombre disponible en `MTControls/projects/` mediante
-   `SongProjectCreation::resolveDestination`, sin dialogos adicionales. El resumen
-   informa que se creara un `.pwproj` en Biblioteca; no sobrescribir homonimos.
+2. En escritorio, mostrar el diálogo nativo asíncrono `Biblioteca local` /
+   `Elegir ubicación...` / `Cancelar`. Biblioteca conserva la resolución de nombre
+   disponible en `MTControls/projects/` mediante `SongProjectCreation::resolveDestination`;
+   elegir ubicación abre el panel nativo Guardar con filtro `.pwproj` y confirmación
+   antes de reemplazar un archivo existente. El resumen anticipa esta elección.
+   Cancelar cualquiera de los dos paneles mantiene el borrador completo y permite
+   reintentar, sin guardar ni registrar una canción. La transacción está bloqueada
+   mientras se espera el destino; la generación de solicitud consume cada callback
+   una sola vez e ignora respuestas tardías de solicitudes anteriores.
+   iOS y Android mantienen su destino administrado sin este diálogo.
+   Mac App Store registra siempre el proyecto dentro del contenedor y, si se eligió
+   otra ubicación, exporta una copia conservando el URL nativo durante el worker.
+   Si esa copia falla, conserva la canción interna y muestra un aviso sin repetir
+   su creación. El resolver síncrono permanece disponible para los consumidores
+   sin interfaz nativa y las pruebas del asistente.
 3. Generar forma de onda solo con las pistas musicales y guardar con
    `ProjectStore::save`. Click/clic y guia/cues se excluyen de los picos y de la
    normalizacion visual, no del paquete ni de la reproduccion. Su duracion sigue
@@ -103,6 +120,28 @@ La edicion de proyectos tambien guarda en background con progreso y proteccion
 contra reentrancia. Al guardar metadatos o stems de un `.pwproj`, se reconstruye
 el paquete portable, se comprueba su reapertura y se conserva temporalmente el
 paquete anterior para restaurarlo si falla la actualizacion de Biblioteca.
+
+## Copia portable para otro equipo
+
+En Biblioteca local de escritorio, el menú de una canción propia con un `.pwproj`
+disponible incluye `Exportar copia del proyecto...`. Es una copia del paquete con
+pistas y configuración, independiente de `Exportar canción` en Onda, que produce
+una mezcla de audio. No se ofrece para entradas remotas, paquetes no disponibles,
+contenido compartido de Teams ni en móviles.
+
+El selector Guardar es nativo y asíncrono. Cancelar no modifica la canción ni su
+registro. Después de elegir el destino, el editor entrega sus ajustes activos al
+sistema de persistencia; un worker termina las escrituras pendientes y consolida
+el sidecar con `ProjectStore::savePendingPortableChanges` antes de copiar. Si el
+proyecto vuelve a cambiar durante esa consolidación, se informa el conflicto para
+reintentar en lugar de declarar una copia actualizada.
+
+Se conserva el URL devuelto por el picker hasta terminar. La copia usa un temporal
+y reemplazo final; un fallo no mueve el proyecto original ni reemplaza parcialmente
+un destino anterior. El progreso modal evita otro envío mientras se copia y los
+resultados vuelven al message thread con `SafePointer`. El registro de Biblioteca
+y el proyecto que usa la reproducción conservan sus rutas. El `.pwproj` exportado
+se abre con `Abrir proyecto...` en el otro equipo sin depender de la nube.
 
 ## Audio y portada
 

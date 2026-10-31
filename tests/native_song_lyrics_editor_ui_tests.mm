@@ -13,12 +13,90 @@
 - (void)savePressed;
 - (void)updateAppearance;
 - (void)applySection:(juce::String)kind range:(NSRange)range revision:(uint64_t)revision;
+- (void)applyChord:(juce::String)symbol range:(NSRange)range revision:(uint64_t)revision;
+- (void)removeChordAtRange:(NSRange)range revision:(uint64_t)revision;
+- (UIMenu *)menuForRange:(NSRange)range suggested:(NSArray<UIMenuElement *> *)actions;
+- (void)selectionMenuGesture:(UILongPressGestureRecognizer *)gesture;
+- (void)moveLyricsCard:(juce::String)source before:(juce::String)target revision:(uint64_t)revision;
+- (void)textViewDidChangeSelection:(UITextView *)textView;
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView;
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate;
 @end
 @interface NSLayoutManager (PlayWorshipLyricsCardTestSelectors)
 - (CGRect)cardRectForSection:(id)section;
 @end
 
+// Drive only the production observer's state handler; this does not synthesize
+// UIKit selection gestures or claim physical loupe/handle interaction coverage.
+@interface PlayWorshipLyricsObservedLongPress : UILongPressGestureRecognizer
+@property(nonatomic) UIGestureRecognizerState fixtureState;
+@property(nonatomic) CGPoint fixtureLocation;
+@end
+@implementation PlayWorshipLyricsObservedLongPress
+- (UIGestureRecognizerState)state { return self.fixtureState; }
+- (CGPoint)locationInView:(UIView *)view {
+  return view == self.view || self.view == nil ? self.fixtureLocation : [self.view convertPoint:self.fixtureLocation toView:view];
+}
+@end
+
+@interface PlayWorshipLyricsDragSessionFixture : NSObject <UIDragSession, UIDropSession>
+@property(nonatomic, copy) NSArray<UIDragItem *> *items;
+@property(nonatomic) BOOL allowsMoveOperation;
+@property(nonatomic, getter=isRestrictedToDraggingApplication) BOOL restrictedToDraggingApplication;
+@property(nonatomic, strong) id localContext;
+@property(nonatomic, strong) NSProgress *progress;
+@property(nonatomic) UIDropSessionProgressIndicatorStyle progressIndicatorStyle;
+@property(nonatomic, weak) UIView *coordinateView;
+@property(nonatomic) CGPoint fixtureLocation;
+@end
+@implementation PlayWorshipLyricsDragSessionFixture
+- (instancetype)init {
+  if ((self = [super init])) { self.items = @[]; self.allowsMoveOperation = YES; self.restrictedToDraggingApplication = YES; self.progress = [NSProgress progressWithTotalUnitCount:1]; }
+  return self;
+}
+- (id<UIDragSession>)localDragSession { return self; }
+- (CGPoint)locationInView:(UIView *)view { return self.coordinateView == nil ? self.fixtureLocation : [self.coordinateView convertPoint:self.fixtureLocation toView:view]; }
+- (BOOL)hasItemsConformingToTypeIdentifiers:(NSArray<NSString *> *)types {
+  for (UIDragItem *item in self.items) for (NSString *type in types)
+    if ([item.itemProvider.registeredTypeIdentifiers containsObject:type]) return YES;
+  return NO;
+}
+- (BOOL)canLoadObjectsOfClass:(Class<NSItemProviderReading>)aClass { (void)aClass; return NO; }
+- (NSProgress *)loadObjectsOfClass:(Class<NSItemProviderReading>)aClass completion:(void (^)(NSArray<__kindof id<NSItemProviderReading>> *))completion {
+  (void)aClass; completion(@[]); return self.progress;
+}
+@end
+
 namespace {
+UIDragInteraction *dragInteractionOnView(UIView *view) {
+  for (id<UIInteraction> interaction in view.interactions)
+    if ([interaction isKindOfClass:UIDragInteraction.class]) return (UIDragInteraction *)interaction;
+  return nil;
+}
+bool containsNativeButton(UIView *root) {
+  if ([root isKindOfClass:UIButton.class]) return true;
+  for (UIView *child in root.subviews) if (containsNativeButton(child)) return true;
+  return false;
+}
+bool writeLyricsWindowPreview(UIWindow *window, NSString *filename) {
+  UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithBounds:window.bounds];
+  UIImage *preview = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+    (void)context; [window drawViewHierarchyInRect:window.bounds afterScreenUpdates:YES];
+  }];
+  NSString *directory = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+  [NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
+  NSData *png = UIImagePNGRepresentation(preview);
+  return png.length > 0 && [png writeToFile:[directory stringByAppendingPathComponent:filename] atomically:YES];
+}
+void sendMenuGesture(UIViewController *controller, UITextView *editor,
+                     PlayWorshipLyricsObservedLongPress *gesture,
+                     UIGestureRecognizerState state) {
+  UITextPosition *position = editor.selectedTextRange.start ?: editor.beginningOfDocument;
+  const CGRect caret = [editor caretRectForPosition:position];
+  gesture.fixtureLocation = CGPointMake(CGRectGetMidX(caret), CGRectGetMidY(caret));
+  gesture.fixtureState = state;
+  [controller selectionMenuGesture:gesture];
+}
 UIView *identifiedView(UIView *root, NSString *identifier) {
   if ([root.accessibilityIdentifier isEqualToString:identifier]) return root;
   for (UIView *child in root.subviews)
@@ -33,6 +111,40 @@ NSArray<UIView *> *identifiedViews(UIView *root, NSString *prefix) {
   NSMutableArray<UIView *> *result = [NSMutableArray array];
   collectIdentifiedViews(root, prefix, result);
   return result;
+}
+UIMenu *menuWithIdentifier(UIMenu *menu, NSString *identifier) API_AVAILABLE(ios(13.0)) {
+  if ([menu.identifier isEqualToString:identifier]) return menu;
+  for (UIMenuElement *entry in menu.children)
+    if ([entry isKindOfClass:UIMenu.class])
+      if (UIMenu *found = menuWithIdentifier((UIMenu *)entry, identifier)) return found;
+  return nil;
+}
+UIAction *actionWithIdentifier(UIMenu *menu, NSString *identifier) API_AVAILABLE(ios(13.0)) {
+  for (UIMenuElement *entry in menu.children) {
+    if ([entry isKindOfClass:UIAction.class] && [((UIAction *)entry).identifier isEqualToString:identifier])
+      return (UIAction *)entry;
+    if ([entry isKindOfClass:UIMenu.class])
+      if (UIAction *found = actionWithIdentifier((UIMenu *)entry, identifier)) return found;
+  }
+  return nil;
+}
+UIMenu *sectionSubmenu(UIMenu *menu) API_AVAILABLE(ios(13.0)) {
+  for (UIMenuElement *entry in menu.children)
+    if ([entry isKindOfClass:UIMenu.class] &&
+        ![((UIMenu *)entry).identifier isEqualToString:@"nativeLyricsChordMenu"] &&
+        ((UIMenu *)entry).children.count == 9) return (UIMenu *)entry;
+  return nil;
+}
+NSArray<UILabel *> *visibleChordLabels(UIView *root) {
+  NSMutableArray<UILabel *> *result = [NSMutableArray array];
+  for (UIView *entry in identifiedViews(root, @"nativeLyricsChord:"))
+    if ([entry isKindOfClass:UILabel.class]) [result addObject:(UILabel *)entry];
+  return result;
+}
+UILabel *chordLabel(UIView *root, NSString *symbol) {
+  for (UILabel *entry in visibleChordLabels(root))
+    if ([entry.text isEqualToString:symbol]) return entry;
+  return nil;
 }
 NSArray<NSString *> *cardHeaderIdentities(UIView *root) {
   NSMutableArray<NSString *> *result = [NSMutableArray array];
@@ -175,16 +287,20 @@ void writeReport(bool success, int checks, const juce::String &error) {
   NativeSongLyricsEditor::SaveCompletion secondCompletion;
   std::optional<SongLyricsDocument> saved;
   SongLyricsDocument source;
+  __strong PlayWorshipLyricsObservedLongPress *menuGestureFixture;
+  int menuGuardCloseBaseline;
   int checks;
   int saves;
   int closes;
   NSRange firstMarkedRange;
   NSRange secondMarkedRange;
 }
+@property(nonatomic) BOOL manualMode;
 @property(nonatomic, strong) UIWindow *window;
 @property(nonatomic, strong) UIViewController *editorController;
 @property(nonatomic, strong) UITextView *textView;
 - (void)startHost;
+- (void)startManualFixture;
 - (void)startChecks;
 - (void)check:(BOOL)condition message:(const char *)message;
 - (void)protected:(std::function<void()>)work;
@@ -201,6 +317,11 @@ void writeReport(bool success, int checks, const juce::String &error) {
 - (void)checkEmptyLineContinuation:(BOOL)hasFollowingSection;
 - (void)checkSelectionGeometry;
 - (void)checkLegacyPartialRange;
+- (void)checkNativeChords;
+- (void)checkAutomaticNativeMenus;
+- (void)checkAutomaticMenuGuard:(NSInteger)index;
+- (void)checkLegacyInstrumentalReadOnly;
+- (void)checkNativeCardReordering;
 - (void)finish:(BOOL)success error:(juce::String)error;
 @end
 
@@ -217,10 +338,52 @@ void writeReport(bool success, int checks, const juce::String &error) {
     auto *peer = host->getPeer();
     UIView *native = peer != nullptr ? (__bridge UIView *)peer->getNativeHandle() : nil;
     self.window = native.window;
-    [self check:self.window != nil message:"JUCEApplication supplies its real native scene and peer window"];
-    [self startChecks];
+    if (self.manualMode) {
+      if (self.window == nil) { std::cout << "NATIVE_LYRICS_MANUAL_ERROR no native peer window" << std::endl; return; }
+      [self startManualFixture];
+    } else {
+      [self check:self.window != nil message:"JUCEApplication supplies its real native scene and peer window"];
+      [self startChecks];
+    }
   }]; });
-  later(180.0, [self] { [self finish:NO error:"UIKit harness timed out"]; });
+  if (!self.manualMode) later(180.0, [self] { [self finish:NO error:"UIKit harness timed out"]; });
+}
+- (void)startManualFixture {
+  const auto fixture = juce::SystemStats::getEnvironmentVariable("MTCONTROLS_NATIVE_LYRICS_MANUAL_FIXTURE", {});
+  const bool mixed = fixture == "mixed", reorder = fixture == "reorder";
+  SongLyricsDocument document;
+  if (reorder) {
+    document.schemaVersion = 2; document.text = juce::String::fromUTF8("Uno 🎹\nDos\nTres");
+    document.sections = {{"manual-a", "verse", 0, 6}, {"manual-b", "chorus", 7, 3}, {"manual-c", "bridge", 11, 4}};
+    document.chords = {{"manual-chord-a", 1, "C"}, {"manual-chord-b", 8, "Am7"}, {"manual-chord-c", 11, "G"}};
+  } else if (mixed) {
+    document.text = "Uno\nDos";
+    document.sections.push_back({"manual-verse", "verse", 0, 7});
+    juce::String blockId;
+    if (!addSongLyricsInstrumentalBlock(document, 4, "instrumental", "Solo", 4, &blockId)) {
+      std::cout << "NATIVE_LYRICS_MANUAL_ERROR invalid mixed fixture" << std::endl; return;
+    }
+    const auto row = document.instrumentalBlocks.front().rows.front();
+    if (!setSongLyricsInstrumentalCell(document, blockId, row.id, row.cells[0].id, "C") ||
+        !setSongLyricsInstrumentalCell(document, blockId, row.id, row.cells[1].id, "Am7")) {
+      std::cout << "NATIVE_LYRICS_MANUAL_ERROR invalid fixture cells" << std::endl; return;
+    }
+  }
+  NativeSongLyricsEditor::Options options;
+  options.title = reorder ? "Reordenar tarjetas" : mixed ? "Letra y acordes heredados" : "Prueba manual de letra";
+  options.document = document;
+  handle = NativeSongLyricsEditor::present(*owner, options,
+      [self](auto lyrics, auto completion) {
+        saved = std::move(lyrics); completion(true, {});
+        std::cout << "NATIVE_LYRICS_MANUAL_SAVE_BRIDGE_ONLY (no project I/O)" << std::endl;
+      }, [] { std::cout << "NATIVE_LYRICS_MANUAL_CLOSED (host remains open)" << std::endl; });
+  if (!handle) { std::cout << "NATIVE_LYRICS_MANUAL_ERROR native presentation failed" << std::endl; return; }
+  later(0.6, [self, mixed, reorder] {
+    self.editorController = ((UINavigationController *)self.window.rootViewController.presentedViewController).topViewController;
+    self.textView = (UITextView *)identifiedView(self.editorController.view, @"nativeLyricsText");
+    std::cout << "NATIVE_LYRICS_MANUAL_READY fixture=" << (reorder ? "reorder" : mixed ? "mixed" : "empty")
+              << " (no automated checks, timeout or success report)" << std::endl;
+  });
 }
 - (void)protected:(std::function<void()>)work {
   try { work(); }
@@ -295,14 +458,15 @@ void writeReport(bool success, int checks, const juce::String &error) {
   [self.editorController.view layoutIfNeeded];
   if (@available(iOS 16.0, *)) {
     UIMenu *menu = [self.textView.delegate textView:self.textView editMenuForTextInRange:self.textView.selectedRange suggestedActions:@[]];
-    [self check:menu.children.count == 1 && [menu.children.firstObject isKindOfClass:UIMenu.class]
-         message:"native selection menu adds the Section submenu"];
-    UIMenu *sections = (UIMenu *)menu.children.firstObject;
+    [self check:menuWithIdentifier(menu, @"nativeLyricsChordMenu") != nil && sectionSubmenu(menu) != nil
+         message:"native selection menu offers Chord and Section submenus"];
+    UIMenu *sections = sectionSubmenu(menu);
     [self check:sections.children.count == 9 message:"Section offers eight kinds and explicit removal"];
     UIAction *suggested = [UIAction actionWithTitle:@"Copy" image:nil identifier:nil handler:^(UIAction *) {}];
     UIMenu *withSystemActions = [self.textView.delegate textView:self.textView editMenuForTextInRange:self.textView.selectedRange suggestedActions:@[suggested]];
-    [self check:withSystemActions.children.count == 2 && [withSystemActions.children.firstObject isKindOfClass:UIMenu.class] && withSystemActions.children.lastObject == suggested
-         message:"Section is first while native suggested editing actions remain available"];
+    [self check:menuWithIdentifier(withSystemActions, @"nativeLyricsChordMenu") != nil &&
+                sectionSubmenu(withSystemActions) != nil && [withSystemActions.children containsObject:suggested]
+         message:"adding Chord preserves Section and the same native suggested editing actions"];
   }
   NSString *originalText = [self.textView.text copy];
   const NSRange selected = self.textView.selectedRange;
@@ -1054,10 +1218,477 @@ void writeReport(bool success, int checks, const juce::String &error) {
         message:"legacy partial range saves through the same public native bridge" then:[self, originalJSON] {
       [self check:saved && juce::JSON::toString(songLyricsToVar(*saved), true) == originalJSON
            message:"saving a legacy partial section preserves its original ID, range, kind and text byte-for-byte in canonical JSON"];
-      [self finish:YES error:{}];
+      handle.reset(); self.editorController = nil; self.textView = nil;
+      [self checkNativeChords];
     }];
   }]; });
 }
+- (void)checkNativeChords {
+  NSString *fixture = @"🕊️ esperanza\nTu voz me acompaña";
+  const NSRange word = [fixture rangeOfString:@"esperanza"];
+  const NSRange chordCaret = NSMakeRange(word.location + 4, 0); // r, after emoji + VS16.
+  const NSRange nearbyCaret = NSMakeRange(word.location + 2, 0); // p, a deliberately close chord.
+  SongLyricsDocument chordDocument;
+  chordDocument.text = juce::String::fromUTF8(fixture.UTF8String);
+  const NSRange chorus = completeParagraphs(fixture, word);
+  chordDocument.sections.push_back({"chord-native-chorus", "chorus", static_cast<int>(chorus.location), static_cast<int>(chorus.length)});
+  NativeSongLyricsEditor::Options options;
+  options.title = "Native chord caret fixture"; options.document = chordDocument;
+  saved.reset();
+  const int closeBaseline = closes;
+  handle = NativeSongLyricsEditor::present(*owner, options,
+      [self](auto document, auto completion) { saved = std::move(document); completion(true, {}); },
+      [self] { ++closes; });
+  [self check:handle != nullptr message:"native chord fixture opens the shared UIKit editor"];
+  later(0.6, [self, fixture, word, chordCaret, nearbyCaret, closeBaseline] { [self protected:[self, fixture, word, chordCaret, nearbyCaret, closeBaseline] {
+    self.editorController = ((UINavigationController *)self.window.rootViewController.presentedViewController).topViewController;
+    self.textView = (UITextView *)identifiedView(self.editorController.view, @"nativeLyricsText");
+    [self.textView becomeFirstResponder]; self.textView.selectedRange = chordCaret;
+    layoutTopCards(self.editorController, self.textView);
+    if (@available(iOS 16.0, *)) {
+      UIAction *copy = [UIAction actionWithTitle:@"Copy" image:nil identifier:@"nativeChordFixtureCopy" handler:^(UIAction *) {}];
+      UIAction *paste = [UIAction actionWithTitle:@"Paste" image:nil identifier:@"nativeChordFixturePaste" handler:^(UIAction *) {}];
+      UIMenu *caretMenu = [self.textView.delegate textView:self.textView editMenuForTextInRange:chordCaret suggestedActions:@[copy, paste]];
+      [self check:menuWithIdentifier(caretMenu, @"nativeLyricsChordMenu") != nil && sectionSubmenu(caretMenu) == nil &&
+                  [caretMenu.children containsObject:copy] && [caretMenu.children containsObject:paste]
+           message:"a collapsed native caret offers Chord without Section while preserving system actions by identity"];
+      [self check:actionWithIdentifier(caretMenu, @"nativeLyricsChord:Am7") != nil
+           message:"the native Chord menu exposes an Am7 action in its hierarchy"];
+      UIMenu *selectionMenu = [self.textView.delegate textView:self.textView editMenuForTextInRange:word suggestedActions:@[copy, paste]];
+      [self check:menuWithIdentifier(selectionMenu, @"nativeLyricsChordMenu") != nil && sectionSubmenu(selectionMenu) != nil &&
+                  [selectionMenu.children containsObject:copy] && [selectionMenu.children containsObject:paste]
+           message:"a selected word retains Section, Chord, Copy and Paste together"];
+    }
+    const CGPoint originalOffset = self.textView.contentOffset;
+    const uint64_t revision = [[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue];
+    [self.editorController applyChord:"Am7" range:chordCaret revision:revision];
+    layoutCards(self.editorController, self.textView);
+    [self check:[self.textView.text isEqualToString:fixture] && NSEqualRanges(self.textView.selectedRange, chordCaret) &&
+                self.textView.isFirstResponder && self.editorController.presentedViewController == nil
+         message:"adding a chord changes metadata while preserving the real text, exact native caret and keyboard"];
+    [self check:std::abs(self.textView.contentOffset.x - originalOffset.x) < 0.1 &&
+                std::abs(self.textView.contentOffset.y - originalOffset.y) < 0.1
+         message:"placing a chord on an already visible lyric keeps the native viewport stable"];
+    UILabel *label = chordLabel(self.editorController.view, @"Am7");
+    UITextPosition *position = [self.textView positionFromPosition:self.textView.beginningOfDocument offset:chordCaret.location];
+    const CGRect caret = [self.textView caretRectForPosition:position];
+    const CGRect chordFrame = label != nil ? headerDocumentFrame(label, self.textView) : CGRectNull;
+    [self check:label != nil && !CGRectIsNull(chordFrame) &&
+                std::abs(CGRectGetMinX(chordFrame) - CGRectGetMinX(caret)) < 2.0 &&
+                CGRectGetMaxY(chordFrame) <= CGRectGetMinY(caret) + 1.0
+         message:"the accessible chord label sits over the precise r glyph and never covers its lyric line"];
+    later(0.05, [self, fixture, chordCaret, nearbyCaret, closeBaseline] { [self protected:[self, fixture, chordCaret, nearbyCaret, closeBaseline] {
+      [self.textView.undoManager undo]; layoutTopCards(self.editorController, self.textView);
+      [self check:visibleChordLabels(self.editorController.view).count == 0 && [self.textView.text isEqualToString:fixture]
+           message:"native Undo removes the chord without editing the lyric text"];
+      later(0.05, [self, fixture, chordCaret, nearbyCaret, closeBaseline] { [self protected:[self, fixture, chordCaret, nearbyCaret, closeBaseline] {
+        [self.textView.undoManager redo]; layoutTopCards(self.editorController, self.textView);
+        [self check:chordLabel(self.editorController.view, @"Am7") != nil && [self.textView.text isEqualToString:fixture]
+             message:"native Redo restores the chord and its lyric anchor"];
+        const uint64_t oldRevision = [[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue];
+        [self.editorController applyChord:"D/F#" range:nearbyCaret revision:oldRevision];
+        layoutTopCards(self.editorController, self.textView);
+        [self check:visibleChordLabels(self.editorController.view).count == 2
+             message:"two independent chords can be placed inside the same word"];
+        UILabel *first = chordLabel(self.editorController.view, @"D/F#"), *second = chordLabel(self.editorController.view, @"Am7");
+        const CGRect firstFrame = first != nil ? headerDocumentFrame(first, self.textView) : CGRectNull;
+        const CGRect secondFrame = second != nil ? headerDocumentFrame(second, self.textView) : CGRectNull;
+        [self check:first != nil && second != nil && !CGRectIntersectsRect(firstFrame, secondFrame)
+             message:"nearby chord symbols use separate reserved lanes instead of colliding or inserting spaces in the lyric"];
+        // Capture after normal UIKit runloops, without moving the selection,
+        // to distinguish a transient insertion-caret frame from settled layout.
+        later(0.3, [self] { [self protected:[self] {
+          UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithBounds:self.window.bounds];
+          UIImage *preview = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+            (void)context;
+            [self.window drawViewHierarchyInRect:self.window.bounds afterScreenUpdates:YES];
+          }];
+          NSString *previewDirectory = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+          NSData *previewPNG = UIImagePNGRepresentation(preview);
+          [self check:previewPNG.length > 0 && [previewPNG writeToFile:[previewDirectory stringByAppendingPathComponent:@"native-lyrics-chords-preview.png"] atomically:YES]
+               message:"the settled real UIKit window exports a PNG with both independently anchored chords visible"];
+        }]; });
+        [self.editorController applyChord:"G" range:chordCaret revision:oldRevision];
+        [self check:chordLabel(self.editorController.view, @"G") == nil && visibleChordLabels(self.editorController.view).count == 2
+             message:"a contextual action captured before another edit cannot modify the new revision"];
+        later(0.45, [self, fixture, chordCaret, nearbyCaret, closeBaseline] { [self protected:[self, fixture, chordCaret, nearbyCaret, closeBaseline] {
+          self.textView.selectedRange = NSMakeRange(0, 0);
+          [self.textView.undoManager beginUndoGrouping]; [self.textView insertText:@"🎹"]; [self.textView.undoManager endUndoGrouping];
+          [self check:[self.textView.text hasPrefix:@"🎹🕊️"] && visibleChordLabels(self.editorController.view).count == 2
+               message:"native Unicode typing before chord anchors retains both rendered chords"];
+          later(0.05, [self, fixture, chordCaret, nearbyCaret, closeBaseline] { [self protected:[self, fixture, chordCaret, nearbyCaret, closeBaseline] {
+            [self.textView.undoManager undo]; layoutTopCards(self.editorController, self.textView);
+            [self check:[self.textView.text isEqualToString:fixture] && visibleChordLabels(self.editorController.view).count == 2
+                 message:"native text Undo restores the exact Unicode lyric and both chord anchors"];
+            self.textView.selectedRange = NSMakeRange(self.textView.text.length, 0);
+            [self.textView.undoManager beginUndoGrouping];
+            [self.textView setMarkedText:@"a" selectedRange:NSMakeRange(1, 0)];
+            [self check:self.textView.markedTextRange != nil message:"UIKit owns an active marked-text composition"];
+            [self.editorController applyChord:"F" range:chordCaret revision:[[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue]];
+            [self check:chordLabel(self.editorController.view, @"F") == nil && visibleChordLabels(self.editorController.view).count == 2
+                 message:"chord actions leave an active IME composition untouched"];
+            [self.textView unmarkText]; [self.textView.undoManager endUndoGrouping];
+            later(0.05, [self, fixture, chordCaret, nearbyCaret, closeBaseline] { [self protected:[self, fixture, chordCaret, nearbyCaret, closeBaseline] {
+              [self.textView.undoManager undo]; layoutTopCards(self.editorController, self.textView);
+              [self check:[self.textView.text isEqualToString:fixture] && visibleChordLabels(self.editorController.view).count == 2
+                   message:"undoing committed IME text preserves independently added chord metadata"];
+              [self.editorController savePressed];
+              [self eventually:[self, closeBaseline] { return saved.has_value() && closes == closeBaseline + 1 && self.window.rootViewController.presentedViewController == nil; }
+                  message:"native chord Save completes once through the existing asynchronous bridge" then:[self, fixture, chordCaret, nearbyCaret] {
+                [self check:saved && saved->schemaVersion == 2 && saved->text == juce::String::fromUTF8(fixture.UTF8String) && saved->chords.size() == 2
+                     message:"native Save emits a version-two structured lyric with the unchanged text and both chords"];
+                bool sawFirst = false, sawSecond = false;
+                for (const auto &chord : saved->chords) {
+                  if (chord.symbol == "Am7") sawFirst = chord.offset == static_cast<int>(chordCaret.location);
+                  if (chord.symbol == "D/F#") sawSecond = chord.offset == static_cast<int>(nearbyCaret.location);
+                }
+                [self check:sawFirst && sawSecond message:"saved chord anchors use document UTF16 offsets after text Undo and IME"];
+                const auto savedJSON = juce::JSON::toString(songLyricsToVar(*saved), true);
+                NativeSongLyricsEditor::Options reopen; reopen.title = "Reopened native chord fixture"; reopen.document = saved;
+                handle.reset(); self.editorController = nil; self.textView = nil;
+                const int finalCloseBaseline = closes;
+                handle = NativeSongLyricsEditor::present(*owner, reopen,
+                    [self](auto document, auto completion) { saved = std::move(document); completion(true, {}); }, [self] { ++closes; });
+                [self check:handle != nullptr message:"the native bridge reopens a saved version-two chord document"];
+                later(0.6, [self, fixture, savedJSON, finalCloseBaseline] { [self protected:[self, fixture, savedJSON, finalCloseBaseline] {
+                  self.editorController = ((UINavigationController *)self.window.rootViewController.presentedViewController).topViewController;
+                  self.textView = (UITextView *)identifiedView(self.editorController.view, @"nativeLyricsText");
+                  layoutTopCards(self.editorController, self.textView);
+                  [self check:[self.textView.text isEqualToString:fixture] && chordLabel(self.editorController.view, @"Am7") != nil &&
+                              chordLabel(self.editorController.view, @"D/F#") != nil
+                       message:"reopening restores both native chord decorations over the original lyric"];
+                  [self.editorController savePressed];
+                  [self eventually:[self, finalCloseBaseline] { return closes == finalCloseBaseline + 1 && self.window.rootViewController.presentedViewController == nil; }
+                      message:"the reopened document can complete the normal Save/Close flow" then:[self, savedJSON] {
+                    [self check:saved && juce::JSON::toString(songLyricsToVar(*saved), true) == savedJSON
+                         message:"save and reopen retain chord IDs, symbols and precise canonical offsets"];
+                    handle.reset(); self.editorController = nil; self.textView = nil;
+                    [self checkAutomaticNativeMenus];
+                  }];
+                }]; });
+              }];
+            }]; });
+          }]; });
+        }]; });
+      }]; });
+    }]; });
+  }]; });
+}
+
+- (void)checkAutomaticNativeMenus {
+  NativeSongLyricsEditor::Options options;
+  options.title = "Native automatic menu fixture"; options.document = SongLyricsDocument{};
+  menuGuardCloseBaseline = closes;
+  handle = NativeSongLyricsEditor::present(*owner, options,
+      [self](auto document, auto completion) { saved = std::move(document); completion(true, {}); }, [self] { ++closes; });
+  [self check:handle != nullptr message:"automatic-menu fixture opens the real UIKit bridge"];
+  later(0.6, [self] { [self protected:[self] {
+    self.editorController = ((UINavigationController *)self.window.rootViewController.presentedViewController).topViewController;
+    self.textView = (UITextView *)identifiedView(self.editorController.view, @"nativeLyricsText");
+    [self.textView becomeFirstResponder]; self.textView.selectedRange = NSMakeRange(0, 0);
+    UILongPressGestureRecognizer *observer = nil;
+    for (UIGestureRecognizer *gesture in self.textView.gestureRecognizers)
+      if ([gesture.name isEqualToString:@"nativeLyricsSelectionMenuObserver"] && [gesture isKindOfClass:UILongPressGestureRecognizer.class]) observer = (UILongPressGestureRecognizer *)gesture;
+    [self check:observer != nil && !observer.cancelsTouchesInView && !observer.delaysTouchesBegan && !observer.delaysTouchesEnded
+         message:"the production selection-menu observer is a passive native long press"];
+    [self check:[observer.delegate respondsToSelector:@selector(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:)] &&
+                [observer.delegate gestureRecognizer:observer shouldRecognizeSimultaneouslyWithGestureRecognizer:self.textView.panGestureRecognizer]
+         message:"the observer allows UIKit's native selection and scrolling gestures to coexist"];
+    if (@available(iOS 16.0, *)) {
+      UIMenu *blankMenu = [self.editorController menuForRange:NSMakeRange(0, 0) suggested:@[]];
+      [self check:menuWithIdentifier(blankMenu, @"nativeLyricsChordMenu") != nil &&
+                  menuWithIdentifier(blankMenu, @"nativeLyricsCreateSectionMenu") == nil && sectionSubmenu(blankMenu) == nil
+           message:"an empty native cursor offers Chord without creating an empty instrumental section"];
+      [self check:actionWithIdentifier(blankMenu, @"nativeLyricsCreateSection:intro") == nil &&
+                  actionWithIdentifier(blankMenu, @"nativeLyricsCreateSection:solo") == nil &&
+                  actionWithIdentifier(blankMenu, @"nativeLyricsCreateSection:instrumental") == nil
+           message:"the edit menu no longer offers empty Intro, Solo or Instrumental creation"];
+      menuGestureFixture = [PlayWorshipLyricsObservedLongPress new];
+      menuGestureFixture.name = @"nativeLyricsSelectionMenuObserver";
+      [self.textView addGestureRecognizer:menuGestureFixture];
+      const auto revision = [[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue];
+      sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateBegan);
+      sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateEnded);
+      [self eventually:[self] { return [[self.editorController valueForKey:@"automaticEditMenuVisible"] boolValue]; }
+          message:"ending a selection gesture on an empty line presents the native edit menu" then:[self, revision] {
+        if (@available(iOS 16.0, *)) {
+          UIEditMenuInteraction *interaction = [self.editorController valueForKey:@"automaticEditMenuInteraction"];
+          [self check:[interaction isKindOfClass:UIEditMenuInteraction.class] && [self.textView.interactions containsObject:interaction]
+               message:"the automatic menu uses a real UIEditMenuInteraction attached to the native text field"];
+        }
+        [self check:self.textView.text.length == 0 && NSEqualRanges(self.textView.selectedRange, NSMakeRange(0, 0)) &&
+                    self.textView.isFirstResponder && [[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue] == revision
+             message:"automatic menu presentation preserves lyric bytes, revision, native cursor and editing focus"];
+        if (@available(iOS 16.0, *)) [[self.editorController valueForKey:@"automaticEditMenuInteraction"] dismissMenu];
+        [self eventually:[self] { return ![[self.editorController valueForKey:@"automaticEditMenuVisible"] boolValue]; }
+            message:"the automatic edit menu reports its actual native dismissal" then:[self] { [self checkAutomaticMenuGuard:0]; }];
+      }];
+    } else {
+      [self.editorController closePressed];
+      [self eventually:[self] { return closes == menuGuardCloseBaseline + 1 && self.window.rootViewController.presentedViewController == nil; }
+          message:"older iOS keeps the existing native-menu fallback" then:[self] {
+        handle.reset(); self.editorController = nil; self.textView = nil; [self checkLegacyInstrumentalReadOnly];
+      }];
+    }
+  }]; });
+}
+- (void)checkAutomaticMenuGuard:(NSInteger)index {
+  if (index == 7) {
+    [self.textView removeGestureRecognizer:menuGestureFixture]; menuGestureFixture = nil;
+    [self.editorController closePressed];
+    [self eventually:[self] { return closes == menuGuardCloseBaseline + 1 && self.window.rootViewController.presentedViewController == nil; }
+        message:"automatic-menu guard fixtures close without leaving changes or alerts" then:[self] {
+      handle.reset(); self.editorController = nil; self.textView = nil; [self checkLegacyInstrumentalReadOnly];
+    }];
+    return;
+  }
+  [self check:![[self.editorController valueForKey:@"automaticEditMenuVisible"] boolValue] && self.textView.text.length == 0
+       message:"each automatic-menu guard begins with the unchanged empty native document"];
+  self.textView.selectedRange = NSMakeRange(0, 0);
+  if (index == 0) {
+    [self.editorController textViewDidChangeSelection:self.textView];
+  } else if (index == 1) {
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateBegan);
+    [self.textView.undoManager beginUndoGrouping]; [self.textView insertText:@"A"]; [self.textView.undoManager endUndoGrouping];
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateEnded);
+  } else if (index == 2) {
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateBegan);
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateEnded);
+    [self.textView.undoManager beginUndoGrouping]; [self.textView insertText:@"B"]; [self.textView.undoManager endUndoGrouping];
+  } else if (index == 3) {
+    [self.textView.undoManager beginUndoGrouping];
+    [self.textView setMarkedText:@"a" selectedRange:NSMakeRange(1, 0)];
+    [self check:self.textView.markedTextRange != nil message:"automatic-menu IME guard uses a real marked-text composition"];
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateBegan);
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateEnded);
+  } else if (index == 4) {
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateBegan);
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateEnded);
+    [self.editorController scrollViewWillBeginDragging:self.textView];
+    if ([self.editorController respondsToSelector:@selector(scrollViewDidEndDragging:willDecelerate:)])
+      [self.editorController scrollViewDidEndDragging:self.textView willDecelerate:NO];
+  } else if (index == 5) {
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateBegan);
+    [self.editorController scrollViewWillBeginDragging:self.textView];
+    if ([self.editorController respondsToSelector:@selector(scrollViewDidEndDragging:willDecelerate:)])
+      [self.editorController scrollViewDidEndDragging:self.textView willDecelerate:NO];
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateEnded);
+  } else {
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateBegan);
+    sendMenuGesture(self.editorController, self.textView, menuGestureFixture, UIGestureRecognizerStateCancelled);
+  }
+  later(0.3, [self, index] { [self protected:[self, index] {
+    const char *messages[] = {
+      "selection notifications alone do not open an automatic menu while navigating or typing",
+      "a text revision changed during selection prevents the stale automatic menu",
+      "typing before the scheduled presentation cancels the pending automatic menu",
+      "an active native IME composition never opens the automatic menu",
+      "manual scrolling cancels a pending automatic menu without changing the native selection",
+      "manual scrolling during a held selection gesture prevents menu presentation when the finger ends",
+      "a cancelled selection gesture does not present an automatic menu"};
+    [self check:![[self.editorController valueForKey:@"automaticEditMenuVisible"] boolValue] message:messages[index]];
+    if (index == 3) { [self.textView unmarkText]; [self.textView.undoManager endUndoGrouping]; }
+    later(0.05, [self, index] { [self protected:[self, index] {
+      if (index >= 1 && index <= 3) [self.textView.undoManager undo];
+      [self check:self.textView.text.length == 0 message:"guard fixture cleanup restores the original lyric through native Undo"];
+      [self checkAutomaticMenuGuard:index + 1];
+    }]; });
+  }]; });
+}
+- (void)checkLegacyInstrumentalReadOnly {
+  SongLyricsDocument document; document.text = "Uno\nDos\nTres";
+  document.sections.push_back({"nested-verse", "verse", 0, 7});
+  document.sections.push_back({"nested-target", "bridge", 8, 4});
+  juce::String blockId;
+  [self check:addSongLyricsInstrumentalBlock(document, 4, "instrumental", "Solo", 4, &blockId)
+       message:"the compatibility fixture loads a legacy instrumental inside a multiparagraph verse"];
+  const auto row = document.instrumentalBlocks.front().rows.front();
+  [self check:setSongLyricsInstrumentalCell(document, blockId, row.id, row.cells[0].id, "C") &&
+              setSongLyricsInstrumentalCell(document, blockId, row.id, row.cells[1].id, "Am7")
+       message:"the legacy document contains stable C and Am7 cell metadata"];
+  const auto originalJSON = juce::JSON::toString(songLyricsToVar(document), true);
+  NativeSongLyricsEditor::Options options; options.title = "Legacy read-only chords"; options.document = document;
+  saved.reset(); const int closeBaseline = closes;
+  handle = NativeSongLyricsEditor::present(*owner, options,
+      [self](auto lyrics, auto completion) { saved = std::move(lyrics); completion(true, {}); }, [self] { ++closes; });
+  [self check:handle != nullptr message:"a legacy version-three document still opens through the native bridge"];
+  later(0.6, [self, blockId, row, originalJSON, closeBaseline] { [self protected:[self, blockId, row, originalJSON, closeBaseline] {
+    self.editorController = ((UINavigationController *)self.window.rootViewController.presentedViewController).topViewController;
+    self.textView = (UITextView *)identifiedView(self.editorController.view, @"nativeLyricsText");
+    layoutTopCards(self.editorController, self.textView);
+    UIView *card = identifiedView(self.editorController.view, [@"nativeLyricsInstrumental:" stringByAppendingString:[NSString stringWithUTF8String:blockId.toRawUTF8()]]);
+    UIView *nativeRow = identifiedView(self.editorController.view, [@"nativeLyricsInstrumentalRow:" stringByAppendingString:[NSString stringWithUTF8String:row.id.toRawUTF8()]]);
+    NSString *projection = [nativeRow respondsToSelector:@selector(text)] ? [nativeRow valueForKey:@"text"] : nil;
+    const BOOL readOnly = [nativeRow isKindOfClass:UILabel.class] || ([nativeRow isKindOfClass:UITextView.class] && !((UITextView *)nativeRow).editable);
+    [self check:card != nil && readOnly && [projection containsString:@"C"] && [projection containsString:@"Am7"] && ![projection containsString:@"○"]
+         message:"legacy instrumental symbols remain visible and read-only without empty-circle cells"];
+    [self check:!containsNativeButton(card) message:"legacy instrumental presentation has no Add Row or Remove Section controls"];
+    UIView *backgrounds = identifiedView(self.editorController.view, @"nativeLyricsCardBackgrounds");
+    const CGRect cardFrame = [card convertRect:card.bounds toView:backgrounds];
+    bool separated = backgrounds != nil && !CGRectIsEmpty(cardFrame);
+    for (NSValue *value in (NSArray<NSValue *> *)[backgrounds valueForKey:@"rectangles"])
+      separated = separated && !CGRectIntersectsRect(value.CGRectValue, cardFrame);
+    [self check:separated message:"legacy instrumental content stays separate from the surrounding lyric background"];
+    UIView *outerGrip = identifiedView(self.editorController.view, @"nativeLyricsCardDragHandle:nested-verse");
+    UIDragInteraction *outerDrag = dragInteractionOnView(outerGrip);
+    [self check:outerDrag == nil || !outerDrag.enabled message:"a verse containing a nested instrumental is not offered as a movable whole card"];
+    const auto revision = [[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue];
+    [self.editorController moveLyricsCard:"nested-verse" before:"nested-target" revision:revision];
+    [self check:[self.textView.text isEqualToString:@"Uno\nDos\nTres"] && [[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue] == revision
+         message:"an unsupported nested move leaves the native text and revision unchanged"];
+    later(0.3, [self, originalJSON, closeBaseline] { [self protected:[self, originalJSON, closeBaseline] {
+      [self check:writeLyricsWindowPreview(self.window, @"native-lyrics-readonly-preview.png")
+           message:"the settled real UIKit window exports the read-only compatibility preview"];
+      [self.editorController savePressed];
+      [self eventually:[self, closeBaseline] { return saved.has_value() && closes == closeBaseline + 1 && self.window.rootViewController.presentedViewController == nil; }
+          message:"read-only legacy compatibility completes the normal Save flow" then:[self, originalJSON] {
+        [self check:saved && juce::JSON::toString(songLyricsToVar(*saved), true) == originalJSON
+             message:"saving a rejected nested move preserves every legacy cell, ID, range and lyric byte"];
+        handle.reset(); self.editorController = nil; self.textView = nil; [self checkNativeCardReordering];
+      }];
+    }]; });
+  }]; });
+}
+- (void)checkNativeCardReordering {
+  SongLyricsDocument document; document.schemaVersion = 2;
+  document.text = juce::String::fromUTF8("Uno 🎹\nDos\nTres");
+  document.sections = {{"move-a", "verse", 0, 6}, {"move-b", "chorus", 7, 3}, {"move-c", "bridge", 11, 4}};
+  document.chords = {{"move-chord-a", 1, "C"}, {"move-chord-b", 8, "Am7"}, {"move-chord-c", 11, "G"}};
+  NativeSongLyricsEditor::Options options; options.title = "Native card reordering"; options.document = document;
+  saved.reset(); const int closeBaseline = closes;
+  handle = NativeSongLyricsEditor::present(*owner, options,
+      [self](auto lyrics, auto completion) { saved = std::move(lyrics); completion(true, {}); }, [self] { ++closes; });
+  [self check:handle != nullptr message:"three complete Unicode lyric cards open for native reordering"];
+  later(0.6, [self, closeBaseline] { [self protected:[self, closeBaseline] {
+    self.editorController = ((UINavigationController *)self.window.rootViewController.presentedViewController).topViewController;
+    self.textView = (UITextView *)identifiedView(self.editorController.view, @"nativeLyricsText");
+    layoutTopCards(self.editorController, self.textView);
+    NSArray<UIView *> *grips = identifiedViews(self.editorController.view, @"nativeLyricsCardDragHandle:");
+    [self check:grips.count == 3 message:"each complete movable card exposes its own native drag grip"];
+    UIDragInteraction *drag = nil;
+    for (UIView *grip in grips) {
+      UIDragInteraction *interaction = dragInteractionOnView(grip);
+      [self check:interaction != nil && interaction.enabled && interaction.view == grip
+           message:"the reorder drag interaction is enabled on its dedicated grip"];
+      if ([grip.accessibilityIdentifier isEqualToString:@"nativeLyricsCardDragHandle:move-a"]) drag = interaction;
+    }
+    [self check:drag != nil message:"the source card resolves its own drag interaction"];
+    bool nativeTextIntact = self.textView.editable && self.textView.selectable;
+    for (id<UIInteraction> interaction in self.textView.interactions)
+      if ([interaction isKindOfClass:UIDragInteraction.class] && ((UIDragInteraction *)interaction).delegate == drag.delegate) nativeTextIntact = false;
+    [self check:nativeTextIntact message:"our card drag does not replace the native text view's editing, selection or text-drag interactions"];
+    UIDropInteraction *drop = nil;
+    for (id<UIInteraction> interaction in self.editorController.view.interactions)
+      if ([interaction isKindOfClass:UIDropInteraction.class]) drop = (UIDropInteraction *)interaction;
+    [self check:drop != nil message:"the editor owns a native drop interaction on its root container"];
+    const uint64_t revision = [[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue];
+    PlayWorshipLyricsDragSessionFixture *session = [PlayWorshipLyricsDragSessionFixture new];
+    session.coordinateView = self.editorController.view;
+    session.fixtureLocation = [drag.view convertPoint:CGPointMake(CGRectGetMidX(drag.view.bounds), CGRectGetMidY(drag.view.bounds)) toView:self.editorController.view];
+    session.items = [drag.delegate dragInteraction:drag itemsForBeginningSession:session];
+    NSDictionary *payload = [session.items.firstObject.localObject isKindOfClass:NSDictionary.class] ? session.items.firstObject.localObject : nil;
+    [self check:session.items.count == 1 && [payload[@"sourceId"] isEqualToString:@"move-a"] &&
+                [payload[@"revision"] unsignedLongLongValue] == revision && [payload[@"editorToken"] isKindOfClass:NSString.class] &&
+                [payload[@"editorToken"] length] > 0 && [session.localContext isKindOfClass:NSDictionary.class]
+         message:"the drag carries only local card identity, revision and an editor token"];
+    [self check:[session.items.firstObject.itemProvider.registeredTypeIdentifiers containsObject:@"com.playworship.lyrics-card"] &&
+                [drag.delegate dragInteraction:drag sessionAllowsMoveOperation:session] &&
+                [drag.delegate dragInteraction:drag sessionIsRestrictedToDraggingApplication:session]
+         message:"native card drags declare their own type and restrict Move to this application"];
+    [self check:[drop.delegate dropInteraction:drop canHandleSession:session] message:"the drop target accepts a current local card payload"];
+    PlayWorshipLyricsDragSessionFixture *foreign = [PlayWorshipLyricsDragSessionFixture new];
+    NSMutableDictionary *foreignPayload = [payload mutableCopy]; foreignPayload[@"editorToken"] = NSUUID.UUID.UUIDString;
+    UIDragItem *foreignItem = [[UIDragItem alloc] initWithItemProvider:session.items.firstObject.itemProvider]; foreignItem.localObject = foreignPayload;
+    foreign.items = @[foreignItem]; foreign.localContext = foreignPayload;
+    foreign.coordinateView = session.coordinateView; foreign.fixtureLocation = session.fixtureLocation;
+    BOOL foreignRejected = ![drop.delegate dropInteraction:drop canHandleSession:foreign];
+    if (!foreignRejected) {
+      UIDropOperation operation = [drop.delegate dropInteraction:drop sessionDidUpdate:foreign].operation;
+      foreignRejected = operation != UIDropOperationMove && operation != UIDropOperationCopy;
+    }
+    [self check:foreignRejected message:"a payload from another editor instance is rejected even when its type, point and card ID match"];
+    [self.textView.undoManager removeAllActions];
+    [self.editorController moveLyricsCard:"move-a" before:"move-b" revision:revision];
+    [self.editorController moveLyricsCard:"move-a" before:"move-a" revision:revision];
+    [self check:!self.textView.undoManager.canUndo && [self.textView.text isEqualToString:@"Uno 🎹\nDos\nTres"]
+         message:"dropping onto the current position or the same card is a no-op without an Undo entry"];
+    [self.editorController moveLyricsCard:"move-a" before:"move-c" revision:revision];
+    [self check:[self.textView.text isEqualToString:@"Dos\nUno 🎹\nTres"]
+         message:"moving a card before another actually reorders its lyric text, including the Unicode paragraph"];
+    BOOL staleRejected = ![drop.delegate dropInteraction:drop canHandleSession:session];
+    if (!staleRejected) {
+      UIDropOperation operation = [drop.delegate dropInteraction:drop sessionDidUpdate:session].operation;
+      staleRejected = operation != UIDropOperationMove && operation != UIDropOperationCopy;
+    }
+    [self check:staleRejected message:"a drag payload captured before the move is now stale and cannot be dropped"];
+    [self.editorController moveLyricsCard:"move-c" before:"move-b" revision:revision];
+    [self check:[self.textView.text isEqualToString:@"Dos\nUno 🎹\nTres"]
+         message:"a stale selector request cannot reorder the current document"];
+    later(0.05, [self, closeBaseline] { [self protected:[self, closeBaseline] {
+      [self.textView.undoManager undo]; layoutCards(self.editorController, self.textView);
+      [self check:[self.textView.text isEqualToString:@"Uno 🎹\nDos\nTres"] message:"native Undo restores the original card order and text"];
+      later(0.05, [self, closeBaseline] { [self protected:[self, closeBaseline] {
+        [self.textView.undoManager redo]; layoutCards(self.editorController, self.textView);
+        [self check:[self.textView.text isEqualToString:@"Dos\nUno 🎹\nTres"] message:"native Redo restores the card move"];
+        [self.editorController moveLyricsCard:"move-b" before:juce::String()
+            revision:[[self.editorController valueForKey:@"documentRevision"] unsignedLongLongValue]];
+        [self check:[self.textView.text isEqualToString:@"Uno 🎹\nTres\nDos"] message:"a native card can move to the end without adding a blank lyric line"];
+        later(0.05, [self, closeBaseline] { [self protected:[self, closeBaseline] {
+          [self.textView.undoManager undo];
+          [self check:[self.textView.text isEqualToString:@"Dos\nUno 🎹\nTres"] message:"Undo of the end move leaves the earlier move intact"];
+          later(0.05, [self, closeBaseline] { [self protected:[self, closeBaseline] {
+            [self.textView.undoManager redo]; layoutCards(self.editorController, self.textView);
+            [self check:[self.textView.text isEqualToString:@"Uno 🎹\nTres\nDos"] message:"Redo restores the end placement"];
+            later(0.3, [self, closeBaseline] { [self protected:[self, closeBaseline] {
+              [self check:writeLyricsWindowPreview(self.window, @"native-lyrics-reordered-preview.png")
+                   message:"the settled real UIKit window exports the reordered-card preview"];
+              [self.editorController savePressed];
+              [self eventually:[self, closeBaseline] { return saved.has_value() && closes == closeBaseline + 1 && self.window.rootViewController.presentedViewController == nil; }
+                message:"reordered cards save through the existing asynchronous bridge" then:[self] {
+              bool ranges = saved && saved->text == juce::String::fromUTF8("Uno 🎹\nTres\nDos") && saved->sections.size() == 3 && saved->chords.size() == 3;
+              if (saved) {
+                for (const auto &section : saved->sections) {
+                  if (section.id == "move-a") ranges = ranges && section.start == 0 && section.length == 6 && section.kind == "verse";
+                  else if (section.id == "move-b") ranges = ranges && section.start == 12 && section.length == 3 && section.kind == "chorus";
+                  else if (section.id == "move-c") ranges = ranges && section.start == 7 && section.length == 4 && section.kind == "bridge";
+                  else ranges = false;
+                }
+                for (const auto &chord : saved->chords) {
+                  if (chord.id == "move-chord-a") ranges = ranges && chord.offset == 1 && chord.symbol == "C";
+                  else if (chord.id == "move-chord-b") ranges = ranges && chord.offset == 13 && chord.symbol == "Am7";
+                  else if (chord.id == "move-chord-c") ranges = ranges && chord.offset == 7 && chord.symbol == "G";
+                  else ranges = false;
+                }
+              }
+              [self check:ranges message:"Save preserves every section/chord ID and its correct UTF16 anchor after both moves"];
+              const auto canonical = juce::JSON::toString(songLyricsToVar(*saved), true);
+              NativeSongLyricsEditor::Options reopen; reopen.title = "Reopened reordered cards"; reopen.document = saved;
+              handle.reset(); self.editorController = nil; self.textView = nil;
+              const int finalCloseBaseline = closes;
+              handle = NativeSongLyricsEditor::present(*owner, reopen,
+                  [self](auto lyrics, auto completion) { saved = std::move(lyrics); completion(true, {}); }, [self] { ++closes; });
+              [self check:handle != nullptr message:"the saved card order reopens in the real native editor"];
+              later(0.6, [self, canonical, finalCloseBaseline] { [self protected:[self, canonical, finalCloseBaseline] {
+                self.editorController = ((UINavigationController *)self.window.rootViewController.presentedViewController).topViewController;
+                self.textView = (UITextView *)identifiedView(self.editorController.view, @"nativeLyricsText");
+                [self check:[self.textView.text isEqualToString:@"Uno 🎹\nTres\nDos"] message:"reopening restores the reordered text"];
+                [self.editorController savePressed];
+                [self eventually:[self, finalCloseBaseline] { return closes == finalCloseBaseline + 1 && self.window.rootViewController.presentedViewController == nil; }
+                    message:"reopened reordered cards finish Save and Close" then:[self, canonical] {
+                  [self check:saved && juce::JSON::toString(songLyricsToVar(*saved), true) == canonical
+                       message:"reopen and Save preserve the complete canonical reordered document"];
+                  [self finish:YES error:{}];
+                }];
+              }]; });
+            }];
+            }]; });
+          }]; });
+        }]; });
+      }]; });
+    }]; });
+  }]; });
+}
+
 - (void)finish:(BOOL)success error:(juce::String)error {
   static bool finished = false;
   if (finished) return;
@@ -1078,6 +1709,7 @@ public:
   const juce::String getApplicationVersion() override { return "1.0"; }
   void initialise(const juce::String &) override {
     harness = [PlayWorshipLyricsHarness new];
+    harness.manualMode = juce::SystemStats::getEnvironmentVariable("MTCONTROLS_NATIVE_LYRICS_MANUAL", {}) == "1";
     [harness startHost];
   }
   void shutdown() override { harness = nil; }

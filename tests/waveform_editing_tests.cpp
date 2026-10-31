@@ -99,7 +99,9 @@ struct WaveformEditingTestAccess {
         if (other->isVisible()) expect(!child->getBounds().intersects(other->getBounds()), "topbar controls do not overlap");
       }
     }
-    expect(bar.songInfoBounds.getWidth() >= 80, "song title retains usable width");
+    expect(bar.songInfoBounds.getWidth() >= 80,
+           "song title retains usable width (bar=" + std::to_string(bar.getWidth()) +
+               ", title=" + std::to_string(bar.songInfoBounds.getWidth()) + ")");
     if (desktop) {
       expect(bar.waveformViewButton.getToggleState() != bar.sectionsViewButton.getToggleState(), "exactly one view is selected");
       expect(bar.sectionsViewButton.getToggleState() == (bar.liveModeState && bar.liveModeState()), "desktop state follows the real view");
@@ -270,8 +272,8 @@ struct WaveformEditingTestAccess {
 
   static void addCue(WaveformBar &waveform, const char *name, double seconds,
                      int countEnd = 0) {
-    waveform.sectionInsertionAnchorValid = true;
-    waveform.sectionInsertionAnchorSec = seconds;
+    waveform.sectionInsertionAnchor.valid = true;
+    waveform.sectionInsertionAnchor.seconds = seconds;
     waveform.snapMode = WaveformBar::SnapMode::Free;
     waveform.addGuideCue(name, countEnd, countEnd > 0 ? 0.5 : 0.0);
   }
@@ -344,7 +346,7 @@ struct WaveformEditingTestAccess {
     waveform.createDuplicatedSection(waveform.findPartIndexById(id));
   }
   static void split(WaveformBar &waveform, double seconds) {
-    waveform.sectionInsertionAnchorValid = true; waveform.sectionInsertionAnchorSec = seconds;
+    waveform.sectionInsertionAnchor.valid = true; waveform.sectionInsertionAnchor.seconds = seconds;
     waveform.snapMode = WaveformBar::SnapMode::Free;
     waveform.addArrangementPart("Verse 2");
   }
@@ -372,7 +374,7 @@ struct WaveformEditingTestAccess {
   static void expectInsertionPointerStarted(const WaveformBar &waveform) {
     expect(waveform.dragMode == WaveformBar::DragMode::seek,
            "dragging the ruler uses the real insertion-pointer seek handler");
-    expect(waveform.sectionInsertionAnchorValid,
+    expect(waveform.sectionInsertionAnchor.valid,
            "the ruler gesture establishes a section insertion anchor (editing=" +
                std::to_string(waveform.isEditingArrangement()) + ", map=" +
                std::to_string(static_cast<int>(waveform.timelineViewMode)) +
@@ -1255,7 +1257,7 @@ void testSectionAutomationToolbarTracksViewport() {
   WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
   WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
   const auto magnifiedAnchor = WaveformEditingTestAccess::automationAnchorX(f.waveform);
-  juce::MouseWheelDetails wheel;
+  juce::MouseWheelDetails wheel{};
   wheel.deltaX = -0.06f;
   const auto panPoint = WaveformEditingTestAccess::waveBody(f.waveform).getCentre();
   f.waveform.mouseWheelMove(pointerEvent(f.waveform, panPoint, panPoint), wheel);
@@ -2409,7 +2411,7 @@ void testDesktopNormalAndLiveFollow() {
     const double afterButton = WaveformEditingTestAccess::resumeAt(f.waveform);
     WaveformEditingTestAccess::followAt(f.waveform, afterButton);
     WaveformEditingTestAccess::followAt(f.waveform, afterButton + 100.0);
-    juce::MouseWheelDetails wheel;
+    juce::MouseWheelDetails wheel{};
     wheel.deltaY = -1.0f;
     f.waveform.mouseWheelMove(pointerEvent(f.waveform, start, start), wheel);
     const float wheelOffset = WaveformEditingTestAccess::liveScroll(f.waveform);

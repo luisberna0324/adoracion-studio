@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "SongLyrics.h"
+#include "integrations/FreeShowModel.h"
 
 #include <array>
 #include <functional>
@@ -182,7 +183,49 @@ struct ImportedSongData {
   SongTempoMapSnapshot tempoMap;
   // Optional lyric text and native UTF-16 section ranges, not playback sections.
   std::optional<SongLyricsDocument> lyrics;
+  // Independent musical-time marks. Connection details are session-only.
+  playworship::lyrics::SongLyrics freeShowCues;
 };
+
+// The early desktop integration used "lyrics" before the native text editor
+// owned that key. Only its unambiguous version/marks shape is a cue payload;
+// a native document (including a future schema) must never be reinterpreted.
+inline bool isLegacyFreeShowCuesPayload(const juce::var &value) {
+  const auto *object = value.getDynamicObject();
+  return object != nullptr && !object->hasProperty("schemaVersion") &&
+         object->hasProperty("version") && object->hasProperty("marks");
+}
+
+inline bool hasSongFreeShowCuesPayload(const juce::var &container) {
+  const auto *object = container.getDynamicObject();
+  return object != nullptr &&
+         (object->hasProperty("freeShowCues") ||
+          isLegacyFreeShowCuesPayload(object->getProperty("lyrics")));
+}
+
+inline bool songFreeShowCuesFromContainer(
+    const juce::var &container, playworship::lyrics::SongLyrics &outCues,
+    juce::String *errorMessage = nullptr) {
+  const auto *object = container.getDynamicObject();
+  // Explicit canonical data always wins, including a validation failure.
+  if (object != nullptr && object->hasProperty("freeShowCues"))
+    return playworship::lyrics::fromVar(object->getProperty("freeShowCues"),
+                                       outCues, errorMessage);
+  if (object != nullptr && isLegacyFreeShowCuesPayload(object->getProperty("lyrics")))
+    return playworship::lyrics::fromVar(object->getProperty("lyrics"),
+                                       outCues, errorMessage);
+  if (object != nullptr && object->hasProperty("lyrics")) {
+    const auto value = object->getProperty("lyrics");
+    const auto *native = value.getDynamicObject();
+    if (!value.isVoid() && !value.isUndefined() &&
+        (native == nullptr || !native->hasProperty("schemaVersion"))) {
+      if (errorMessage != nullptr)
+        *errorMessage = "Unrecognized legacy lyric payload; previous data kept unchanged.";
+      return false;
+    }
+  }
+  return playworship::lyrics::fromVar({}, outCues, errorMessage);
+}
 
 extern const std::array<const char *, 19> kTrackCategories;
 extern const std::array<const char *, 14> kSongSectionSuggestions;

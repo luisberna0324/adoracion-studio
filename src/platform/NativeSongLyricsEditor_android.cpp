@@ -112,7 +112,14 @@ bool integerProperty(const juce::var &value, const char *name, int &out) {
 bool isAvailable() { return true; }
 std::unique_ptr<Handle> present(juce::Component &owner, Options options, Save save,
                                std::function<void()> close) {
-  if (!save || (options.document && !isValidSongLyricsDocument(*options.document))) return {};
+  if (!save || (options.document && !isEditableSongLyricsDocument(*options.document))) return {};
+  // This Android view cannot yet display instrumental cards. Refuse an edit
+  // rather than expose only the lyric portion of a schema-3 document.
+  if (options.document && !options.document->instrumentalBlocks.empty()) {
+    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+        "PlayWorship", juce::String::fromUTF8("Esta canción contiene secciones instrumentales. Su edición aún no está disponible en Android."));
+    return {};
+  }
   auto activity = juce::getMainActivity();
   if (activity.get() == nullptr) return {};
   auto state = std::make_shared<Presentation>(owner);

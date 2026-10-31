@@ -19,12 +19,16 @@ public:
 
   void setDivision(int division);
   int getDivision() const;
-  void setVolume(float volume);
+  // This panel's volume API represents the combined Click Dyn level (0..4),
+  // not the persisted metronome volume (0..1). ChannelGridPanel maps the
+  // level to the existing volume/gain pair without changing stored schemas.
+  void setVolume(float level);
   void setPowerOn(bool powerOn);
   bool isPowerOn() const noexcept { return powerOn; }
   void setMuteState(bool muted);
   void setSoloState(bool soloed);
   void setOnDivisionChanged(std::function<void(int)> cb);
+  // Both callbacks below deliver the combined level (0..4).
   void setOnVolumeChanged(std::function<void(float)> cb);
   void setOnVolumeDragEnded(std::function<void(float)> cb);
   void setOnPowerChanged(std::function<void(bool)> cb);
@@ -69,6 +73,7 @@ private:
                           int targetId);
   void updateDivisionMaskFromButtons();
   void updateButtonStates();
+  void refreshGainTooltip();
   void paintOverChildren(juce::Graphics &g) override;
   void timerCallback() override;
 

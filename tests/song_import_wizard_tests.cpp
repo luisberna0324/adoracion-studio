@@ -91,6 +91,9 @@ struct SongListPanelTestAccess {
       button->onClick();
       expect(panel.libraryCreationWizard != nullptr && panel.songImportOverlay == nullptr,
              "Biblioteca + opens an internal page instead of an editor overlay");
+      // Native panels are injected separately in the async destination tests.
+      // This headless library-navigation fixture chooses the managed path.
+      panel.libraryCreationWizard->setProjectDestinationPrompt({});
       return *panel.libraryCreationWizard;
     }
     expect(false, "find Biblioteca + entry point");
@@ -522,6 +525,100 @@ struct SongImportWizardTestAccess {
     expect(wizard.stems.size() == 1 && wizard.submitButton.isEnabled() &&
                wizard.mobileCloseButton.isEnabled(),
            "cancelled destination preserves the draft and restores actions");
+  }
+
+  static void testAsyncDestinationChoice(const AudioFixtures &files) {
+    using Choice = std::function<void(juce::File, juce::String)>;
+    std::vector<Choice> choices;
+    std::atomic<int> saves{0};
+    int dismissed = 0;
+    const auto external = files.directory.getChildFile("external-drive");
+    expect(external.createDirectory().wasOk(), "prepare an external project location");
+    const auto destination = external.getChildFile("chosen-project.pwproj");
+    const auto source = files.directory.getChildFile("external-import.flac");
+    {
+      juce::FlacAudioFormat format;
+      std::unique_ptr<juce::OutputStream> stream = source.createOutputStream();
+      auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+          .withSampleRate(44100).withNumChannels(1).withBitsPerSample(16));
+      expect(writer != nullptr, "create a portable source without external codecs");
+      juce::AudioBuffer<float> audio(1, 1024);
+      audio.clear(); audio.setSample(0, 64, 0.25f);
+      expect(writer->writeFromAudioSampleBuffer(audio, 0, audio.getNumSamples()),
+             "write external import audio");
+    }
+    Wizard wizard([&](ImportedSongData song, juce::String &error,
+                      const SongImportProgressFn &progress) {
+      ++saves;
+      return SongProjectCreation::save(std::move(song), error, progress);
+    }, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
+    wizard.setProjectDestinationPrompt([&](const ImportedSongData &song, Choice choice) {
+      expect(song.title == "Wizard fixture" && song.stems.size() == 1,
+             "location picker receives the complete import draft");
+      choices.push_back(std::move(choice));
+    });
+    wizard.setOnDismissRequested([&] { ++dismissed; });
+    fillMetadata(wizard);
+    wizard.handleSelectedStemFiles({source}, false);
+    wizard.changeStep(Step::Review);
+    wizard.submitSong();
+    wizard.submitSong(); wizard.closeDialog();
+    expect(choices.size() == 1 && wizard.isSubmissionInProgress() && saves == 0 && dismissed == 0,
+           "waiting for a native location rejects duplicate save and dismissal");
+    choices.front()({}, {});
+    pumpUntil([&] { return !wizard.isSubmissionInProgress(); }, "cancelled picker releases submission");
+    expect(saves == 0 && dismissed == 0 && wizard.stems.size() == 1 &&
+               wizard.songTitleEditor.getText() == "Wizard fixture" && wizard.submitButton.isEnabled(),
+           "location cancellation keeps the editable draft without creating a project");
+    wizard.submitSong();
+    expect(choices.size() == 2 && wizard.isSubmissionInProgress(),
+           "the preserved draft can request another location");
+    choices.front()(destination, {});
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    expect(saves == 0 && !destination.existsAsFile() && wizard.isSubmissionInProgress(),
+           "a stale cancelled picker cannot save during a newer request");
+    choices.back()(destination, {});
+    choices.back()(destination, {});
+    pumpUntil([&] { return dismissed == 1 && !wizard.isSubmissionInProgress(); },
+              "chosen external location is saved and registered");
+    expect(saves == 1 && destination.existsAsFile() && source.existsAsFile(),
+           "the picker saves exactly once while preserving the source audio");
+    const auto library = SongLibraryStore::loadSongs();
+    const auto saved = std::find_if(library.begin(), library.end(), [&](const auto &song) {
+      return song.projectPath == destination.getFullPathName();
+    });
+    expect(saved != library.end() && !destination.isAChildOf(SongLibraryStore::getRootDirectory()),
+           "Biblioteca registers the selected external package rather than an internal replacement");
+    ProjectDocument reopened; juce::String error;
+    expect(ProjectStore::open(destination, reopened, &error) && reopened.song.stems.size() == 1,
+           "the external package reopens with its embedded audio");
+    juce::AudioFormatManager formats; formats.registerBasicFormats();
+    const auto reader = std::unique_ptr<juce::AudioFormatReader>(formats.createReaderFor(
+        juce::File(reopened.song.stems.front().storedPath)));
+    expect(reader != nullptr && reader->lengthInSamples == 1024,
+           "a copied project contains decodable audio without its original source path");
+
+    Choice afterDestruction;
+    {
+      auto abandoned = std::make_unique<Wizard>(
+          [](ImportedSongData, juce::String &, const SongImportProgressFn &) {
+            expect(false, "a picker must not save after the editor is destroyed"); return false;
+          }, Wizard::Mode::Import, ImportedSongData{}, SongProjectCreation::resolveDestination);
+      abandoned->setProjectDestinationPrompt([&](const ImportedSongData &, Choice choice) {
+        afterDestruction = std::move(choice);
+      });
+      fillMetadata(*abandoned);
+      abandoned->handleSelectedStemFiles({source}, false);
+      abandoned->changeStep(Step::Review);
+      abandoned->submitSong();
+    }
+    expect(static_cast<bool>(afterDestruction), "capture the pending picker completion");
+    afterDestruction(external.getChildFile("abandoned.pwproj"), {});
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    expect(!external.getChildFile("abandoned.pwproj").existsAsFile(),
+           "a late native picker completion leaves files untouched after destruction");
+    expect(SongLibraryStore::deleteSong(saved->id),
+           "remove the external test registration before the independent creation fixtures");
   }
 
   static void testAsyncGuardAndSuccess(const AudioFixtures &files) {
@@ -1063,6 +1160,7 @@ int main() {
   SongImportWizardTestAccess::testDesktopEditLayout();
   SongImportWizardTestAccess::testDraftNavigation(fixtures);
   SongImportWizardTestAccess::testCancelledDestination(fixtures);
+  SongImportWizardTestAccess::testAsyncDestinationChoice(fixtures);
   SongImportWizardTestAccess::testAsyncGuardAndSuccess(fixtures);
   SongImportWizardTestAccess::testDesktopCreationRoundtrip(fixtures);
   SongImportWizardTestAccess::testProjectEditingRoundtrip(fixtures);

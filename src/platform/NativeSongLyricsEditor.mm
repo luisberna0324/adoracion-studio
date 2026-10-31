@@ -1,5 +1,7 @@
 #include "NativeSongLyricsEditor.h"
 #include "../data/SongLyrics.h"
+#include "../data/ChordProCodec.h"
+#import <CoreText/CoreText.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <climits>
 #include <atomic>
@@ -18,10 +20,34 @@
 namespace {
 struct LyricsPresentation;
 using SectionSnapshot = std::shared_ptr<const std::vector<SongLyricsSection>>;
+using ChordSnapshot = std::shared_ptr<const std::vector<SongLyricsChord>>;
+using BlockSnapshot = std::shared_ptr<const std::vector<SongLyricsInstrumentalBlock>>;
+bool sameChords(const std::vector<SongLyricsChord> &a, const std::vector<SongLyricsChord> &b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (a[i].id != b[i].id || a[i].offset != b[i].offset || a[i].symbol != b[i].symbol) return false;
+  return true;
+}
+bool sameInstrumentals(const std::vector<SongLyricsInstrumentalBlock> &a, const std::vector<SongLyricsInstrumentalBlock> &b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].id != b[i].id || a[i].kind != b[i].kind || a[i].label != b[i].label ||
+        a[i].anchorUtf16 != b[i].anchorUtf16 || a[i].order != b[i].order || a[i].rows.size() != b[i].rows.size()) return false;
+    for (size_t j = 0; j < a[i].rows.size(); ++j) {
+      const auto &x = a[i].rows[j], &y = b[i].rows[j];
+      if (x.id != y.id || x.barLengths != y.barLengths || x.cells.size() != y.cells.size()) return false;
+      for (size_t k = 0; k < x.cells.size(); ++k)
+        if (x.cells[k].id != y.cells[k].id || x.cells[k].symbol != y.cells[k].symbol) return false;
+    }
+  }
+  return true;
+}
 struct NativeLyricsTextEdit {
   NSRange range;
   juce::String removed, inserted;
   SectionSnapshot before, after;
+  ChordSnapshot beforeChords, afterChords;
+  BlockSnapshot beforeBlocks, afterBlocks;
 };
 bool sameSections(const std::vector<SongLyricsSection> &a, const std::vector<SongLyricsSection> &b) {
   if (a.size() != b.size()) return false;
@@ -65,6 +91,8 @@ UIViewController *presenterForOwner(juce::Component &owner) {
 @property(nonatomic) NSRange range;
 @property(nonatomic) NSRange paragraphRange;
 @property(nonatomic) BOOL completeBlock;
+@property(nonatomic) BOOL instrumentalBlock;
+@property(nonatomic) NSInteger sequence;
 @property(nonatomic) BOOL ownsTrailingEmptyLine;
 @end
 @implementation PlayWorshipLyricsSectionPresentation
@@ -206,23 +234,190 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 }
 }
 
-@interface PlayWorshipLyricsLayoutManager : NSLayoutManager
+// TextKit still owns every glyph and insertion position. This delegate only
+// reserves a band above lines containing chord anchors; labels never enter the
+// editable string, selection, IME or native text undo stack.
+@interface PlayWorshipLyricsLayoutManager : NSLayoutManager <NSLayoutManagerDelegate>
+@property(nonatomic, copy) NSArray<NSDictionary *> *chords;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *chordLanes;
+@property(nonatomic, strong) UIFont *chordFont;
+@property(nonatomic, copy) NSArray<NSDictionary *> *instrumentals;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *instrumentalFrames;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *instrumentalBands;
 @property(nonatomic, strong) NSArray<PlayWorshipLyricsSectionPresentation *> *sections;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *cardFrames;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSArray<NSValue *> *> *segmentedCardFrames;
 @property(nonatomic) CGFloat lastContainerWidth;
 - (void)invalidateCardFrames;
 - (CGRect)cardRectForSection:(PlayWorshipLyricsSectionPresentation *)section;
+- (NSArray<NSValue *> *)cardRectsForSection:(PlayWorshipLyricsSectionPresentation *)section;
+- (CGFloat)instrumentalBandAtCharacter:(NSUInteger)character;
+- (CGRect)instrumentalRectForIdentifier:(NSString *)identifier;
 @end
 @implementation PlayWorshipLyricsLayoutManager
 - (instancetype)init {
-  if ((self = [super init])) { self.sections = @[]; self.cardFrames = [NSMutableDictionary new]; }
+  if ((self = [super init])) {
+    self.sections = @[]; self.cardFrames = [NSMutableDictionary new]; self.segmentedCardFrames = [NSMutableDictionary new];
+    self.chords = @[]; self.chordLanes = [NSMutableDictionary new]; self.delegate = self;
+    self.instrumentals = @[]; self.instrumentalFrames = [NSMutableDictionary new]; self.instrumentalBands = [NSMutableDictionary new];
+  }
   return self;
 }
-- (void)invalidateCardFrames { [self.cardFrames removeAllObjects]; }
+- (void)invalidateCardFrames { [self.cardFrames removeAllObjects]; [self.segmentedCardFrames removeAllObjects]; }
+- (BOOL)layoutManager:(NSLayoutManager *)manager shouldSetLineFragmentRect:(CGRect *)line
+    lineFragmentUsedRect:(CGRect *)used baselineOffset:(CGFloat *)baseline
+    inTextContainer:(NSTextContainer *)container forGlyphRange:(NSRange)glyphs {
+  (void)manager;
+  if (glyphs.length == 0) return NO;
+  const NSRange chars = [self characterRangeForGlyphRange:glyphs actualGlyphRange:nullptr];
+  CGFloat blockBand = 0;
+  for (NSDictionary *block in self.instrumentals) {
+    const NSUInteger anchor = [block[@"anchor"] unsignedIntegerValue];
+    if (anchor < chars.location) continue;
+    if (anchor > chars.location) break;
+    const CGFloat height = [block[@"height"] doubleValue];
+    self.instrumentalFrames[block[@"id"]] = [NSValue valueWithCGRect:CGRectMake(0,
+        CGRectGetMinY(*line) + blockBand + lyricsHeaderHeight() * 0.5 + 12, container.size.width, height)];
+    blockBand += height + lyricsHeaderHeight() * 1.5 + 28;
+  }
+  if (blockBand > 0) {
+    self.instrumentalBands[@(chars.location)] = @(blockBand);
+    line->size.height += blockBand; used->size.height += blockBand; *baseline += blockBand;
+  }
+  if (self.chords.count == 0) return blockBand > 0;
+  NSMutableArray<NSDictionary *> *anchors = [NSMutableArray new];
+  // Anchors are ordered. Avoid scanning all chords for every laid-out line.
+  NSUInteger low = 0, high = self.chords.count;
+  while (low < high) {
+    const NSUInteger middle = low + (high - low) / 2;
+    if ([self.chords[middle][@"offset"] unsignedIntegerValue] < chars.location) low = middle + 1;
+    else high = middle;
+  }
+  for (NSUInteger index = low; index < self.chords.count; ++index) {
+    NSDictionary *chord = self.chords[index];
+    const NSUInteger offset = [chord[@"offset"] unsignedIntegerValue];
+    if (offset > NSMaxRange(chars)) break;
+    const BOOL endOfLastLine = offset == self.textStorage.length && NSMaxRange(chars) == offset &&
+        offset > 0 && ![NSCharacterSet.newlineCharacterSet characterIsMember:[self.textStorage.string characterAtIndex:offset - 1]];
+    if (NSLocationInRange(offset, chars) || endOfLastLine) [anchors addObject:chord];
+  }
+  if (anchors.count == 0) return blockBand > 0;
+  // CoreText measures the same shaped line (including RTL/ligatures) without
+  // recursively asking NSLayoutManager for glyph locations during its layout.
+  CTLineRef shaped = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)
+      [self.textStorage attributedSubstringFromRange:chars]);
+  NSMutableArray<NSMutableArray<NSValue *> *> *lanes = [NSMutableArray new];
+  const CGFloat row = std::ceil(self.chordFont.lineHeight) + 4;
+  for (NSDictionary *chord in anchors) {
+    const NSUInteger offset = [chord[@"offset"] unsignedIntegerValue];
+    const CGFloat width = std::min<CGFloat>(container.size.width, std::ceil([chord[@"symbol"] sizeWithAttributes:@{NSFontAttributeName:self.chordFont}].width));
+    const CGFloat x = std::clamp<CGFloat>(used->origin.x + CTLineGetOffsetForStringIndex(shaped, offset - chars.location, nullptr),
+        0, std::max<CGFloat>(0, container.size.width - width));
+    const CGRect interval = CGRectMake(x - 3, 0, width + 6, 1);
+    NSUInteger lane = 0;
+    for (; lane < lanes.count; ++lane) {
+      BOOL collision = NO;
+      for (NSValue *value in lanes[lane]) if (CGRectIntersectsRect(interval, value.CGRectValue)) { collision = YES; break; }
+      if (!collision) break;
+    }
+    if (lane == lanes.count) [lanes addObject:[NSMutableArray new]];
+    [lanes[lane] addObject:[NSValue valueWithCGRect:interval]];
+    self.chordLanes[chord[@"id"]] = @(lane);
+  }
+  CFRelease(shaped);
+  const CGFloat band = row * lanes.count;
+  line->size.height += band; used->size.height += band; *baseline += band;
+  return YES;
+}
+- (void)setExtraLineFragmentRect:(CGRect)rect usedRect:(CGRect)used textContainer:(NSTextContainer *)container {
+  NSDictionary *last = self.chords.lastObject;
+  if (last != nil && [last[@"offset"] unsignedIntegerValue] == self.textStorage.length) {
+    NSDictionary *chord = last;
+    const CGFloat band = std::ceil(self.chordFont.lineHeight) + 4;
+    rect.size.height += band; used.origin.y += band;
+    self.chordLanes[chord[@"id"]] = @0;
+  }
+  [super setExtraLineFragmentRect:rect usedRect:used textContainer:container];
+}
 - (void)invalidateLayoutForCharacterRange:(NSRange)range actualCharacterRange:(NSRangePointer)actualRange {
   [self invalidateCardFrames];
+  // Inset/paragraph changes can cause synchronous layout in super. Clear
+  // stale geometry first, never discard frames just regenerated by TextKit.
+  NSUInteger start = range.location;
+  if (start < self.textStorage.length) start = [self.textStorage.string paragraphRangeForRange:NSMakeRange(start, 0)].location;
+  for (NSDictionary *block in self.instrumentals)
+    if ([block[@"anchor"] unsignedIntegerValue] >= start) [self.instrumentalFrames removeObjectForKey:block[@"id"]];
+  for (NSNumber *anchor in self.instrumentalBands.allKeys)
+    if (anchor.unsignedIntegerValue >= start) [self.instrumentalBands removeObjectForKey:anchor];
   [super invalidateLayoutForCharacterRange:range actualCharacterRange:actualRange];
 }
+- (CGFloat)instrumentalBandAtCharacter:(NSUInteger)character {
+  NSUInteger low = 0, high = self.instrumentals.count;
+  while (low < high) {
+    const NSUInteger middle = low + (high - low) / 2;
+    if ([self.instrumentals[middle][@"anchor"] unsignedIntegerValue] < character) low = middle + 1;
+    else high = middle;
+  }
+  CGFloat height = 0;
+  for (NSUInteger i = low; i < self.instrumentals.count; ++i) {
+    NSDictionary *block = self.instrumentals[i];
+    if ([block[@"anchor"] unsignedIntegerValue] != character) break;
+    height += [block[@"height"] doubleValue] + lyricsHeaderHeight() * 1.5 + 28;
+  }
+  return height;
+}
+- (CGRect)instrumentalRectForIdentifier:(NSString *)identifier {
+  NSValue *cached = self.instrumentalFrames[identifier];
+  if (cached != nil) return cached.CGRectValue;
+  CGFloat previousHeight = 0; NSUInteger previousAnchor = NSNotFound;
+  for (NSDictionary *block in self.instrumentals) {
+    const NSUInteger anchor = [block[@"anchor"] unsignedIntegerValue];
+    if (anchor != previousAnchor) { previousHeight = 0; previousAnchor = anchor; }
+    const CGFloat height = [block[@"height"] doubleValue];
+    if ([block[@"id"] isEqualToString:identifier] && anchor < self.textStorage.length) {
+      const NSUInteger glyph = [self glyphIndexForCharacterAtIndex:anchor];
+      [self ensureLayoutForGlyphRange:NSMakeRange(glyph, 1)];
+      CGRect line = [self lineFragmentRectForGlyphAtIndex:glyph effectiveRange:nullptr];
+      return CGRectMake(0, line.origin.y + previousHeight + lyricsHeaderHeight() * 0.5 + 12,
+                        self.textContainers.firstObject.size.width, height);
+    }
+    previousHeight += height + lyricsHeaderHeight() * 1.5 + 28;
+  }
+  return CGRectNull;
+}
+- (NSArray<NSValue *> *)cardRectsForSection:(PlayWorshipLyricsSectionPresentation *)section {
+  CGRect whole = [self cardRectForSection:section];
+  if (CGRectIsNull(whole)) return @[];
+  NSArray<NSValue *> *cached = self.segmentedCardFrames[section.identifier];
+  if (cached != nil) return cached;
+  NSRange glyphs = [self glyphRangeForCharacterRange:section.range actualCharacterRange:nullptr];
+  NSMutableArray<NSValue *> *rectangles = [NSMutableArray new];
+  __block CGRect segment = CGRectNull;
+  __block BOOL first = YES;
+  const CGFloat width = self.textContainers.firstObject.size.width;
+  [self enumerateLineFragmentsForGlyphRange:glyphs usingBlock:^(CGRect line, CGRect ink, NSTextContainer *container, NSRange range, BOOL *stop) {
+    (void)container; (void)stop;
+    const NSUInteger character = [self characterIndexForGlyphAtIndex:range.location];
+    const CGFloat band = [self instrumentalBandAtCharacter:character];
+    if (band > 0 && !CGRectIsNull(segment)) {
+      const CGFloat top = first ? lyricsHeaderHeight() * 0.5 + 8 : 8;
+      const CGFloat bottom = std::min<CGFloat>(CGRectGetMaxY(segment) + 18, CGRectGetMinY(line) - 8);
+      [rectangles addObject:[NSValue valueWithCGRect:CGRectMake(0, CGRectGetMinY(segment) - top, width,
+          std::max<CGFloat>(0, bottom - CGRectGetMinY(segment) + top))]];
+      segment = CGRectNull; first = NO;
+    }
+    ink.origin.y += band; ink.size.height = std::max<CGFloat>(0, ink.size.height - band);
+    segment = CGRectIsNull(segment) ? ink : CGRectUnion(segment, ink);
+  }];
+  if (!CGRectIsNull(segment)) {
+    const CGFloat top = first ? lyricsHeaderHeight() * 0.5 + 8 : 8;
+    [rectangles addObject:[NSValue valueWithCGRect:CGRectMake(0, CGRectGetMinY(segment) - top, width,
+        std::max<CGFloat>(0, CGRectGetMaxY(whole) - CGRectGetMinY(segment) + top))]];
+  }
+  self.segmentedCardFrames[section.identifier] = rectangles;
+  return rectangles;
+}
+
 - (CGRect)cardRectForSection:(PlayWorshipLyricsSectionPresentation *)section {
   NSTextContainer *container = self.textContainers.firstObject;
   if (container == nil || !section.completeBlock || section.range.length == 0) return CGRectNull;
@@ -242,7 +437,10 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
   [self ensureLayoutForGlyphRange:glyphs];
   __block CGRect used = CGRectNull;
   [self enumerateLineFragmentsForGlyphRange:glyphs usingBlock:^(CGRect line, CGRect ink, NSTextContainer *target, NSRange range, BOOL *stop) {
-    (void)line; (void)target; (void)range; (void)stop;
+    (void)line; (void)target; (void)stop;
+    const NSUInteger first = [self characterIndexForGlyphAtIndex:range.location];
+    const CGFloat band = [self instrumentalBandAtCharacter:first];
+    ink.origin.y += band; ink.size.height = std::max<CGFloat>(0, ink.size.height - band);
     used = CGRectIsNull(used) ? ink : CGRectUnion(used, ink);
   }];
   if (section.ownsTrailingEmptyLine && NSMaxRange(section.range) <= text.length) {
@@ -347,6 +545,59 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 }
 @end
 
+// The overlay only receives touches on its controls. All empty areas continue
+// to reach the underlying native lyrics editor and its selection gestures.
+@interface PlayWorshipLyricsInteractiveOverlay : UIView
+@end
+@implementation PlayWorshipLyricsInteractiveOverlay
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+  UIView *hit = [super hitTest:point withEvent:event];
+  return hit == self ? nil : hit;
+}
+@end
+@interface PlayWorshipInstrumentalTextView : UITextView
+@property(nonatomic, copy) NSString *blockIdentifier;
+@property(nonatomic, copy) NSString *rowIdentifier;
+@property(nonatomic, weak) NSUndoManager *sharedLyricsUndo;
+@end
+@implementation PlayWorshipInstrumentalTextView
+- (NSUndoManager *)undoManager { return self.sharedLyricsUndo ?: [super undoManager]; }
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
+  if (action == @selector(paste:) || action == @selector(cut:) || action == @selector(delete:)) return NO;
+  return [super canPerformAction:action withSender:sender];
+}
+@end
+namespace {
+CGFloat instrumentalRowHeight() {
+  return std::max<CGFloat>(44, std::ceil(lyricsScaledFont(17, UIFontWeightSemibold, UIFontTextStyleBody).lineHeight) + 22);
+}
+bool instrumentalHasSymbols(const SongLyricsInstrumentalBlock &block) {
+  for (const auto &row : block.rows) for (const auto &cell : row.cells)
+    if (cell.symbol && cell.symbol->isNotEmpty()) return true;
+  return false;
+}
+CGFloat instrumentalCardHeight(const SongLyricsInstrumentalBlock &block) {
+  const size_t rows = instrumentalHasSymbols(block) ? block.rows.size() : 1;
+  return lyricsHeaderHeight() + 16 + static_cast<CGFloat>(rows) * (instrumentalRowHeight() + 8);
+}
+}
+@interface PlayWorshipInstrumentalCard : PlayWorshipLyricsInteractiveOverlay
+@property(nonatomic, strong) PlayWorshipLyricsCardHeader *heading;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UIScrollView *> *rowScrolls;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, PlayWorshipInstrumentalTextView *> *rowEditors;
+@end
+@implementation PlayWorshipInstrumentalCard
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.heading = [[PlayWorshipLyricsCardHeader alloc] initWithFrame:CGRectZero];
+    self.rowEditors = [NSMutableDictionary new]; self.rowScrolls = [NSMutableDictionary new];
+    self.layer.cornerRadius = 16; self.layer.borderWidth = 1;
+    [self addSubview:self.heading];
+  }
+  return self;
+}
+@end
+
 // Keep the visible navigation circle compact without shrinking its native
 // touch/accessibility target. Selection decoration belongs to the circle only.
 @interface PlayWorshipLyricsNavigationButton : UIButton
@@ -420,10 +671,18 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 @interface PlayWorshipNativeLyricsTextView : UITextView
 @property(nonatomic, weak) PlayWorshipNativeLyricsController *lyricsController;
 - (void)markLyricsSection:(id)sender;
+- (void)chordC:(id)sender;
+- (void)chordD:(id)sender;
+- (void)chordE:(id)sender;
+- (void)chordF:(id)sender;
+- (void)chordG:(id)sender;
+- (void)chordA:(id)sender;
+- (void)chordB:(id)sender;
+- (void)removeLyricsChord:(id)sender;
 @end
 @interface PlayWorshipNativeLyricsNavigation : UINavigationController
 @end
-@interface PlayWorshipNativeLyricsController : UIViewController <UITextViewDelegate> {
+@interface PlayWorshipNativeLyricsController : UIViewController <UITextViewDelegate, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate, UIDragInteractionDelegate, UIDropInteractionDelegate> {
 @public
   std::weak_ptr<LyricsPresentation> presentation;
   SongLyricsDocument document;
@@ -441,9 +700,18 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
   std::vector<NativeLyricsTextEdit> textEdits;
   size_t textEditCursor;
   SectionSnapshot sectionSnapshot;
+  ChordSnapshot chordSnapshot;
+  BlockSnapshot blockSnapshot;
+  uint64_t automaticMenuRequest;
+  uint64_t selectionGestureRevision;
+  uint64_t selectionGestureRequest;
+  BOOL selectionGestureEligible;
+  BOOL nativeEditMenuVisible;
+  uint64_t movableCardsRevision;
   int historyAction; // -1 native undo, +1 native redo. Never registers text actions.
   juce::String activeSectionID;
   juce::String scrollTargetID;
+  juce::String explicitlyNavigatedInstrumentalID;
   bool refreshingCards;
 
 }
@@ -457,7 +725,13 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 @property(nonatomic, strong) PlayWorshipLyricsCardsBackground *cardBackgrounds;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, PlayWorshipLyricsCardHeader *> *cardHeaders;
 @property(nonatomic, strong) NSArray<PlayWorshipLyricsSectionPresentation *> *sectionPresentations;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UILabel *> *chordLabels;
 @property(nonatomic, strong) PlayWorshipLyricsLayoutManager *lyricsLayout;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, PlayWorshipInstrumentalCard *> *instrumentalCards;
+@property(nonatomic, strong) UIEditMenuInteraction *automaticEditMenuInteraction API_AVAILABLE(ios(16.0));
+@property(nonatomic, weak) UITextView *automaticMenuTextView;
+@property(nonatomic) BOOL automaticEditMenuVisible;
+@property(nonatomic) NSRange automaticMenuRange;
 @property(nonatomic, strong) UIScrollView *sectionScroll;
 @property(nonatomic, strong) UIStackView *sectionStack;
 @property(nonatomic, strong) NSLayoutConstraint *sectionHeight;
@@ -465,11 +739,31 @@ UIColor *lyricsLiftedColor(UIColor *base, CGFloat amount) {
 @property(nonatomic, strong) UIBarButtonItem *closeItem;
 @property(nonatomic, strong) UIBarButtonItem *saveItem;
 @property(nonatomic, strong) NSArray<UIMenuItem *> *previousLegacyMenu;
+@property(nonatomic, copy) NSString *dragEditorToken;
+@property(nonatomic, strong) NSSet<NSString *> *movableCardIDs;
+@property(nonatomic, strong) UIDropInteraction *cardDropInteraction;
+@property(nonatomic, strong) UIView *cardDropIndicator;
+@property(nonatomic, strong) CADisplayLink *cardDragDisplayLink;
+@property(nonatomic, weak) id<UIDropSession> activeCardDropSession;
+- (void)configureDragForHeader:(PlayWorshipLyricsCardHeader *)header identifier:(const juce::String &)identifier;
+- (void)stopCardDrag;
+- (void)moveLyricsCard:(juce::String)source before:(juce::String)target revision:(uint64_t)revision;
 - (void)configure:(NativeSongLyricsEditor::Options)options;
 - (void)closePressed;
 - (void)savePressed;
 - (void)showSectionChooser;
 - (void)applySection:(juce::String)kind range:(NSRange)range revision:(uint64_t)revision;
+- (void)applyChord:(juce::String)symbol range:(NSRange)range revision:(uint64_t)revision;
+- (void)removeChordAtRange:(NSRange)range revision:(uint64_t)revision;
+- (void)restoreChords:(ChordSnapshot)snapshot;
+- (void)installSelectionMenuObserver:(UITextView *)textView;
+- (void)selectionMenuGesture:(UILongPressGestureRecognizer *)gesture;
+- (void)cancelAutomaticMenu;
+- (void)refreshInstrumentalCards;
+- (UIMenu *)menuForTextView:(UITextView *)textView range:(NSRange)range suggested:(NSArray<UIMenuElement *> *)actions;
+- (uint64_t)currentDocumentRevision;
+- (void)importChordPro;
+- (void)exportChordPro;
 - (void)saveFinished:(bool)success error:(juce::String)message;
 - (void)updateAppearance;
 - (void)applyNavigationAppearance;
@@ -511,6 +805,9 @@ void finishPresentation(std::shared_ptr<LyricsPresentation> state, bool notify) 
   auto callback = notify ? std::move(state->close) : std::function<void()>{};
   state->save = {}; state->close = {};
   auto *controller = state->controller;
+  [controller stopCardDrag];
+  [controller cancelAutomaticMenu];
+  [controller.editor.undoManager removeAllActionsWithTarget:controller];
   controller.editor.delegate = nil;
   [controller.editor resignFirstResponder];
   if (controller.previousLegacyMenu != nil)
@@ -614,9 +911,20 @@ private:
 }
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
   if (action == @selector(markLyricsSection:)) return self.selectedRange.length > 0 && self.editable;
+  if (action == @selector(chordC:) || action == @selector(chordD:) || action == @selector(chordE:) ||
+      action == @selector(chordF:) || action == @selector(chordG:) || action == @selector(chordA:) ||
+      action == @selector(chordB:) || action == @selector(removeLyricsChord:)) return self.editable;
   return [super canPerformAction:action withSender:sender];
 }
 - (void)markLyricsSection:(id)sender { (void)sender; [self.lyricsController showSectionChooser]; }
+- (void)chordC:(id)sender { (void)sender; [self.lyricsController applyChord:"C" range:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
+- (void)chordD:(id)sender { (void)sender; [self.lyricsController applyChord:"D" range:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
+- (void)chordE:(id)sender { (void)sender; [self.lyricsController applyChord:"E" range:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
+- (void)chordF:(id)sender { (void)sender; [self.lyricsController applyChord:"F" range:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
+- (void)chordG:(id)sender { (void)sender; [self.lyricsController applyChord:"G" range:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
+- (void)chordA:(id)sender { (void)sender; [self.lyricsController applyChord:"A" range:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
+- (void)chordB:(id)sender { (void)sender; [self.lyricsController applyChord:"B" range:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
+- (void)removeLyricsChord:(id)sender { (void)sender; [self.lyricsController removeChordAtRange:self.selectedRange revision:[self.lyricsController currentDocumentRevision]]; }
 - (void)unmarkText {
   [super unmarkText];
   [self.lyricsController textCompositionDidEnd];
@@ -637,6 +945,418 @@ private:
 @end
 
 @implementation PlayWorshipNativeLyricsController
+- (void)refreshMovableCardIDs {
+  if (self.movableCardIDs != nil && movableCardsRevision == documentRevision) return;
+  NSMutableSet<NSString *> *ids = [NSMutableSet new];
+  for (const auto &id : movableSongLyricsCardIds(document)) [ids addObject:nativeString(id)];
+  self.movableCardIDs = ids; movableCardsRevision = documentRevision;
+}
+- (void)configureDragForHeader:(PlayWorshipLyricsCardHeader *)header identifier:(const juce::String &)identifier {
+  [self refreshMovableCardIDs];
+  const BOOL movable = !busy && [self.movableCardIDs containsObject:nativeString(identifier)];
+  header.userInteractionEnabled = movable;
+  header.accessibilityHint = movable ? [self label:"reorderCardHint"] : nil;
+  UIDragInteraction *drag = nil;
+  for (id<UIInteraction> interaction in header.interactions)
+    if ([interaction isKindOfClass:UIDragInteraction.class]) { drag = (UIDragInteraction *)interaction; break; }
+  if (drag == nil) { drag = [[UIDragInteraction alloc] initWithDelegate:self]; [header addInteraction:drag]; }
+  drag.enabled = movable;
+}
+- (NSArray<UIDragItem *> *)dragInteraction:(UIDragInteraction *)interaction itemsForBeginningSession:(id<UIDragSession>)session {
+  if (busy || self.editor.markedTextRange != nil) return @[];
+  NSString *accessibilityID = interaction.view.accessibilityIdentifier;
+  const auto source = sharedString(accessibilityID).fromFirstOccurrenceOf("nativeLyricsCardHeader:", false, false);
+  [self refreshMovableCardIDs];
+  if (source.isEmpty() || ![self.movableCardIDs containsObject:nativeString(source)]) return @[];
+  [self cancelAutomaticMenu];
+  NSDictionary *payload = @{@"sourceId":nativeString(source), @"revision":@(documentRevision), @"editorToken":self.dragEditorToken};
+  NSItemProvider *provider = [NSItemProvider new];
+  NSData *identifierData = [nativeString(source) dataUsingEncoding:NSUTF8StringEncoding];
+  [provider registerDataRepresentationForTypeIdentifier:@"com.playworship.lyrics-card"
+      visibility:NSItemProviderRepresentationVisibilityOwnProcess
+      loadHandler:^NSProgress *(void (^completion)(NSData *, NSError *)) { completion(identifierData, nil); return nil; }];
+  UIDragItem *item = [[UIDragItem alloc] initWithItemProvider:provider];
+  item.localObject = payload; session.localContext = payload;
+  return @[item];
+}
+- (UITargetedDragPreview *)dragInteraction:(UIDragInteraction *)interaction previewForLiftingItem:(UIDragItem *)item session:(id<UIDragSession>)session {
+  (void)interaction; (void)session;
+  NSDictionary *payload = [item.localObject isKindOfClass:NSDictionary.class] ? item.localObject : nil;
+  for (PlayWorshipLyricsSectionPresentation *card in self.sectionPresentations) if ([card.identifier isEqual:payload[@"sourceId"]]) {
+    CGRect body = [self documentRectForCard:card];
+    if (CGRectIsNull(body)) break;
+    CGRect area = [self.editor convertRect:CGRectInset(body, 0, -lyricsHeaderHeight()) toView:self.view];
+    area = CGRectIntersection(area, self.editor.frame);
+    if (CGRectIsEmpty(area) || self.view.window == nil) break;
+    UIView *snapshot = [self.view resizableSnapshotViewFromRect:area afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+    if (snapshot == nil) break;
+    UIDragPreviewParameters *parameters = [UIDragPreviewParameters new]; parameters.backgroundColor = UIColor.clearColor;
+    parameters.visiblePath = [UIBezierPath bezierPathWithRoundedRect:snapshot.bounds cornerRadius:16];
+    UIDragPreviewTarget *target = [[UIDragPreviewTarget alloc] initWithContainer:self.view center:CGPointMake(CGRectGetMidX(area), CGRectGetMidY(area))];
+    return [[UITargetedDragPreview alloc] initWithView:snapshot parameters:parameters target:target];
+  }
+  return [[UITargetedDragPreview alloc] initWithView:interaction.view];
+}
+- (BOOL)dragInteraction:(UIDragInteraction *)interaction sessionAllowsMoveOperation:(id<UIDragSession>)session {
+  (void)interaction; (void)session; return YES;
+}
+- (BOOL)dragInteraction:(UIDragInteraction *)interaction sessionIsRestrictedToDraggingApplication:(id<UIDragSession>)session {
+  (void)interaction; (void)session; return YES;
+}
+- (void)dragInteraction:(UIDragInteraction *)interaction sessionWillBegin:(id<UIDragSession>)session {
+  (void)session; interaction.view.alpha = 0.5;
+}
+- (void)dragInteraction:(UIDragInteraction *)interaction session:(id<UIDragSession>)session didEndWithOperation:(UIDropOperation)operation {
+  (void)session; (void)operation; interaction.view.alpha = 1;
+  [self stopCardDrag];
+}
+- (NSDictionary *)validatedCardPayload:(id<UIDropSession>)session {
+  if (busy || self.editor.markedTextRange != nil || session.localDragSession == nil || session.items.count != 1 || !session.allowsMoveOperation) return nil;
+  id value = session.items.firstObject.localObject;
+  if (![value isKindOfClass:NSDictionary.class]) return nil;
+  NSDictionary *payload = value;
+  if (![payload[@"sourceId"] isKindOfClass:NSString.class] || ![payload[@"revision"] isKindOfClass:NSNumber.class] ||
+      ![payload[@"editorToken"] isEqual:self.dragEditorToken] || [payload[@"revision"] unsignedLongLongValue] != documentRevision ||
+      ![self.movableCardIDs containsObject:payload[@"sourceId"]]) return nil;
+  return payload;
+}
+- (CGRect)documentRectForCard:(PlayWorshipLyricsSectionPresentation *)card {
+  if (!card.instrumentalBlock) {
+    CGRect frame = [self.lyricsLayout cardRectForSection:card];
+    return CGRectIsNull(frame) ? frame : CGRectOffset(frame, self.editor.textContainerInset.left, self.editor.textContainerInset.top);
+  }
+  PlayWorshipInstrumentalCard *view = self.instrumentalCards[card.identifier];
+  if (view != nil) return [view convertRect:view.bounds toView:self.editor];
+  // Usually only nearby cards are materialized. Resolve an explicit drag
+  // destination without constructing every offscreen readonly UIKit view.
+  for (const auto &block : document.instrumentalBlocks) if (block.id == sharedString(card.identifier)) {
+    if (block.anchorUtf16 != static_cast<int>(self.editor.textStorage.length)) {
+      CGRect frame = [self.lyricsLayout instrumentalRectForIdentifier:card.identifier];
+      return CGRectIsNull(frame) ? frame : CGRectOffset(frame, self.editor.textContainerInset.left, self.editor.textContainerInset.top);
+    }
+    CGFloat y = self.editor.textContainerInset.top + CGRectGetMaxY([self.lyricsLayout usedRectForTextContainer:self.editor.textContainer]) + 24;
+    for (const auto &footer : document.instrumentalBlocks) {
+      if (footer.anchorUtf16 != block.anchorUtf16) continue;
+      if (footer.id == block.id) return CGRectMake(self.editor.textContainerInset.left, y, self.editor.textContainer.size.width, instrumentalCardHeight(footer));
+      y += instrumentalCardHeight(footer) + 24;
+    }
+  }
+  return CGRectNull;
+}
+- (NSString *)cardDestinationAtPoint:(CGPoint)point source:(NSString *)source indicator:(CGFloat *)indicator {
+  if (!CGRectContainsPoint(self.editor.bounds, point)) return nil;
+  NSString *target = @"";
+  CGFloat lineY = self.editor.textContainerInset.top;
+  BOOL hasCard = NO;
+  for (PlayWorshipLyricsSectionPresentation *card in self.sectionPresentations) {
+    if (!card.completeBlock && !card.instrumentalBlock) continue;
+    if (card.instrumentalBlock) {
+      bool nested = false;
+      for (const auto &section : document.sections)
+        if (static_cast<int>(card.range.location) > section.start && static_cast<int>(card.range.location) < section.start + section.length) { nested = true; break; }
+      if (nested) continue;
+    }
+    CGRect frame = [self documentRectForCard:card];
+    if (CGRectIsNull(frame)) continue;
+    hasCard = YES;
+    if (point.y < CGRectGetMidY(frame)) {
+      target = card.identifier;
+      lineY = CGRectGetMinY(frame) - lyricsHeaderHeight() * 0.5 - 8;
+      break;
+    }
+    lineY = CGRectGetMaxY(frame) + 14;
+  }
+  if (!hasCard || [source isEqualToString:target]) return nil;
+  // The immutable revision has already validated the source. Hover only
+  // inspects paragraph boundaries; the full transaction runs once on drop.
+  if (indicator != nullptr) *indicator = lineY;
+  return target;
+}
+- (BOOL)dropInteraction:(UIDropInteraction *)interaction canHandleSession:(id<UIDropSession>)session {
+  (void)interaction; return [self validatedCardPayload:session] != nil;
+}
+- (UIDropProposal *)dropInteraction:(UIDropInteraction *)interaction sessionDidUpdate:(id<UIDropSession>)session {
+  (void)interaction;
+  NSDictionary *payload = [self validatedCardPayload:session];
+  if (payload == nil) { [self stopCardDrag]; return [[UIDropProposal alloc] initWithDropOperation:UIDropOperationForbidden]; }
+  CGFloat y = 0;
+  NSString *target = [self cardDestinationAtPoint:[session locationInView:self.editor] source:payload[@"sourceId"] indicator:&y];
+  if (target == nil) { [self stopCardDrag]; return [[UIDropProposal alloc] initWithDropOperation:UIDropOperationCancel]; }
+  CGRect line = CGRectMake(self.editor.textContainerInset.left, y, self.editor.textContainer.size.width, 3);
+  self.cardDropIndicator.frame = [self.editor convertRect:line toView:self.headerOverlay];
+  self.cardDropIndicator.hidden = NO;
+  [self.headerOverlay bringSubviewToFront:self.cardDropIndicator];
+  self.activeCardDropSession = session;
+  if (self.cardDragDisplayLink == nil) {
+    self.cardDragDisplayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(cardDragAutoScroll:)];
+    self.cardDragDisplayLink.preferredFramesPerSecond = 30;
+    [self.cardDragDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+  }
+  UIDropProposal *proposal = [[UIDropProposal alloc] initWithDropOperation:UIDropOperationMove];
+  proposal.prefersFullSizePreview = YES; return proposal;
+}
+- (void)cardDragAutoScroll:(CADisplayLink *)link {
+  (void)link;
+  id<UIDropSession> session = self.activeCardDropSession;
+  if (session == nil || [self validatedCardPayload:session] == nil) { [self stopCardDrag]; return; }
+  const CGPoint point = [session locationInView:self.editor];
+  const CGRect bounds = self.editor.bounds;
+  const CGFloat edge = 48;
+  CGFloat delta = 0;
+  if (point.y < CGRectGetMinY(bounds) + edge) delta = -std::min<CGFloat>(10, (CGRectGetMinY(bounds) + edge - point.y) / 5);
+  else if (point.y > CGRectGetMaxY(bounds) - edge) delta = std::min<CGFloat>(10, (point.y - CGRectGetMaxY(bounds) + edge) / 5);
+  if (delta == 0) return;
+  const CGFloat maximum = std::max<CGFloat>(0, self.editor.contentSize.height - bounds.size.height);
+  const CGFloat y = std::clamp<CGFloat>(self.editor.contentOffset.y + delta, 0, maximum);
+  if (std::abs(y - self.editor.contentOffset.y) > 0.1) {
+    [self.editor setContentOffset:CGPointMake(self.editor.contentOffset.x, y) animated:NO];
+    [self dropInteraction:self.cardDropInteraction sessionDidUpdate:session];
+  }
+}
+- (void)dropInteraction:(UIDropInteraction *)interaction performDrop:(id<UIDropSession>)session {
+  (void)interaction;
+  NSDictionary *payload = [self validatedCardPayload:session];
+  if (payload == nil) { [self stopCardDrag]; return; }
+  NSString *target = [self cardDestinationAtPoint:[session locationInView:self.editor] source:payload[@"sourceId"] indicator:nullptr];
+  if (target != nil) [self moveLyricsCard:sharedString(payload[@"sourceId"]) before:sharedString(target) revision:[payload[@"revision"] unsignedLongLongValue]];
+  [self stopCardDrag];
+}
+- (void)dropInteraction:(UIDropInteraction *)interaction sessionDidExit:(id<UIDropSession>)session { (void)interaction; (void)session; [self stopCardDrag]; }
+- (void)dropInteraction:(UIDropInteraction *)interaction sessionDidEnd:(id<UIDropSession>)session { (void)interaction; (void)session; [self stopCardDrag]; }
+- (void)stopCardDrag {
+  [self.cardDragDisplayLink invalidate]; self.cardDragDisplayLink = nil;
+  self.activeCardDropSession = nil; self.cardDropIndicator.hidden = YES;
+  for (PlayWorshipLyricsCardHeader *header in self.cardHeaders.allValues) header.alpha = 1;
+  for (PlayWorshipInstrumentalCard *card in self.instrumentalCards.allValues) card.heading.alpha = 1;
+}
+- (void)moveLyricsCard:(juce::String)source before:(juce::String)target revision:(uint64_t)revision {
+  if (busy || revision != documentRevision || self.editor.markedTextRange != nil) return;
+  auto candidate = document;
+  if (!moveSongLyricsCardBefore(candidate, source, target) ||
+      juce::JSON::toString(songLyricsToVar(candidate), true) == juce::JSON::toString(songLyricsToVar(document), true)) return;
+  NSRange selection = self.editor.selectedRange;
+  for (const auto &section : candidate.sections) if (section.id == source) { selection = NSMakeRange(static_cast<NSUInteger>(section.start), 0); break; }
+  [self stopCardDrag]; [self cancelAutomaticMenu];
+  [self restoreLyricsDocument:std::move(candidate) selection:selection];
+  [self.editor.undoManager setActionName:[self label:"reorderCardTitle"]];
+  explicitlyNavigatedInstrumentalID = {};
+  bool instrumental = false;
+  for (const auto &block : document.instrumentalBlocks) if (block.id == source) { instrumental = true; break; }
+  if (instrumental) {
+    for (UIView *view in self.sectionStack.arrangedSubviews) {
+      if (![view isKindOfClass:UIButton.class]) continue;
+      if (sharedString(view.accessibilityIdentifier).fromFirstOccurrenceOf("nativeLyricsSection:", false, false) == source) {
+        [self sectionChipPressed:(UIButton *)view]; return;
+      }
+    }
+  }
+  [self.editor scrollRangeToVisible:self.editor.selectedRange];
+}
+
+- (void)cancelAutomaticMenu {
+  ++automaticMenuRequest;
+  if (@available(iOS 16.0, *)) [self.automaticEditMenuInteraction dismissMenu];
+}
+- (void)installSelectionMenuObserver:(UITextView *)textView {
+  if (@available(iOS 16.0, *)) {
+    UILongPressGestureRecognizer *observer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(selectionMenuGesture:)];
+    observer.name = @"nativeLyricsSelectionMenuObserver";
+    observer.minimumPressDuration = 0.3;
+    observer.allowableMovement = CGFLOAT_MAX;
+    observer.cancelsTouchesInView = NO; observer.delaysTouchesBegan = NO; observer.delaysTouchesEnded = NO;
+    observer.delegate = self; [textView addGestureRecognizer:observer];
+  }
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+  (void)other;
+  return [gesture.name isEqualToString:@"nativeLyricsSelectionMenuObserver"];
+}
+- (void)selectionMenuGesture:(UILongPressGestureRecognizer *)gesture {
+  if (@available(iOS 16.0, *)) {
+    if (![gesture.view isKindOfClass:UITextView.class]) return;
+    UITextView *textView = (UITextView *)gesture.view;
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+      [self cancelAutomaticMenu]; selectionGestureRevision = documentRevision;
+      selectionGestureRequest = automaticMenuRequest;
+      selectionGestureEligible = !busy && !textView.dragging && !textView.decelerating && !self.editor.dragging && !self.editor.decelerating;
+      for (UIView *view = textView.superview; view != nil; view = view.superview)
+        if ([view isKindOfClass:UIScrollView.class] && (((UIScrollView *)view).dragging || ((UIScrollView *)view).decelerating)) selectionGestureEligible = NO;
+      return;
+    }
+    if (gesture.state == UIGestureRecognizerStateCancelled || gesture.state == UIGestureRecognizerStateFailed) { [self cancelAutomaticMenu]; return; }
+    if (gesture.state != UIGestureRecognizerStateEnded || !selectionGestureEligible || selectionGestureRequest != automaticMenuRequest) return;
+    const uint64_t request = ++automaticMenuRequest, revision = selectionGestureRevision;
+    // The system first finishes its magnifier/caret interaction. Opening the
+    // menu from selectionDidChange would also trigger it for ordinary typing.
+    __weak auto weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      auto *target = weakSelf;
+      if (target == nil || target->busy || request != target->automaticMenuRequest || revision != target->documentRevision ||
+          !textView.isFirstResponder || textView.markedTextRange != nil || target->nativeEditMenuVisible || target.automaticEditMenuVisible ||
+          target.editor.dragging || target.editor.decelerating || textView.dragging || textView.decelerating) return;
+      for (UIView *view = textView.superview; view != nil; view = view.superview)
+        if ([view isKindOfClass:UIScrollView.class] && (((UIScrollView *)view).dragging || ((UIScrollView *)view).decelerating)) return;
+      const NSRange range = textView.selectedRange;
+      if (range.location == NSNotFound || NSMaxRange(range) > textView.textStorage.length) return;
+      if (target.automaticEditMenuInteraction == nil) target.automaticEditMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:target];
+      if (target.automaticEditMenuInteraction.view != textView) {
+        [target.automaticEditMenuInteraction.view removeInteraction:target.automaticEditMenuInteraction];
+        [textView addInteraction:target.automaticEditMenuInteraction];
+      }
+      target.automaticMenuTextView = textView; target.automaticMenuRange = range;
+      CGRect caret = [textView caretRectForPosition:textView.selectedTextRange.start];
+      UIEditMenuConfiguration *config = [UIEditMenuConfiguration configurationWithIdentifier:@(request) sourcePoint:CGPointMake(CGRectGetMidX(caret), CGRectGetMidY(caret))];
+      [target.automaticEditMenuInteraction presentEditMenuWithConfiguration:config];
+    });
+  }
+}
+- (UIMenu *)editMenuInteraction:(UIEditMenuInteraction *)interaction menuForConfiguration:(UIEditMenuConfiguration *)config suggestedActions:(NSArray<UIMenuElement *> *)actions {
+  (void)interaction; (void)config;
+  return [self menuForTextView:self.automaticMenuTextView range:self.automaticMenuRange suggested:actions];
+}
+- (CGRect)editMenuInteraction:(UIEditMenuInteraction *)interaction targetRectForConfiguration:(UIEditMenuConfiguration *)config {
+  (void)interaction; (void)config;
+  UITextView *field = self.automaticMenuTextView;
+  if (field.selectedTextRange == nil) return CGRectZero;
+  return field.selectedRange.length == 0 ? [field caretRectForPosition:field.selectedTextRange.start]
+      : [field firstRectForRange:field.selectedTextRange];
+}
+- (void)editMenuInteraction:(UIEditMenuInteraction *)interaction willPresentMenuForConfiguration:(UIEditMenuConfiguration *)config animator:(id<UIEditMenuInteractionAnimating>)animator {
+  (void)interaction; (void)config; (void)animator; self.automaticEditMenuVisible = YES;
+}
+- (void)editMenuInteraction:(UIEditMenuInteraction *)interaction willDismissMenuForConfiguration:(UIEditMenuConfiguration *)config animator:(id<UIEditMenuInteractionAnimating>)animator {
+  (void)interaction; (void)config; (void)animator; self.automaticEditMenuVisible = NO;
+}
+- (void)textView:(UITextView *)textView willPresentEditMenuWithAnimator:(id<UIEditMenuInteractionAnimating>)animator {
+  (void)textView; (void)animator; nativeEditMenuVisible = YES; ++automaticMenuRequest;
+}
+- (void)textView:(UITextView *)textView willDismissEditMenuWithAnimator:(id<UIEditMenuInteractionAnimating>)animator {
+  (void)textView; (void)animator; nativeEditMenuVisible = NO;
+}
+- (void)refreshInstrumentalCards {
+  NSMutableSet<NSString *> *visible = [NSMutableSet new];
+  const CGRect viewport = CGRectInset(self.editor.bounds, 0, -200);
+  CGFloat footerY = -1;
+  for (const auto &block : document.instrumentalBlocks) {
+    NSString *identifier = nativeString(block.id);
+    CGRect frame = CGRectNull;
+    if (block.anchorUtf16 == static_cast<int>(self.editor.textStorage.length)) {
+      if (footerY < 0) footerY = self.editor.textContainerInset.top + CGRectGetMaxY([self.lyricsLayout usedRectForTextContainer:self.editor.textContainer]) + 24;
+      frame = CGRectMake(self.editor.textContainerInset.left, footerY, self.editor.textContainer.size.width, instrumentalCardHeight(block));
+      footerY += frame.size.height + 24;
+    } else {
+      CGRect reserved = [self.lyricsLayout instrumentalRectForIdentifier:identifier];
+      if (!CGRectIsNull(reserved)) frame = CGRectOffset(reserved, self.editor.textContainerInset.left, self.editor.textContainerInset.top);
+    }
+    PlayWorshipInstrumentalCard *card = self.instrumentalCards[identifier];
+    BOOL focused = NO;
+    for (UITextView *field in card.rowEditors.allValues) if (field.isFirstResponder) { focused = YES; break; }
+    if (CGRectIsNull(frame) || (!CGRectIntersectsRect(frame, viewport) && !focused && block.id != scrollTargetID)) continue;
+    [visible addObject:identifier];
+    if (card == nil) {
+      card = [[PlayWorshipInstrumentalCard alloc] initWithFrame:CGRectZero];
+      card.accessibilityIdentifier = [@"nativeLyricsInstrumental:" stringByAppendingString:identifier];
+      self.instrumentalCards[identifier] = card; [self.headerOverlay addSubview:card];
+      // The floating header is a sibling of the bordered body, as on lyric
+      // cards. A parent's layer border otherwise draws across its own child.
+      [self.headerOverlay addSubview:card.heading];
+    }
+    card.frame = [self.editor convertRect:frame toView:self.headerOverlay];
+    card.backgroundColor = self.cardBackgrounds.cardBackground;
+    card.layer.borderColor = self.cardBackgrounds.cardBorder.CGColor;
+    const CGFloat width = frame.size.width;
+    for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations) if ([section.identifier isEqualToString:identifier]) {
+      [card.heading configure:section textColor:nativeColor(configuration.getProperty("colors", {}).getProperty("sectionHeaderText", {}), UIColor.blackColor)];
+      CGSize size = [card.heading sizeThatFits:CGSizeMake(std::max<CGFloat>(44, width - 24), lyricsHeaderHeight())];
+      card.heading.frame = CGRectMake(card.frame.origin.x + 12, card.frame.origin.y - lyricsHeaderHeight() * 0.5, size.width, size.height);
+      [self configureDragForHeader:card.heading identifier:block.id]; break;
+    }
+    NSMutableSet<NSString *> *rows = [NSMutableSet new];
+    NSUInteger rowIndex = 0;
+    const bool hasSymbols = instrumentalHasSymbols(block);
+    for (const auto &row : block.rows) {
+      if (!hasSymbols && rowIndex > 0) break;
+      NSString *rowID = nativeString(row.id); [rows addObject:rowID];
+      PlayWorshipInstrumentalTextView *field = card.rowEditors[rowID];
+      UIScrollView *scroll = card.rowScrolls[rowID];
+      if (field == nil) {
+        scroll = [UIScrollView new]; scroll.showsHorizontalScrollIndicator = YES;
+        field = [[PlayWorshipInstrumentalTextView alloc] initWithFrame:CGRectZero];
+        field.backgroundColor = UIColor.clearColor; field.scrollEnabled = NO;
+        field.editable = NO; field.selectable = YES;
+        field.textContainer.maximumNumberOfLines = 1; field.textContainer.lineBreakMode = NSLineBreakByClipping;
+        field.textContainer.lineFragmentPadding = 0; field.textContainerInset = UIEdgeInsetsMake(10, 0, 8, 0);
+        field.autocorrectionType = UITextAutocorrectionTypeNo; field.spellCheckingType = UITextSpellCheckingTypeNo;
+        field.inputView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 1)];
+        field.inputAssistantItem.leadingBarButtonGroups = @[]; field.inputAssistantItem.trailingBarButtonGroups = @[];
+        field.delegate = self; field.sharedLyricsUndo = self.editor.undoManager;
+        field.blockIdentifier = identifier; field.rowIdentifier = rowID;
+        field.accessibilityIdentifier = [@"nativeLyricsInstrumentalRow:" stringByAppendingString:rowID];
+        [scroll addSubview:field]; [card addSubview:scroll];
+        card.rowEditors[rowID] = field; card.rowScrolls[rowID] = scroll;
+      }
+      CGFloat minimumCellWidth = 64;
+      UIFont *cellFont = lyricsScaledFont(17, UIFontWeightSemibold, UIFontTextStyleBody);
+      for (const auto &cell : row.cells) if (cell.symbol)
+        minimumCellWidth = std::max<CGFloat>(minimumCellWidth, [nativeString(*cell.symbol) sizeWithAttributes:@{NSFontAttributeName:cellFont}].width + 20);
+      const CGFloat fieldWidth = std::max<CGFloat>(width - 24, static_cast<CGFloat>(row.cells.size()) * minimumCellWidth);
+      const CGFloat cellWidth = fieldWidth / static_cast<CGFloat>(row.cells.size());
+      scroll.frame = CGRectMake(12, lyricsHeaderHeight() * 0.5 + 16 + static_cast<CGFloat>(rowIndex) * (instrumentalRowHeight() + 8), width - 24, instrumentalRowHeight());
+      scroll.contentSize = CGSizeMake(fieldWidth, instrumentalRowHeight());
+      field.frame = CGRectMake(0, 0, fieldWidth, instrumentalRowHeight());
+      field.font = lyricsScaledFont(17, UIFontWeightSemibold, UIFontTextStyleBody);
+      field.textColor = self.editor.textColor; field.tintColor = self.view.tintColor;
+      field.accessibilityLabel = [NSString stringWithFormat:@"%@ · %@ %lu", nativeString(block.label), [self label:"chordRowTitle"], static_cast<unsigned long>(rowIndex + 1)];
+      field.accessibilityHint = nil;
+      NSMutableString *text = [NSMutableString new];
+      NSUInteger cellIndex = 0;
+      NSMutableArray<NSTextTab *> *tabs = [NSMutableArray new];
+      for (const auto &cell : row.cells) {
+        if (cellIndex > 0) [text appendString:@"\t"];
+        NSString *symbol = cell.symbol ? nativeString(*cell.symbol) : @"";
+        [text appendString:symbol]; ++cellIndex;
+        [tabs addObject:[[NSTextTab alloc] initWithTextAlignment:NSTextAlignmentLeft location:cellWidth * cellIndex options:@{}]];
+      }
+      if (!hasSymbols) [text setString:[self label:"noSavedChordsTitle"]];
+      CAShapeLayer *bars = nil;
+      for (CALayer *layer in scroll.layer.sublayers)
+        if ([layer.name isEqualToString:@"instrumentalReadOnlyBars"]) { bars = (CAShapeLayer *)layer; break; }
+      if (bars == nil) { bars = [CAShapeLayer layer]; bars.name = @"instrumentalReadOnlyBars"; [scroll.layer addSublayer:bars]; }
+      UIBezierPath *barPath = [UIBezierPath bezierPath];
+      int boundary = 0;
+      for (size_t i = 0; hasSymbols && i + 1 < row.barLengths.size(); ++i) {
+        boundary += row.barLengths[i]; const CGFloat x = static_cast<CGFloat>(boundary) * cellWidth - 10;
+        [barPath moveToPoint:CGPointMake(x, 10)]; [barPath addLineToPoint:CGPointMake(x, instrumentalRowHeight() - 10)];
+      }
+      bars.path = barPath.CGPath; bars.strokeColor = [self.editor.textColor colorWithAlphaComponent:0.3].CGColor;
+      bars.lineWidth = 1; bars.fillColor = UIColor.clearColor.CGColor;
+      NSMutableParagraphStyle *style = [NSMutableParagraphStyle new]; style.tabStops = tabs; style.defaultTabInterval = cellWidth;
+      NSAttributedString *attributed = [[NSAttributedString alloc] initWithString:text attributes:@{NSFontAttributeName:field.font,
+          NSForegroundColorAttributeName:field.textColor, NSParagraphStyleAttributeName:style}];
+      if (![field.attributedText isEqualToAttributedString:attributed]) {
+        const NSRange selection = field.selectedRange;
+        // These are visible cell tokens projected from structured data. They
+        // never become lyric text or create a second native typing history.
+        NSUndoManager *undo = field.undoManager; const BOOL registration = undo.isUndoRegistrationEnabled;
+        if (registration) [undo disableUndoRegistration];
+        field.attributedText = attributed;
+        if (registration) [undo enableUndoRegistration];
+        field.selectedRange = NSMakeRange(std::min<NSUInteger>(selection.location, text.length), 0);
+      }
+      ++rowIndex;
+    }
+    for (NSString *rowID in card.rowEditors.allKeys) if (![rows containsObject:rowID]) {
+      [card.rowEditors[rowID] resignFirstResponder]; [card.rowScrolls[rowID] removeFromSuperview];
+      [card.rowEditors removeObjectForKey:rowID]; [card.rowScrolls removeObjectForKey:rowID];
+    }
+  }
+  for (NSString *identifier in self.instrumentalCards.allKeys) if (![visible containsObject:identifier]) {
+    PlayWorshipInstrumentalCard *card = self.instrumentalCards[identifier];
+    for (UITextView *field in card.rowEditors.allValues) [field resignFirstResponder];
+    [card.heading removeFromSuperview]; [card removeFromSuperview]; [self.instrumentalCards removeObjectForKey:identifier];
+  }
+}
+
 - (UIStatusBarStyle)preferredStatusBarStyle {
   const auto colors = configuration.getProperty("colors", {});
   CGFloat red = 0, green = 0, blue = 0, alpha = 0;
@@ -648,10 +1368,14 @@ private:
 }
 - (void)configure:(NativeSongLyricsEditor::Options)options {
   document = options.document.value_or(SongLyricsDocument{});
+  self.dragEditorToken = NSUUID.UUID.UUIDString;
+  movableCardsRevision = UINT64_MAX;
   configuration = NativeSongLyricsEditor::presentationConfig(options);
   initialDocument = juce::JSON::toString(songLyricsToVar(document), true);
   appearanceDirty = true;
   sectionSnapshot = std::make_shared<const std::vector<SongLyricsSection>>(document.sections);
+  chordSnapshot = std::make_shared<const std::vector<SongLyricsChord>>(document.chords);
+  blockSnapshot = std::make_shared<const std::vector<SongLyricsInstrumentalBlock>>(document.instrumentalBlocks);
 }
 - (void)viewDidLoad {
   [super viewDidLoad];
@@ -693,6 +1417,15 @@ private:
   self.saveItem.accessibilityIdentifier = @"nativeLyricsSave";
   self.navigationItem.leftBarButtonItem = self.closeItem;
   self.navigationItem.rightBarButtonItem = self.saveItem;
+  if (@available(iOS 14.0, *)) {
+    __weak auto weakSelf = self;
+    UIAction *importAction = [UIAction actionWithTitle:[self label:"importChordProTitle"] image:[UIImage systemImageNamed:@"doc.on.clipboard"] identifier:@"nativeLyricsImportChordPro" handler:^(UIAction *) { [weakSelf importChordPro]; }];
+    UIAction *exportAction = [UIAction actionWithTitle:[self label:"exportChordProTitle"] image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:@"nativeLyricsExportChordPro" handler:^(UIAction *) { [weakSelf exportChordPro]; }];
+    UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:[UIMenu menuWithChildren:@[importAction, exportAction]]];
+    more.accessibilityIdentifier = @"nativeLyricsMore";
+    more.accessibilityLabel = [self label:"chordProTitle"];
+    self.navigationItem.rightBarButtonItems = @[self.saveItem, more];
+  }
 
   self.songLabel = [UILabel new];
   self.songLabel.text = [self label:"title"];
@@ -756,6 +1489,8 @@ private:
   self.editor.accessibilityLabel = [self label:"heading"];
   self.editor.text = nativeString(document.text);
   self.editor.delegate = self;
+  [self installSelectionMenuObserver:self.editor];
+  self.instrumentalCards = [NSMutableDictionary new];
   [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(nativeUndoWill:)
       name:NSUndoManagerWillUndoChangeNotification object:nil];
   [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(nativeRedoWill:)
@@ -768,11 +1503,22 @@ private:
   self.cardBackgrounds.accessibilityIdentifier = @"nativeLyricsCardBackgrounds";
   [self.view addSubview:self.cardBackgrounds];
   [self.view addSubview:self.editor];
-  self.headerOverlay = [UIView new];
-  self.headerOverlay.userInteractionEnabled = NO;
+  self.chordLabels = [NSMutableDictionary new];
+  self.headerOverlay = [PlayWorshipLyricsInteractiveOverlay new];
+  self.headerOverlay.userInteractionEnabled = YES;
   self.headerOverlay.clipsToBounds = YES;
   self.headerOverlay.isAccessibilityElement = NO;
   self.headerOverlay.accessibilityIdentifier = @"nativeLyricsCardHeaders";
+  self.view.accessibilityIdentifier = @"nativeLyricsCardDropTarget";
+  self.cardDropInteraction = [[UIDropInteraction alloc] initWithDelegate:self];
+  [self.view addInteraction:self.cardDropInteraction];
+  self.cardDropIndicator = [UIView new];
+  self.cardDropIndicator.userInteractionEnabled = NO;
+  self.cardDropIndicator.accessibilityIdentifier = @"nativeLyricsCardDropIndicator";
+  self.cardDropIndicator.backgroundColor = self.view.tintColor;
+  self.cardDropIndicator.layer.cornerRadius = 1.5;
+  self.cardDropIndicator.hidden = YES;
+  [self.headerOverlay addSubview:self.cardDropIndicator];
   self.cardHeaders = [NSMutableDictionary new];
   [self.view addSubview:self.headerOverlay];
   [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(contentSizeChanged:)
@@ -821,8 +1567,16 @@ private:
   self.editorBottom.active = YES;
   if (@available(iOS 16.0, *)) {} else {
     self.previousLegacyMenu = UIMenuController.sharedMenuController.menuItems ?: @[];
-    UIMenuController.sharedMenuController.menuItems = @[[[UIMenuItem alloc]
-        initWithTitle:[self label:"sectionActionTitle"] action:@selector(markLyricsSection:)]];
+    UIMenuController.sharedMenuController.menuItems = @[
+      [[UIMenuItem alloc] initWithTitle:[self label:"sectionActionTitle"] action:@selector(markLyricsSection:)],
+      [[UIMenuItem alloc] initWithTitle:@"C" action:@selector(chordC:)],
+      [[UIMenuItem alloc] initWithTitle:@"D" action:@selector(chordD:)],
+      [[UIMenuItem alloc] initWithTitle:@"E" action:@selector(chordE:)],
+      [[UIMenuItem alloc] initWithTitle:@"F" action:@selector(chordF:)],
+      [[UIMenuItem alloc] initWithTitle:@"G" action:@selector(chordG:)],
+      [[UIMenuItem alloc] initWithTitle:@"A" action:@selector(chordA:)],
+      [[UIMenuItem alloc] initWithTitle:@"B" action:@selector(chordB:)],
+      [[UIMenuItem alloc] initWithTitle:[self label:"removeChordTitle"] action:@selector(removeLyricsChord:)]];
   }
   [self updateAppearance];
 }
@@ -878,7 +1632,8 @@ private:
   pendingRange = range; pendingReplacement = sharedString(text); hasPendingReplacement = true;
 }
 - (BOOL)textView:(UITextView *)textView shouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text {
-  if (busy) return NO;
+  if (busy || textView != self.editor) return NO;
+  [self cancelAutomaticMenu];
   auto candidate = document;
   if (range.location > INT_MAX || range.length > INT_MAX ||
       !replaceNativeLyricsText(candidate, static_cast<int>(range.location), static_cast<int>(range.length), sharedString(text)))
@@ -900,6 +1655,18 @@ private:
     sectionSnapshot = std::make_shared<const std::vector<SongLyricsSection>>(document.sections);
   return sectionSnapshot;
 }
+- (ChordSnapshot)snapshotChords {
+  if (!chordSnapshot || !sameChords(*chordSnapshot, document.chords))
+    chordSnapshot = std::make_shared<const std::vector<SongLyricsChord>>(document.chords);
+  return chordSnapshot;
+}
+- (BlockSnapshot)snapshotInstrumentals {
+  // Typing commonly leaves the blocks unchanged. Reuse their immutable
+  // snapshot instead of retaining thousands of duplicated cells per keypress.
+  if (!blockSnapshot || !sameInstrumentals(*blockSnapshot, document.instrumentalBlocks))
+    blockSnapshot = std::make_shared<const std::vector<SongLyricsInstrumentalBlock>>(document.instrumentalBlocks);
+  return blockSnapshot;
+}
 - (BOOL)restoreHistoryForText:(const juce::String &)text direction:(int)direction {
   // Replay only the compact text deltas into a temporary NSString. UIKit owns
   // the actual text/undo stack. Matching its result restores the corresponding
@@ -918,6 +1685,11 @@ private:
       document.text = text;
       sectionSnapshot = direction < 0 ? entry.before : entry.after;
       document.sections = *sectionSnapshot;
+      chordSnapshot = direction < 0 ? entry.beforeChords : entry.afterChords;
+      if (chordSnapshot) document.chords = *chordSnapshot;
+      blockSnapshot = direction < 0 ? entry.beforeBlocks : entry.afterBlocks;
+      if (blockSnapshot) document.instrumentalBlocks = *blockSnapshot;
+      normalizeSongLyricsSchema(document);
       textEditCursor = cursor;
       return YES;
     }
@@ -925,7 +1697,8 @@ private:
   return NO;
 }
 - (void)textViewDidChange:(UITextView *)textView {
-  if (updatingAppearance) return;
+  if (textView != self.editor || updatingAppearance) return;
+  [self cancelAutomaticMenu];
   const auto current = sharedString(textView.text);
   if (current == document.text) { hasPendingReplacement = false; return; }
   const int direction = historyAction != 0 ? historyAction :
@@ -934,25 +1707,49 @@ private:
   if (!restored) {
     const auto previous = document.text;
     const auto before = [self snapshotSections];
+    const auto beforeChords = [self snapshotChords];
+    const auto beforeBlocks = [self snapshotInstrumentals];
     auto candidate = document;
     const bool exact = hasPendingReplacement && replaceNativeLyricsText(candidate, static_cast<int>(pendingRange.location),
         static_cast<int>(pendingRange.length), pendingReplacement) && candidate.text == current;
     if (exact) document = std::move(candidate);
-    else setNativeLyricsText(document, current);
+    else if (!setNativeLyricsText(document, current)) {
+      // IMEs may temporarily join characters into a different grapheme. Keep
+      // the native marked text intact, then reconcile the committed value.
+      hasPendingReplacement = false; appearanceDirty = true;
+      if (textView.markedTextRange != nil) return;
+      // A native replacement can bypass shouldChange. Reject it explicitly
+      // rather than let visible text and saved anchors describe two documents.
+      const NSRange selection = textView.selectedRange;
+      updatingAppearance = true;
+      NSUndoManager *undo = textView.undoManager;
+      const BOOL registration = undo.isUndoRegistrationEnabled;
+      if (registration) [undo disableUndoRegistration];
+      [textView.textStorage replaceCharactersInRange:NSMakeRange(0, textView.textStorage.length) withString:nativeString(document.text)];
+      if (registration) [undo enableUndoRegistration];
+      [undo removeAllActions]; textEdits.clear(); textEditCursor = 0;
+      textView.selectedRange = NSMakeRange(std::min<NSUInteger>(selection.location, textView.textStorage.length), 0);
+      updatingAppearance = false;
+      [self updateAppearance];
+      UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [self label:"chordBoundaryMessage"]);
+      return;
+    }
     const auto after = [self snapshotSections];
+    const auto afterChords = [self snapshotChords];
+    const auto afterBlocks = [self snapshotInstrumentals];
     if (direction < 0) {
       // A manual section change starts a new metadata history boundary while
       // leaving UIKit's text undo stack intact. Capture an older native Undo
       // in reverse so Redo can restore even an entirely deleted new section.
       textEdits.erase(textEdits.begin(), textEdits.begin() + static_cast<std::ptrdiff_t>(textEditCursor));
-      textEdits.insert(textEdits.begin(), {NSMakeRange(0, nativeString(current).length), current, previous, after, before});
+      textEdits.insert(textEdits.begin(), {NSMakeRange(0, nativeString(current).length), current, previous, after, before, afterChords, beforeChords, afterBlocks, beforeBlocks});
       textEditCursor = 0;
     } else {
       if (textEditCursor < textEdits.size()) textEdits.resize(textEditCursor);
       NSString *original = nativeString(previous);
       const NSRange range = exact ? pendingRange : NSMakeRange(0, original.length);
       textEdits.push_back({range, sharedString([original substringWithRange:range]),
-                          exact ? pendingReplacement : current, before, after});
+                          exact ? pendingReplacement : current, before, after, beforeChords, afterChords, beforeBlocks, afterBlocks});
       textEditCursor = textEdits.size();
     }
   }
@@ -963,11 +1760,14 @@ private:
   [self updateAppearancePreservingViewport:NO];
 }
 - (void)textViewDidChangeSelection:(UITextView *)textView {
+  if (textView != self.editor) return;
   if (updatingAppearance || textView.markedTextRange != nil) return;
   if (appearanceDirty) [self updateAppearancePreservingViewport:NO];
   else [self updateTypingAttributes];
 }
 - (void)textCompositionDidEnd {
+  if (self.editor.markedTextRange == nil && sharedString(self.editor.text) != document.text)
+    [self textViewDidChange:self.editor];
   if (appearanceDirty && !updatingAppearance && self.editor.markedTextRange == nil)
     [self updateAppearancePreservingViewport:NO];
 }
@@ -1041,13 +1841,30 @@ private:
         sectionStarts.find(NSMaxRange(entry.range)) == sectionStarts.end();
     [entries addObject:entry];
   }
+  for (PlayWorshipLyricsSectionPresentation *entry in entries) entry.sequence = NSIntegerMax;
+  for (const auto &block : document.instrumentalBlocks) {
+    const auto kind = [self kindDefinition:block.kind];
+    auto *entry = [PlayWorshipLyricsSectionPresentation new];
+    entry.identifier = nativeString(block.id);
+    entry.label = block.label.isNotEmpty() ? nativeString(block.label) : nativeString(kind.getProperty("title", {}).toString());
+    entry.code = block.kind == "intro" ? @"IN" : block.label.equalsIgnoreCase("Solo") ? @"SO" : @"IT";
+    entry.color = nativeColor(kind.getProperty("color", {}), self.view.tintColor);
+    entry.range = NSMakeRange(static_cast<NSUInteger>(block.anchorUtf16), 0);
+    entry.instrumentalBlock = YES; entry.sequence = block.order;
+    [entries addObject:entry];
+  }
+  [entries sortUsingComparator:^NSComparisonResult(PlayWorshipLyricsSectionPresentation *a, PlayWorshipLyricsSectionPresentation *b) {
+    if (a.range.location != b.range.location) return a.range.location < b.range.location ? NSOrderedAscending : NSOrderedDescending;
+    if (a.sequence == b.sequence) return NSOrderedSame;
+    return a.sequence < b.sequence ? NSOrderedAscending : NSOrderedDescending;
+  }];
   self.sectionPresentations = entries;
   self.lyricsLayout.sections = entries;
   [self.lyricsLayout invalidateCardFrames];
 }
 - (void)updateAppearance { [self updateAppearancePreservingViewport:YES]; }
 - (void)updateAppearancePreservingViewport:(BOOL)preserveViewport {
-  self.placeholder.hidden = self.editor.text.length > 0;
+  self.placeholder.hidden = self.editor.text.length > 0 || !document.chords.empty() || !document.instrumentalBlocks.empty();
   if (!appearanceDirty || self.editor.markedTextRange != nil) return;
   appearanceDirty = false; updatingAppearance = true;
   const NSRange selection = self.editor.selectedRange;
@@ -1058,6 +1875,30 @@ private:
   self.cardBackgrounds.cardBorder = nativeColor(colors.getProperty("cardBorder", {}), [UIColor.whiteColor colorWithAlphaComponent:0.08]);
   auto *storage = self.editor.textStorage;
   [self rebuildSectionPresentations];
+  NSMutableArray<NSDictionary *> *blocks = [NSMutableArray new];
+  CGFloat footerHeight = 32;
+  for (const auto &block : document.instrumentalBlocks) {
+    const CGFloat height = instrumentalCardHeight(block);
+    if (block.anchorUtf16 == static_cast<int>(storage.length)) footerHeight += height + 24;
+    else [blocks addObject:@{@"id":nativeString(block.id), @"anchor":@(block.anchorUtf16), @"order":@(block.order), @"height":@(height)}];
+  }
+  [blocks sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+    NSComparisonResult order = [a[@"anchor"] compare:b[@"anchor"]];
+    return order == NSOrderedSame ? [a[@"order"] compare:b[@"order"]] : order;
+  }];
+  if (![self.lyricsLayout.instrumentals isEqualToArray:blocks]) {
+    self.lyricsLayout.instrumentals = blocks;
+    [self.lyricsLayout invalidateLayoutForCharacterRange:NSMakeRange(0, storage.length) actualCharacterRange:nullptr];
+  }
+  NSMutableArray<NSDictionary *> *chords = [NSMutableArray new];
+  for (const auto &chord : document.chords) [chords addObject:@{@"id":nativeString(chord.id), @"offset":@(chord.offset), @"symbol":nativeString(chord.symbol)}];
+  UIFont *chordFont = lyricsScaledFont(14, UIFontWeightSemibold, UIFontTextStyleSubheadline);
+  if (![self.lyricsLayout.chords isEqualToArray:chords] || ![self.lyricsLayout.chordFont isEqual:chordFont]) {
+    [chords sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"offset"] compare:b[@"offset"]]; }];
+    self.lyricsLayout.chords = chords; self.lyricsLayout.chordFont = chordFont;
+    [self.lyricsLayout.chordLanes removeAllObjects];
+    [self.lyricsLayout invalidateLayoutForCharacterRange:NSMakeRange(0, storage.length) actualCharacterRange:nullptr];
+  }
   // Only presentation attributes change. Never replace attributedText or add
   // heading characters: both would disturb native selection and text history.
   NSUndoManager *undo = self.editor.undoManager;
@@ -1073,6 +1914,7 @@ private:
   // Reserve its floating heading physically in the native text-container inset.
   UIEdgeInsets insets = self.editor.textContainerInset;
   insets.top = startsWithCard ? headerHeight + 16 : 24;
+  insets.bottom = footerHeight;
   if (!UIEdgeInsetsEqualToEdgeInsets(self.editor.textContainerInset, insets)) self.editor.textContainerInset = insets;
   PlayWorshipLyricsSectionPresentation *previousCard = nil;
   for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations) {
@@ -1112,9 +1954,9 @@ private:
   for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations)
     identity << sharedString(section.identifier) << ':' << sharedString(section.label) << ':' << sharedString(section.code) << ';';
   const CGFloat diameter = std::max<CGFloat>(44, lyricsNavigationCircleDiameter() + 8);
-  const CGFloat navigationHeight = document.sections.empty() ? 0 : diameter + 4;
+  const CGFloat navigationHeight = (document.sections.empty() && document.instrumentalBlocks.empty()) ? 0 : diameter + 4;
   if (self.sectionHeight.constant != navigationHeight) self.sectionHeight.constant = navigationHeight;
-  self.sectionScroll.hidden = document.sections.empty();
+  self.sectionScroll.hidden = document.sections.empty() && document.instrumentalBlocks.empty();
   if (identity != chipIdentity) {
     chipIdentity = identity;
     for (UIView *view in self.sectionStack.arrangedSubviews) {
@@ -1172,8 +2014,10 @@ private:
     if (!section.completeBlock || NSIntersectionRange(section.range, characters).length == 0) continue;
     const CGRect card = [self.lyricsLayout cardRectForSection:section];
     if (CGRectIsNull(card)) continue;
-    const CGRect nativeCard = CGRectOffset(card, self.editor.textContainerInset.left, self.editor.textContainerInset.top);
-    [cardRects addObject:[NSValue valueWithCGRect:[self.editor convertRect:nativeCard toView:self.cardBackgrounds]]];
+    for (NSValue *part in [self.lyricsLayout cardRectsForSection:section]) {
+      const CGRect nativeCard = CGRectOffset(part.CGRectValue, self.editor.textContainerInset.left, self.editor.textContainerInset.top);
+      [cardRects addObject:[NSValue valueWithCGRect:[self.editor convertRect:nativeCard toView:self.cardBackgrounds]]];
+    }
     CGRect header = CGRectMake(CGRectGetMinX(card) + self.editor.textContainerInset.left + 12,
         CGRectGetMinY(card) + self.editor.textContainerInset.top - lyricsHeaderHeight() * 0.5, 0, lyricsHeaderHeight());
     if (CGRectGetMaxY(header) < CGRectGetMinY(viewport) || CGRectGetMinY(header) > CGRectGetMaxY(viewport)) continue;
@@ -1184,6 +2028,7 @@ private:
     const CGSize size = [view sizeThatFits:CGSizeMake(std::max<CGFloat>(0, self.editor.bounds.size.width - 64), lyricsHeaderHeight())];
     header.size = size;
     view.frame = [self.editor convertRect:header toView:self.headerOverlay];
+    [self configureDragForHeader:view identifier:sharedString(section.identifier)];
     view.accessibilityTraits = UIAccessibilityTraitHeader | (sharedString(section.identifier) == activeSectionID ? UIAccessibilityTraitSelected : 0);
   }
   for (NSString *identifier in self.cardHeaders.allKeys)
@@ -1192,11 +2037,50 @@ private:
     self.cardBackgrounds.rectangles = cardRects;
     [self.cardBackgrounds setNeedsDisplay];
   }
+  NSMutableSet<NSString *> *visibleChords = [NSMutableSet new];
+  for (const auto &chord : document.chords) {
+    if (chord.offset < 0 || static_cast<NSUInteger>(chord.offset) > self.editor.textStorage.length) continue;
+    const NSUInteger anchor = static_cast<NSUInteger>(chord.offset);
+    if (!NSLocationInRange(anchor, characters) && !(anchor == self.editor.textStorage.length && NSMaxRange(characters) == anchor)) continue;
+    UITextPosition *position = [self.editor positionFromPosition:self.editor.beginningOfDocument offset:anchor];
+    if (position == nil) continue;
+    CGRect caret = [self.editor caretRectForPosition:position];
+    NSString *identifier = nativeString(chord.id);
+    UILabel *label = self.chordLabels[identifier];
+    if (label == nil) {
+      label = [UILabel new]; label.userInteractionEnabled = NO;
+      label.adjustsFontSizeToFitWidth = YES; label.minimumScaleFactor = 0.5;
+      label.accessibilityIdentifier = [@"nativeLyricsChord:" stringByAppendingString:identifier];
+      label.isAccessibilityElement = YES; label.accessibilityTraits = UIAccessibilityTraitStaticText;
+      self.chordLabels[identifier] = label; [self.headerOverlay addSubview:label];
+    }
+    label.text = nativeString(chord.symbol); label.font = self.lyricsLayout.chordFont;
+    label.textColor = self.editor.textColor; label.accessibilityLabel = label.text;
+    const CGFloat width = std::min<CGFloat>(self.editor.textContainer.size.width, std::ceil([label sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)].width));
+    const CGFloat row = std::ceil(label.font.lineHeight) + 4;
+    const NSUInteger lane = [self.lyricsLayout.chordLanes[identifier] unsignedIntegerValue];
+    CGRect frame = CGRectMake(std::clamp<CGFloat>(caret.origin.x, self.editor.textContainerInset.left,
+        std::max<CGFloat>(self.editor.textContainerInset.left, self.editor.bounds.size.width - self.editor.textContainerInset.right - width)),
+        CGRectGetMinY(caret) - row * (lane + 1), width, row - 3);
+    label.frame = [self.editor convertRect:frame toView:self.headerOverlay];
+    [visibleChords addObject:identifier];
+  }
+  for (NSString *identifier in self.chordLabels.allKeys)
+    if (![visibleChords containsObject:identifier]) { [self.chordLabels[identifier] removeFromSuperview]; [self.chordLabels removeObjectForKey:identifier]; }
+  [self refreshInstrumentalCards];
+  [self.headerOverlay bringSubviewToFront:self.cardDropIndicator];
   refreshingCards = false;
   if (scrollTargetID.isEmpty()) [self updateActiveSectionForScroll];
 }
 - (void)updateActiveSectionForScroll {
-  if (self.sectionPresentations.count == 0 || self.editor.textStorage.length == 0) { [self setActiveSection:{} animated:NO]; return; }
+  if (self.sectionPresentations.count == 0) { [self setActiveSection:{} animated:NO]; return; }
+  if (explicitlyNavigatedInstrumentalID.isNotEmpty()) {
+    PlayWorshipInstrumentalCard *card = self.instrumentalCards[nativeString(explicitlyNavigatedInstrumentalID)];
+    if (card != nil && CGRectIntersectsRect([card convertRect:card.bounds toView:self.editor], self.editor.bounds)) {
+      [self setActiveSection:explicitlyNavigatedInstrumentalID animated:NO]; return;
+    }
+    explicitlyNavigatedInstrumentalID = {};
+  }
   const CGFloat maximum = std::max<CGFloat>(0, self.editor.contentSize.height - self.editor.bounds.size.height);
   // When every card fits, the viewport has no unique active section. Keep the
   // user's explicit navigation choice instead of resetting it to the first
@@ -1213,8 +2097,17 @@ private:
   const NSUInteger character = [self.lyricsLayout characterIndexForPoint:anchor inTextContainer:self.editor.textContainer
       fractionOfDistanceBetweenInsertionPoints:nullptr];
   PlayWorshipLyricsSectionPresentation *active = self.sectionPresentations.firstObject;
+  PlayWorshipLyricsSectionPresentation *lyricOwner = nil;
   for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations) {
-    if (section.range.location <= character) active = section; else break;
+    if (section.range.location <= character) active = section;
+    if (!section.instrumentalBlock && NSLocationInRange(character, section.range)) lyricOwner = section;
+  }
+  if (lyricOwner != nil) active = lyricOwner;
+  const CGPoint viewportAnchor = CGPointMake(20, self.editor.contentOffset.y + 24);
+  for (NSString *identifier in self.instrumentalCards) {
+    PlayWorshipInstrumentalCard *card = self.instrumentalCards[identifier];
+    CGRect frame = [card convertRect:card.bounds toView:self.editor];
+    if (CGRectContainsPoint(frame, viewportAnchor)) { [self setActiveSection:sharedString(identifier) animated:YES]; return; }
   }
   [self setActiveSection:sharedString(active.identifier) animated:YES];
 }
@@ -1236,17 +2129,36 @@ private:
   if (scrollView == self.editor) [self refreshCardDecorations];
 }
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
-  if (scrollView == self.editor) scrollTargetID = {};
+  [self cancelAutomaticMenu];
+  if (scrollView == self.editor) { scrollTargetID = {}; explicitlyNavigatedInstrumentalID = {}; }
 }
 - (void)scrollViewDidEndScrollingAnimation:(UIScrollView *)scrollView {
   if (scrollView == self.editor) { scrollTargetID = {}; [self updateActiveSectionForScroll]; }
 }
 - (void)sectionChipPressed:(UIButton *)button {
   if (busy) return;
-  [self.editor unmarkText];
+  const NSRange selectionBeforeNavigation = self.editor.selectedRange;
+  if (self.editor.markedTextRange != nil) [self.editor unmarkText];
   const auto identifier = sharedString(button.accessibilityIdentifier).fromFirstOccurrenceOf("nativeLyricsSection:", false, false);
   for (PlayWorshipLyricsSectionPresentation *section in self.sectionPresentations) {
     if (sharedString(section.identifier) != identifier) continue;
+    if (section.instrumentalBlock) {
+      explicitlyNavigatedInstrumentalID = identifier;
+      scrollTargetID = identifier;
+      [self.lyricsLayout ensureLayoutForTextContainer:self.editor.textContainer];
+      [self refreshCardDecorations];
+      PlayWorshipInstrumentalCard *card = self.instrumentalCards[section.identifier];
+      if (card != nil) {
+        CGRect target = [card convertRect:card.bounds toView:self.editor];
+        if (!NSEqualRanges(self.editor.selectedRange, selectionBeforeNavigation)) self.editor.selectedRange = selectionBeforeNavigation;
+        const CGFloat maximum = std::max<CGFloat>(0, self.editor.contentSize.height - self.editor.bounds.size.height);
+        const CGFloat y = std::clamp<CGFloat>(CGRectGetMinY(target) - 24, 0, maximum);
+        [self.editor setContentOffset:CGPointMake(self.editor.contentOffset.x, y) animated:NO];
+      }
+      scrollTargetID = {};
+      [self setActiveSection:identifier animated:YES]; return;
+    }
+    explicitlyNavigatedInstrumentalID = {};
     // Navigation is not a Select All action. Keep the keyboard's current
     // visibility and place a single caret so typing cannot replace a whole card.
     self.editor.selectedRange = NSMakeRange(section.range.location, 0);
@@ -1292,40 +2204,194 @@ private:
     ++documentRevision; appearanceDirty = true; [self updateAppearance];
   }
 }
-- (UIMenu *)menuForRange:(NSRange)range suggested:(NSArray<UIMenuElement *> *)actions {
-  if (range.length == 0 || busy) return [UIMenu menuWithChildren:actions];
-  NSMutableArray<UIMenuElement *> *choices = [NSMutableArray new];
-  const auto revision = documentRevision;
-  __weak auto weakSelf = self;
-  const auto kinds = configuration.getProperty("sectionKinds", {});
-  if (const auto *array = kinds.getArray()) {
-    for (const auto &kind : *array) {
-      const auto identifier = kind.getProperty("id", {}).toString();
-      auto *choice = [UIAction actionWithTitle:nativeString(kind.getProperty("title", {}).toString()) image:nil identifier:nil handler:^(UIAction *) {
-        [weakSelf applySection:identifier range:range revision:revision];
-      }];
-      [choices addObject:choice];
-    }
+- (uint64_t)currentDocumentRevision { return documentRevision; }
+- (BOOL)canPlaceChordAtRange:(NSRange)range revision:(uint64_t)revision {
+  return !busy && revision == documentRevision && self.editor.markedTextRange == nil &&
+      range.location <= INT_MAX && range.location <= self.editor.textStorage.length &&
+      range.length <= self.editor.textStorage.length - range.location &&
+      isSongLyricsChordBoundary(document.text, static_cast<int>(range.location));
+}
+- (void)restoreChords:(ChordSnapshot)snapshot {
+  if (busy || !snapshot) return;
+  const auto current = [self snapshotChords];
+  auto candidate = document; candidate.chords = *snapshot;
+  normalizeSongLyricsSchema(candidate);
+  if (!isValidSongLyricsDocument(candidate)) return;
+  [self.editor.undoManager registerUndoWithTarget:self handler:^(PlayWorshipNativeLyricsController *target) { [target restoreChords:current]; }];
+  document = std::move(candidate); chordSnapshot = snapshot;
+  ++documentRevision; appearanceDirty = true; [self updateAppearance];
+}
+- (void)applyChord:(juce::String)symbol range:(NSRange)range revision:(uint64_t)revision {
+  if (![self canPlaceChordAtRange:range revision:revision]) return;
+  auto candidate = document;
+  if (!setSongLyricsChord(candidate, static_cast<int>(range.location), symbol) || sameChords(candidate.chords, document.chords)) return;
+  const auto before = [self snapshotChords];
+  [self.editor.undoManager registerUndoWithTarget:self handler:^(PlayWorshipNativeLyricsController *target) { [target restoreChords:before]; }];
+  [self.editor.undoManager setActionName:[self label:"chordActionTitle"]];
+  document = std::move(candidate); chordSnapshot.reset();
+  ++documentRevision; appearanceDirty = true; [self updateAppearance];
+}
+- (void)removeChordAtRange:(NSRange)range revision:(uint64_t)revision {
+  if (![self canPlaceChordAtRange:range revision:revision]) return;
+  auto candidate = document;
+  for (const auto &chord : document.chords) if (chord.offset == static_cast<int>(range.location)) {
+    if (!removeSongLyricsChord(candidate, chord.id)) return;
+    const auto before = [self snapshotChords];
+    [self.editor.undoManager registerUndoWithTarget:self handler:^(PlayWorshipNativeLyricsController *target) { [target restoreChords:before]; }];
+    [self.editor.undoManager setActionName:[self label:"removeChordTitle"]];
+    document = std::move(candidate); chordSnapshot.reset();
+    ++documentRevision; appearanceDirty = true; [self updateAppearance]; return;
   }
-  [choices addObject:[UIAction actionWithTitle:[self label:"clearSectionTitle"] image:nil identifier:nil handler:^(UIAction *) {
-    [weakSelf applySection:juce::String() range:range revision:revision];
-  }]];
-  auto *sectionMenu = [UIMenu menuWithTitle:[self label:"sectionActionTitle"] children:choices];
-  return [UIMenu menuWithChildren:[@[sectionMenu] arrayByAddingObjectsFromArray:actions]];
+}
+- (UIMenu *)chordMenuWithCurrent:(juce::String)current choose:(void (^)(juce::String))choose remove:(void (^)(void))remove {
+  NSMutableArray<UIMenuElement *> *roots = [NSMutableArray new];
+  for (NSString *note in @[@"C", @"D", @"E", @"F", @"G", @"A", @"B"]) {
+    NSMutableArray<UIMenuElement *> *enharmonics = [NSMutableArray new];
+    for (NSString *root in @[note, [note stringByAppendingString:@"#"], [note stringByAppendingString:@"b"]]) {
+      NSMutableArray<UIMenuElement *> *qualities = [NSMutableArray new];
+      for (NSString *quality in @[@"", @"m", @"7", @"m7", @"maj7", @"sus2", @"sus4", @"add9", @"9", @"dim", @"aug", @"6", @"m6", @"m7b5"]) {
+        NSString *symbol = [root stringByAppendingString:quality];
+        UIAction *action = [UIAction actionWithTitle:symbol image:nil identifier:[@"nativeLyricsChord:" stringByAppendingString:symbol] handler:^(UIAction *) { choose(sharedString(symbol)); }];
+        action.state = current == sharedString(symbol) ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [qualities addObject:action];
+      }
+      NSMutableArray<UIMenuElement *> *basses = [NSMutableArray new];
+      for (NSString *bass in @[@"C", @"C#", @"D", @"Eb", @"E", @"F", @"F#", @"G", @"Ab", @"A", @"Bb", @"B"]) {
+        NSString *symbol = [NSString stringWithFormat:@"%@/%@", root, bass];
+        [basses addObject:[UIAction actionWithTitle:symbol image:nil identifier:[@"nativeLyricsChord:" stringByAppendingString:symbol] handler:^(UIAction *) { choose(sharedString(symbol)); }]];
+      }
+      [qualities addObject:[UIMenu menuWithTitle:[self label:"chordBassTitle"] children:basses]];
+      if ([root isEqualToString:note]) [enharmonics addObjectsFromArray:qualities];
+      else [enharmonics addObject:[UIMenu menuWithTitle:root children:qualities]];
+    }
+    [roots addObject:[UIMenu menuWithTitle:note children:enharmonics]];
+  }
+  if (remove != nil) {
+    UIAction *action = [UIAction actionWithTitle:[self label:"removeChordTitle"] image:[UIImage systemImageNamed:@"trash"] identifier:@"nativeLyricsChordRemove" handler:^(UIAction *) { remove(); }];
+    action.attributes = UIMenuElementAttributesDestructive; [roots addObject:action];
+  }
+  return [UIMenu menuWithTitle:[self label:"chordActionTitle"] image:nil identifier:@"nativeLyricsChordMenu" options:0 children:roots];
+}
+- (UIMenu *)chordMenuForRange:(NSRange)range revision:(uint64_t)revision {
+  __weak auto weakSelf = self;
+  juce::String current;
+  for (const auto &chord : document.chords) if (chord.offset == static_cast<int>(range.location)) current = chord.symbol;
+  return [self chordMenuWithCurrent:current choose:^(juce::String symbol) { [weakSelf applyChord:symbol range:range revision:revision]; } remove:nil];
+}
+- (UIMenu *)menuForTextView:(UITextView *)textView range:(NSRange)range suggested:(NSArray<UIMenuElement *> *)actions {
+  if (textView == self.editor) return [self menuForRange:range suggested:actions];
+  // Previously saved instrumental data remains readable. Its grid editing UI
+  // was withdrawn; keep UIKit's applicable copy/selection actions only.
+  return [UIMenu menuWithChildren:actions];
+}
+- (UIMenu *)menuForRange:(NSRange)range suggested:(NSArray<UIMenuElement *> *)actions {
+  if (busy || self.editor.markedTextRange != nil) return [UIMenu menuWithChildren:actions];
+  NSMutableArray<UIMenuElement *> *menus = [NSMutableArray new];
+  const auto revision = documentRevision;
+  if ([self canPlaceChordAtRange:range revision:revision]) {
+    for (const auto &chord : document.chords) {
+      if (chord.offset != static_cast<int>(range.location)) continue;
+      __weak auto weakSelf = self;
+      UIAction *remove = [UIAction actionWithTitle:[self label:"removeChordTitle"]
+          image:[UIImage systemImageNamed:@"trash"] identifier:@"nativeLyricsChordRemove"
+          handler:^(UIAction *) { [weakSelf removeChordAtRange:range revision:revision]; }];
+      remove.attributes = UIMenuElementAttributesDestructive;
+      [menus addObject:remove];
+      break;
+    }
+    [menus addObject:[self chordMenuForRange:range revision:revision]];
+  }
+  if (range.length > 0) {
+    NSMutableArray<UIMenuElement *> *choices = [NSMutableArray new];
+    __weak auto weakSelf = self;
+    const auto kinds = configuration.getProperty("sectionKinds", {});
+    if (const auto *array = kinds.getArray()) for (const auto &kind : *array) {
+      const auto identifier = kind.getProperty("id", {}).toString();
+      [choices addObject:[UIAction actionWithTitle:nativeString(kind.getProperty("title", {}).toString()) image:nil identifier:nil handler:^(UIAction *) {
+        [weakSelf applySection:identifier range:range revision:revision];
+      }]];
+    }
+    [choices addObject:[UIAction actionWithTitle:[self label:"clearSectionTitle"] image:nil identifier:nil handler:^(UIAction *) {
+      [weakSelf applySection:juce::String() range:range revision:revision];
+    }]];
+    [menus addObject:[UIMenu menuWithTitle:[self label:"sectionActionTitle"] children:choices]];
+  }
+  [menus addObjectsFromArray:actions];
+  return [UIMenu menuWithChildren:menus];
 }
 - (UIMenu *)textView:(UITextView *)textView editMenuForTextInRange:(NSRange)range suggestedActions:(NSArray<UIMenuElement *> *)actions {
-  (void)textView;
-  if (@available(iOS 16.0, *)) return [self menuForRange:range suggested:actions];
+  if (@available(iOS 16.0, *)) return [self menuForTextView:textView range:range suggested:actions];
   return nil;
 }
 - (UIMenu *)textView:(UITextView *)textView editMenuForTextInRanges:(NSArray<NSValue *> *)ranges suggestedActions:(NSArray<UIMenuElement *> *)actions {
   (void)textView;
   // Discontinuous bidirectional selections cannot be flattened into one label.
   if (@available(iOS 16.0, *)) {
-    if (ranges.count == 1) return [self menuForRange:ranges.firstObject.rangeValue suggested:actions];
+    if (ranges.count == 1) return [self menuForTextView:textView range:ranges.firstObject.rangeValue suggested:actions];
     return [UIMenu menuWithChildren:actions];
   }
   return nil;
+}
+- (void)showChordProError:(juce::String)message {
+  UIAlertController *alert = [UIAlertController alertControllerWithTitle:[self label:"chordProTitle"] message:nativeString(message) preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)restoreLyricsDocument:(SongLyricsDocument)snapshot selection:(NSRange)selection {
+  if (busy || !isEditableSongLyricsDocument(snapshot)) return;
+  const auto current = document; const NSRange currentSelection = self.editor.selectedRange;
+  [self.editor.undoManager registerUndoWithTarget:self handler:^(PlayWorshipNativeLyricsController *target) {
+    [target restoreLyricsDocument:current selection:currentSelection];
+  }];
+  // Import is an explicit whole-document operation. Its single metadata/text
+  // Undo is separate from UITextView's incremental native typing history.
+  document = std::move(snapshot); sectionSnapshot.reset(); chordSnapshot.reset(); blockSnapshot.reset();
+  textEdits.clear(); textEditCursor = 0; hasPendingReplacement = false;
+  updatingAppearance = true;
+  NSUndoManager *undo = self.editor.undoManager;
+  const BOOL registration = undo.isUndoRegistrationEnabled;
+  if (registration) [undo disableUndoRegistration];
+  [self.editor.textStorage replaceCharactersInRange:NSMakeRange(0, self.editor.textStorage.length) withString:nativeString(document.text)];
+  if (registration) [undo enableUndoRegistration];
+  self.editor.selectedRange = NSMakeRange(std::min<NSUInteger>(selection.location, self.editor.textStorage.length), 0);
+  updatingAppearance = false; ++documentRevision; appearanceDirty = true;
+  [self updateAppearance];
+}
+- (void)importChordPro {
+  if (busy || self.editor.markedTextRange != nil) return;
+  // Read only after the explicit clipboard action, never on opening the editor.
+  const auto source = sharedString(UIPasteboard.generalPasteboard.string);
+  if (source.isEmpty()) { [self showChordProError:sharedString([self label:"chordProEmpty"])]; return; }
+  const auto result = ChordProCodec::importText(source);
+  if (!result) { [self showChordProError:result.error]; return; }
+  const uint64_t revision = documentRevision;
+  const auto imported = *result.document;
+  NSString *message = [self label:"importChordProMessage"];
+  if (!result.warnings.isEmpty()) message = [message stringByAppendingFormat:@"\n\n%@", nativeString(result.warnings.joinIntoString("\n"))];
+  UIAlertController *alert = [UIAlertController alertControllerWithTitle:[self label:"chordProTitle"] message:message preferredStyle:UIAlertControllerStyleAlert];
+  __weak auto weakSelf = self;
+  [alert addAction:[UIAlertAction actionWithTitle:[self label:"importChordProConfirm"] style:UIAlertActionStyleDestructive handler:^(UIAlertAction *) {
+    auto *target = weakSelf;
+    if (target == nil || target->documentRevision != revision || target->busy || target.editor.markedTextRange != nil) return;
+    [target restoreLyricsDocument:imported selection:NSMakeRange(0, 0)];
+    [target.editor.undoManager setActionName:[target label:"chordProTitle"]];
+  }]];
+  [alert addAction:[UIAlertAction actionWithTitle:[self label:"keepEditingTitle"] style:UIAlertActionStyleCancel handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)exportChordPro {
+  if (busy || self.editor.markedTextRange != nil) return;
+  ChordProCodec::Metadata metadata;
+  metadata.title = configuration.getProperty("title", {}).toString();
+  metadata.artist = configuration.getProperty("artist", {}).toString();
+  const double tempo = configuration.getProperty("tempoBpm", 0.0);
+  if (tempo > 0) metadata.tempoBpm = tempo;
+  juce::String error;
+  const auto output = ChordProCodec::exportText(document, metadata, &error);
+  if (output.isEmpty()) { [self showChordProError:error]; return; }
+  UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[nativeString(output)] applicationActivities:nil];
+  share.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
+  [self presentViewController:share animated:YES completion:nil];
 }
 - (void)showSectionChooser {
   const NSRange range = self.editor.selectedRange;
@@ -1350,6 +2416,7 @@ private:
   [self presentViewController:sheet animated:YES completion:nil];
 }
 - (void)closePressed {
+  [self cancelAutomaticMenu];
   if (busy) return;
   const auto state = presentation.lock();
   if (state == nullptr || state->finished) return;
@@ -1371,6 +2438,7 @@ private:
   if (saving) [self.editor resignFirstResponder];
 }
 - (void)savePressed {
+  [self cancelAutomaticMenu];
   if (busy) return;
   const auto state = presentation.lock();
   if (state == nullptr || state->finished || state->owner == nullptr || !state->save) return;
@@ -1409,7 +2477,7 @@ bool isAvailable() { return true; }
 std::unique_ptr<Handle> present(juce::Component &owner, Options options,
                               Save save, std::function<void()> close) {
   if (!NSThread.isMainThread || !save) return {};
-  if (options.document && !isValidSongLyricsDocument(*options.document)) return {};
+  if (options.document && !isEditableSongLyricsDocument(*options.document)) return {};
   auto *presenter = presenterForOwner(owner);
   if (presenter == nil || presenter.isBeingDismissed || presenter.isBeingPresented) return {};
   auto state = std::make_shared<LyricsPresentation>(owner);

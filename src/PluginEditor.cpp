@@ -47,6 +47,9 @@
 #include "network/RemoteDeviceName.h"
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
+#if !JUCE_IOS && !JUCE_ANDROID
+#include "ui/panels/LyricsPanel.h"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -438,6 +441,7 @@ bool MTControlsAudioProcessorEditor::captureCloudSettings(
       song.id, outSettings.window, outSettings.windowCustomized);
   SongLibraryStore::getSongArrangement(
       song.id, outSettings.arrangement, outSettings.arrangementCustomized);
+  SongLibraryStore::getSongFreeShowCues(song.id, outSettings.freeShowCues);
   SongLibraryStore::getActiveSetlistDynamicGuide(
       song.id, outSettings.dynamicGuide, outSettings.dynamicGuideCustomized);
   SongLibraryStore::getActiveSetlistDynamicGuideMix(
@@ -584,6 +588,7 @@ bool MTControlsAudioProcessorEditor::applyCloudSettings(
              song.id, settings.window, settings.windowCustomized) && ok;
     ok = SongLibraryStore::updateSongArrangement(
              song.id, settings.arrangement, settings.arrangementCustomized) && ok;
+    ok = SongLibraryStore::updateSongFreeShowCues(song.id, settings.freeShowCues) && ok;
     ok = SongLibraryStore::updateDynamicGuideForActiveSetlist(
              song.id, settings.dynamicGuide, settings.dynamicGuideCustomized) && ok;
     ok = SongLibraryStore::updateDynamicGuideMixForActiveSetlist(
@@ -1410,6 +1415,49 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [waveformBarRaw] { waveformBarRaw->setLiveMode(!waveformBarRaw->isLiveMode()); },
       [waveformBarRaw] { return waveformBarRaw->isLiveMode(); },
       [waveformBarRaw] { return waveformBarRaw->canToggleLiveMode(); });
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsPanel = std::make_unique<LyricsPanel>();
+  lyricsPanel->setClient(&p.getFreeShowClient());
+  lyricsPanel->setTransportProviders(
+      [&p] { return p.getSongCurrentPositionSeconds(); },
+      [&p] { return p.isSongPlaying(); });
+  lyricsPanel->setTimelineMarksProvider([waveformBarRaw](juce::Range<double> visible, float width) {
+    return waveformBarRaw->getPracticeTimelineMarks(visible, width);
+  });
+  lyricsPanel->onTimelinePlayRequested = [this](double seconds) {
+    if (!hasCurrentLoadedSong) return;
+    playbackSession.seekSongTo(seconds);
+    if (!playbackSession.isSongPlaying()) playbackSession.toggleSongPlayPause();
+  };
+  lyricsPanel->onConnectionSettingsRequested = [this] { showSettings({}, this, true); };
+  lyricsPanel->onChanged = [this, &p](const playworship::lyrics::SongLyrics &lyrics) {
+    if (playbackSession.isRemote() || !hasCurrentLoadedSong) return;
+    juce::String error;
+    if (!SongLibraryStore::updateSongFreeShowCues(currentLoadedSong.id, lyrics, &error)) {
+      lyricsPanel->setSongLyrics(p.getSongLyrics());
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::WarningIcon, L10n::tr("Letras", "Lyrics"),
+          L10n::tr("No se pudieron guardar las marcas. ", "Could not save marks. ") + error);
+      return;
+    }
+    currentLoadedSong.freeShowCues = lyrics;
+    p.setSongLyrics(lyrics);
+  };
+  topBarRaw->setLyricsViewControls(
+      [this](bool active) {
+        lyricsViewActive = active;
+        resized();
+        repaint();
+      },
+      [this] {
+        return lyricsViewActive && !playbackSession.isRemote() &&
+               hasCurrentLoadedSong && !currentLoadedSong.blankSong;
+      },
+      [this, waveformBarRaw] {
+        return !playbackSession.isRemote() && hasCurrentLoadedSong &&
+               !currentLoadedSong.blankSong && waveformBarRaw->canToggleLiveMode();
+      });
+#endif
   waveformBarRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
   waveformBarRaw->setTransportProviders(
@@ -1563,6 +1611,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
               currentLoadedSong.id);
         }
         p.setSongArrangement(arrangement, isCustomArrangement);
+#if !JUCE_IOS && !JUCE_ANDROID
+        if (lyricsPanel) {
+          lyricsPanel->setArrangement(arrangement);
+          lyricsPanel->setDuration(p.getSongLengthSeconds());
+        }
+#endif
       });
   waveformBarRaw->setOnArrangementReset([this, &p] {
     if (playbackSession.isRemote()) { playbackSession.send("arrange.reset"); return; }
@@ -1578,6 +1632,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (SongLibraryStore::getSongArrangement(currentLoadedSong.id, arrangement,
                                              isCustomArrangement)) {
       p.setSongArrangement(arrangement, isCustomArrangement);
+#if !JUCE_IOS && !JUCE_ANDROID
+      if (lyricsPanel) {
+        lyricsPanel->setArrangement(arrangement);
+        lyricsPanel->setDuration(p.getSongLengthSeconds());
+      }
+#endif
     }
   });
   waveformBarRaw->setOnTempoMapChanged([this](const SongTempoMapSnapshot &tempoMap) {
@@ -1736,6 +1796,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       topBarRaw->refreshThemeColours();
     if (waveformBarRaw)
       waveformBarRaw->refreshThemeColours();
+#if !JUCE_IOS && !JUCE_ANDROID
+    if (lyricsPanel) lyricsPanel->refreshThemeColours();
+#endif
     if (channelGridRaw)
       channelGridRaw->refreshThemeColours();
     if (padsComponent)
@@ -2232,6 +2295,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         projectSettings.window.fadeOutSec =
             juce::jmin(1.0, projectSettings.window.endSec);
         projectSettings.arrangement = sourceSong.arrangement;
+        projectSettings.freeShowCues = sourceSong.freeShowCues;
         projectSettings.arrangementCustomized =
             !sourceSong.arrangement.parts.empty();
         SessionAuthLogger::write(
@@ -2493,6 +2557,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setSectionAutomationStemIds(automationStemIds);
     p.setSongArrangement(arrangement, isCustomArrangement);
     p.setArrangementEditingActive(false);
+#if !JUCE_IOS && !JUCE_ANDROID
+    auto lyrics = projectSettings.freeShowCues;
+    if (!hasProjectSettings)
+      SongLibraryStore::getSongFreeShowCues(loadedSong.id, lyrics);
+    p.setSongLyrics(lyrics);
+    if (lyricsPanel) {
+      lyricsPanel->setSongLyrics(lyrics);
+      lyricsPanel->setArrangement(arrangement);
+      lyricsPanel->setDuration(p.getSongLengthSeconds());
+    }
+    if (loadedSong.blankSong) lyricsViewActive = false;
+#endif
     // Loading a song always starts at its beginning, independent of section
     // count, the first section's timestamp, or the previous editing state.
     p.seekSongTo(p.getSongStartSeconds());
@@ -3004,6 +3080,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   addAndMakeVisible(*topBar);
   addAndMakeVisible(*waveformBar);
+#if !JUCE_IOS && !JUCE_ANDROID
+  addChildComponent(*lyricsPanel);
+#endif
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
@@ -3430,7 +3509,7 @@ void MTControlsAudioProcessorEditor::enqueueAuthCallbackUrl(
 }
 
 void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
-                                                  juce::Component *parent) {
+                                                  juce::Component *parent, bool freeShow) {
   if (!mainUiInitialized)
     return;
 #if JUCE_IOS || JUCE_ANDROID
@@ -3702,6 +3781,12 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   panel->onShareAudioDiagnostics = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr) safe->shareAudioDiagnostics();
   };
+#if !JUCE_IOS && !JUCE_ANDROID
+  panel->setFreeShowClient(&proc.getFreeShowClient());
+  if (freeShow) panel->showFreeShowSettings();
+#else
+  juce::ignoreUnused(freeShow);
+#endif
   panel->onLearningRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     juce::MessageManager::callAsync([safe] {
       if (!safe) return;
@@ -4243,6 +4328,9 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
     topBar->setVisible(false);
   if (waveformBar)
     waveformBar->setVisible(false);
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (lyricsPanel) lyricsPanel->setVisible(false);
+#endif
   if (channelGridPanel)
     channelGridPanel->setVisible(false);
   if (songListPanel)
@@ -4767,6 +4855,14 @@ bool MTControlsAudioProcessorEditor::unloadActiveSongForLocalPurge() {
   currentSongIndex = -1;
   hasCurrentLoadedSong = false;
   currentLoadedSong = {};
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsViewActive = false;
+  if (lyricsPanel) {
+    lyricsPanel->setSongLyrics({});
+    lyricsPanel->setArrangement({});
+    lyricsPanel->setVisible(false);
+  }
+#endif
   AppSettings::setLastSelectedSongId({});
   resetTrackedSongWindow();
   hasTrackedClickDynMetronomeEnabled = false;
@@ -5476,12 +5572,24 @@ void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile
   // pushed down instead of being covered by the expanded bar.
   if (waveformBarPtr)
     waveH += waveformBarPtr->getExtraHeightForHostLayout();
+#if !JUCE_IOS && !JUCE_ANDROID
+  const bool showLyrics = lyricsViewActive && !playbackSession.isRemote() &&
+                          hasCurrentLoadedSong && !currentLoadedSong.blankSong;
+  if (showLyrics) waveH = juce::jmax(waveH, juce::jmin(400, area.getHeight() - 180));
+#endif
   const bool collapsed = shouldCollapseWaveformArea();
   if (collapsed)
     waveH = 0;
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
   waveformBar->setVisible(!collapsed && topBar->isVisible());
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (lyricsPanel) {
+    lyricsPanel->setBounds(waveformArea);
+    lyricsPanel->setVisible(showLyrics && !collapsed && topBar->isVisible());
+    if (showLyrics) waveformBar->setVisible(false);
+  }
+#endif
 
   auto mainArea = area;
   const int handleW = minimalPhoneProfile ? 0 : 14;

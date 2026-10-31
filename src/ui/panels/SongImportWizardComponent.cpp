@@ -313,7 +313,9 @@ public:
     if (fileName.isEmpty())
       fileName = L10n::tr("Archivo no disponible", "File unavailable");
 
-    titleLabel.setText(fileName, juce::dontSendNotification);
+    titleLabel.setText(stem.displayName.isNotEmpty() ? stem.displayName : fileName,
+                       juce::dontSendNotification);
+    titleLabel.setTooltip(fileName);
 
     juce::String meta = stem.category.isNotEmpty() ? stem.category : "Other";
     if (stem.sampleRate > 0)
@@ -2164,8 +2166,11 @@ void SongImportWizardComponent::updateSummaryText() {
             juce::String(static_cast<int>(included)) + " / " +
             juce::String(static_cast<int>(stems.size())));
   if (mode == Mode::Import && resolveProjectDestination) {
-    lines.add(L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
-                      "A .pwproj project will be created in the local library."));
+    lines.add(promptProjectDestination
+                  ? L10n::tr(u8"Al guardar podrás elegir Biblioteca local o una ubicación para el proyecto .pwproj.",
+                             "When saving, choose Local library or a location for the .pwproj project.")
+                  : L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
+                             "A .pwproj project will be created in the local library."));
   }
   if (mode == Mode::Edit && excluded > 0) {
     lines.add(L10n::tr("Stems removidos al guardar: ",
@@ -2228,6 +2233,10 @@ void SongImportWizardComponent::saveMetadataOnly() {
     // Updating a portable project repacks its manifest and artwork. Keep that
     // disk work off the UI thread and retain staged mobile picker files.
     setSubmitting(true);
+    if (!juce::File(initialSong.projectPath).existsAsFile()) {
+      promptMissingProject(buildSongData());
+      return;
+    }
     if (!submitSongInBackground(buildSongData()))
       setSubmitting(false);
     return;
@@ -2511,6 +2520,44 @@ void SongImportWizardComponent::createBlankSong() {
   submitSong();
 }
 
+void SongImportWizardComponent::promptMissingProject(ImportedSongData song) {
+  auto safe = juce::Component::SafePointer<SongImportWizardComponent>(this);
+  juce::AlertWindow::showYesNoCancelBox(juce::MessageBoxIconType::WarningIcon,
+      L10n::tr("Proyecto no encontrado", "Project not found"),
+      L10n::tr("No encontramos el proyecto. Localízalo o crea uno nuevo con los datos y audios disponibles.",
+               "Locate the missing project or create a new one with the available data and audio."),
+      L10n::tr("Localizar proyecto", "Locate project"), L10n::tr("Crear nuevo proyecto", "Create new project"),
+      L10n::tr("Cancelar", "Cancel"), this,
+      juce::ModalCallbackFunction::create([safe, song = std::move(song)](int result) mutable {
+        if (!safe) return;
+        if (result == 0 || !safe->recoverySubmit) { safe->setSubmitting(false); return; }
+        const bool locate = result == 1;
+        safe->recoveryChooser = std::make_unique<juce::FileChooser>(
+            locate ? L10n::tr("Localizar proyecto", "Locate project") : L10n::tr("Crear nuevo proyecto", "Create new project"),
+            juce::File{}, "*.pwproj");
+        safe->recoveryChooser->launchAsync(
+            locate ? juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                   : juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe, song = std::move(song), locate](const juce::FileChooser &chooser) mutable {
+              if (!safe) return;
+              auto file = chooser.getResult();
+              if (file == juce::File{}) { safe->setSubmitting(false); return; }
+              if (!locate) file = file.withFileExtension("pwproj");
+              if (!locate && file.exists()) {
+                safe->setSubmitting(false);
+                juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                    L10n::tr("Crear proyecto", "Create project"),
+                    L10n::tr("Elige un nombre nuevo para conservar el archivo existente.", "Choose a new name to preserve the existing file."));
+                return;
+              }
+              song.projectPath = file.getFullPathName();
+              safe->recoveryRequested = true;
+              if (!safe->submitSongInBackground(std::move(song))) safe->setSubmitting(false);
+              safe->recoveryRequested = false;
+            });
+      }));
+}
+
 void SongImportWizardComponent::submitSong() {
   if (isSubmitting || (currentStep != Step::Review && !creatingBlankSong))
     return;
@@ -2546,6 +2593,41 @@ void SongImportWizardComponent::submitSong() {
       juce::String(static_cast<int>(stems.size())));
 
   auto songData = buildSongData();
+  if (mode == Mode::Edit && isProjectBackedSong(initialSong) &&
+      !juce::File(initialSong.projectPath).existsAsFile()) {
+    keepSubmissionActive = true;
+    promptMissingProject(std::move(songData));
+    return;
+  }
+
+  if (mode == Mode::Import && resolveProjectDestination && promptProjectDestination) {
+    const auto generation = ++destinationPromptGeneration;
+    keepSubmissionActive = true;
+    const auto destinationSong = songData;
+    promptProjectDestination(destinationSong,
+        [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
+         generation, songData = std::move(songData)](juce::File destination,
+                                                    juce::String error) mutable {
+          if (safeThis == nullptr || !safeThis->isSubmitting ||
+              safeThis->destinationPromptGeneration != generation)
+            return;
+          // Every prompt result is consumed once, including cancellation. A
+          // delayed completion from an older request must not submit a retry.
+          ++safeThis->destinationPromptGeneration;
+          if (destination == juce::File{} || error.isNotEmpty()) {
+            safeThis->setSubmitting(false);
+            if (error.isNotEmpty())
+              juce::NativeMessageBox::showMessageBoxAsync(
+                  juce::MessageBoxIconType::WarningIcon,
+                  L10n::tr("Ubicación del proyecto", "Project location"), error);
+            return;
+          }
+          songData.projectPath = destination.getFullPathName();
+          if (!safeThis->submitSongInBackground(std::move(songData)))
+            safeThis->setSubmitting(false);
+        });
+    return;
+  }
   if (mode == Mode::Import && resolveProjectDestination) {
     juce::File destination;
     juce::String destinationError;
@@ -2655,7 +2737,7 @@ bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
   // The persistence callback owns its inputs; all UI work is posted back.
   auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
   const bool started = juce::Thread::launch(
-      [save = onSubmit, song = std::move(song), safeThis,
+      [save = recoveryRequested ? recoverySubmit : onSubmit, song = std::move(song), safeThis,
        staging = mobileImportStaging]() mutable {
         // Retain staged sources if the wizard is destroyed externally while
         // the project still packages them on this worker.

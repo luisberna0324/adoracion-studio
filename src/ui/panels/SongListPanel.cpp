@@ -76,6 +76,40 @@ private:
 };
 
 namespace {
+juce::File suggestedProjectFile(const ImportedSongData &song) {
+  const auto title = juce::File::createLegalFileName(song.title.trim());
+  const auto artist = juce::File::createLegalFileName(song.artist.trim());
+  const auto baseName = artist.isNotEmpty() && title.isNotEmpty()
+                            ? artist + " - " + title
+                            : (title.isNotEmpty() ? title : "Nueva canción");
+  return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+      .getChildFile(baseName + ProjectStore::kFileExtension);
+}
+
+// Never move the registered package. A failed copy keeps the source and any
+// previous destination intact; the native Save panel confirms replacement.
+bool copyPortableProject(const juce::File &source, const juce::URL &destinationURL,
+                         juce::String &error) {
+  // Keep the native picker URL alive through the whole export, including its
+  // document-provider access rather than reconstructing a URL from text.
+  const auto destination = destinationURL.getLocalFile();
+  if (!source.existsAsFile() || source.getSize() <= 0 || source == destination) {
+    error = L10n::tr("Elige otra ubicación para la copia del proyecto.",
+                     "Choose another location for the project copy.");
+    return false;
+  }
+  juce::TemporaryFile temporary(destination);
+  if (!source.copyFileTo(temporary.getFile()) ||
+      temporary.getFile().getSize() != source.getSize() ||
+      !temporary.overwriteTargetFileWithTemporary()) {
+    error = L10n::tr("No se pudo escribir la copia. El proyecto original se conserva en:\n",
+                     "Couldn't write the copy. The original project is preserved at:\n") +
+            source.getFullPathName();
+    return false;
+  }
+  return true;
+}
+
 class LegacyProjectMigrationTask final
     : public juce::ThreadWithProgressWindow {
 public:
@@ -300,6 +334,8 @@ void SongListPanel::SwipeHintHandle::mouseUp(const juce::MouseEvent &event) {
 class SongListPanel::PageContainer final : public juce::Component,
                                            private juce::Timer {
 public:
+  int getCurrentPageIndex() const noexcept { return currentIndex; }
+
   PageContainer() {
     for (auto &page : pages)
       page = std::make_unique<juce::Component>();
@@ -817,6 +853,8 @@ SongListPanel::SongListPanel() {
       [this](const juce::String &songId) { openSongEditWizard(songId); });
   libraryCatalogPanel.setOnSongLyricsRequested(
       [this](const juce::String &songId) { openSongLyricsEditor(songId); });
+  libraryCatalogPanel.setOnProjectExportRequested(
+      [this](const juce::String &songId) { exportProjectCopy(songId); });
   libraryCatalogPanel.setOnSongConvertRequested(
       [this](const juce::String &songId) {
         beginLegacySongConversion(songId);
@@ -3702,14 +3740,15 @@ void SongListPanel::showLibraryCreationPage(
     std::unique_ptr<SongImportWizardComponent> panel) {
   if (panel == nullptr || libraryCreationWizard != nullptr)
     return;
+  const int returnPage = pageContainer->getCurrentPageIndex();
   panel->setEmbeddedLibraryPage(true);
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
-  panel->setOnDismissRequested([safeThis] {
+  panel->setOnDismissRequested([safeThis, returnPage] {
     // Defer destruction until the wizard's button/completion callback returns.
-    juce::MessageManager::callAsync([safeThis] {
+    juce::MessageManager::callAsync([safeThis, returnPage] {
       if (safeThis == nullptr)
         return;
-      safeThis->pageContainer->showPage(2, true, [safeThis] {
+      safeThis->pageContainer->showPage(returnPage, true, [safeThis] {
         if (safeThis != nullptr)
           safeThis->libraryCreationWizard.reset();
       });
@@ -4058,24 +4097,188 @@ void SongListPanel::convertLegacySongAtDestination(
           sourceLabel);
 }
 
+void SongListPanel::chooseProjectCreationDestination(
+    const ImportedSongData &song,
+    std::function<void(juce::File, juce::String)> completion,
+    std::shared_ptr<juce::URL> exportedCopy) {
+  *exportedCopy = {};
+  const auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  const auto options = juce::MessageBoxOptions{}
+      .withIconType(juce::MessageBoxIconType::QuestionIcon)
+      .withTitle(L10n::tr("Guardar proyecto", "Save project"))
+      .withMessage(L10n::tr("¿Dónde quieres guardar este proyecto?",
+                            "Where do you want to save this project?"))
+      .withButton(L10n::tr("Biblioteca local", "Local library"))
+      .withButton(L10n::tr("Elegir ubicación...", "Choose location..."))
+      .withButton(L10n::tr("Cancelar", "Cancel"))
+      .withAssociatedComponent(this);
+  juce::NativeMessageBox::showAsync(options,
+      [safeThis, song, completion = std::move(completion), exportedCopy](int choice) mutable {
+        if (safeThis == nullptr) return;
+        if (choice == 0) {
+          juce::File destination;
+          juce::String error;
+          SongProjectCreation::resolveDestination(song, destination, error);
+          completion(destination, error);
+          return;
+        }
+        if (choice != 1) { completion({}, {}); return; }
+        safeThis->projectCreationFileChooser = std::make_unique<juce::FileChooser>(
+            L10n::tr("Guardar proyecto", "Save project"), suggestedProjectFile(song),
+            "*.pwproj", true);
+        safeThis->projectCreationFileChooser->launchAsync(
+            juce::FileBrowserComponent::saveMode |
+                juce::FileBrowserComponent::canSelectFiles |
+                juce::FileBrowserComponent::warnAboutOverwriting,
+            [safeThis, song, completion = std::move(completion), exportedCopy](const juce::FileChooser &chooser) mutable {
+              if (safeThis == nullptr) return;
+              const auto selectedURL = chooser.getURLResult();
+              const auto selected = selectedURL.getLocalFile();
+              if (selectedURL.isEmpty() || selected == juce::File{}) { completion({}, {}); return; }
+              if (!selected.hasFileExtension(ProjectStore::kFileExtension)) {
+                completion({}, L10n::tr("El nombre del proyecto debe terminar en .pwproj.",
+                                         "The project filename must end in .pwproj."));
+                return;
+              }
+              *exportedCopy = selectedURL;
+#if MTCONTROLS_MAC_APP_STORE
+              // A Save-panel grant is not persistent library access. Register
+              // inside the container and export the selected external copy.
+              juce::File managed;
+              juce::String error;
+              SongProjectCreation::resolveDestination(song, managed, error);
+              completion(managed, error);
+#else
+              completion(selected, {});
+#endif
+            });
+      });
+}
+
+void SongListPanel::exportProjectCopy(const juce::String &songId) {
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (remoteLibrary || projectExportBusy || isProjectImportInProgress()) return;
+  const auto song = std::find_if(librarySongs.begin(), librarySongs.end(),
+      [&songId](const ImportedSongData &item) { return item.id == songId; });
+  if (song == librarySongs.end() || !isProjectBackedSong(*song)) return;
+  const juce::File source(song->projectPath);
+  if (!source.existsAsFile()) return;
+  projectExportBusy = true;
+  const auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  projectExportFileChooser = std::make_unique<juce::FileChooser>(
+      L10n::tr("Exportar copia del proyecto", "Export project copy"),
+      suggestedProjectFile(*song), "*.pwproj", true);
+  projectExportFileChooser->launchAsync(
+      juce::FileBrowserComponent::saveMode |
+          juce::FileBrowserComponent::canSelectFiles |
+          juce::FileBrowserComponent::warnAboutOverwriting,
+      [safeThis, source](const juce::FileChooser &chooser) {
+        if (safeThis == nullptr) return;
+        const auto destinationURL = chooser.getURLResult();
+        const auto destination = destinationURL.getLocalFile();
+        if (destinationURL.isEmpty() || destination == juce::File{} || safeThis->remoteLibrary) {
+          safeThis->projectExportBusy = false;
+          return;
+        }
+        if (destination == source || !destination.hasFileExtension(ProjectStore::kFileExtension)) {
+          safeThis->projectExportBusy = false;
+          juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+              L10n::tr("Exportar proyecto", "Export project"),
+              L10n::tr("Elige otra ubicación y un nombre terminado en .pwproj.",
+                       "Choose another location and a filename ending in .pwproj."));
+          return;
+        }
+        auto *editor = safeThis->findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+        if (editor != nullptr) editor->flushActiveSongPersistenceNow();
+        auto *host = editor != nullptr ? static_cast<juce::Component *>(editor)
+                                     : static_cast<juce::Component *>(safeThis.getComponent());
+        safeThis->projectExportOverlay = std::make_unique<ProjectOpenProgressOverlay>();
+        auto &overlay = *safeThis->projectExportOverlay;
+        overlay.setTitleText(L10n::tr("Exportando proyecto", "Exporting project"));
+        overlay.setPhaseText(L10n::tr("Guardando ajustes pendientes...", "Saving pending settings..."));
+        host->addAndMakeVisible(overlay);
+        overlay.setBounds(host->getLocalBounds());
+        overlay.setAlwaysOnTop(true);
+        overlay.enterModalState(true, nullptr, false);
+        const bool started = juce::Thread::launch([safeThis, source, destinationURL, destination] {
+          juce::String error;
+          ProjectStore::flushPendingSettings(source);
+          bool success = !ProjectStore::hasPendingPortableChanges(source) ||
+                         ProjectStore::savePendingPortableChanges(source, &error);
+          if (success && ProjectStore::hasPendingPortableChanges(source)) {
+            success = false;
+            error = L10n::tr("El proyecto cambió durante el guardado. Intenta exportarlo nuevamente.",
+                             "The project changed while saving. Try exporting again.");
+          }
+          if (success) success = copyPortableProject(source, destinationURL, error);
+          juce::MessageManager::callAsync([safeThis, success, error, destination] {
+            if (safeThis == nullptr) return;
+            safeThis->projectExportOverlay->exitModalState(0);
+            safeThis->projectExportOverlay.reset();
+            safeThis->projectExportBusy = false;
+            juce::NativeMessageBox::showMessageBoxAsync(
+                success ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                success ? L10n::tr("Proyecto exportado", "Project exported")
+                        : L10n::tr("No se pudo exportar el proyecto", "Couldn't export project"),
+                success ? L10n::tr("La copia está lista para abrir en otro equipo, sin conexión:\n",
+                                  "The copy is ready to open on another computer, offline:\n") + destination.getFullPathName()
+                        : error);
+          });
+        });
+        if (!started) {
+          safeThis->projectExportOverlay->exitModalState(0);
+          safeThis->projectExportOverlay.reset();
+          safeThis->projectExportBusy = false;
+          juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+              L10n::tr("No se pudo exportar el proyecto", "Couldn't export project"),
+              L10n::tr("No se pudo iniciar la copia. El proyecto original se conserva.",
+                       "Couldn't start the copy. The original project is preserved."));
+        }
+      });
+#else
+  juce::ignoreUnused(songId);
+#endif
+}
+
 void SongListPanel::openSongImportWizard(const bool withinLibrary) {
   if (remoteLibrary) return;
   if (libraryCreationWizard != nullptr)
     return;
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  auto exportedCopy = std::make_shared<juce::URL>();
   auto panel = std::make_unique<SongImportWizardComponent>(
-      [safeThis](ImportedSongData song, juce::String &errorMessage,
+      [safeThis, exportedCopy](ImportedSongData song, juce::String &errorMessage,
                  const SongImportProgressFn &progress) {
+        const juce::File savedProject(song.projectPath);
         if (!SongProjectCreation::save(std::move(song), errorMessage, progress))
           return false;
-        juce::MessageManager::callAsync([safeThis] {
-          if (safeThis != nullptr)
-            safeThis->refreshFromStorage();
+        juce::String copyError;
+#if MTCONTROLS_MAC_APP_STORE
+        if (!exportedCopy->isEmpty()) {
+          if (progress) progress(0.99, L10n::tr("Exportando copia...", "Exporting copy..."));
+          copyPortableProject(savedProject, *exportedCopy, copyError);
+        }
+#endif
+        juce::MessageManager::callAsync([safeThis, copyError] {
+          if (safeThis == nullptr) return;
+          safeThis->refreshFromStorage();
+          if (copyError.isNotEmpty())
+            juce::NativeMessageBox::showMessageBoxAsync(
+                juce::MessageBoxIconType::WarningIcon,
+                L10n::tr("Canción guardada en Biblioteca", "Song saved in Library"), copyError);
         });
         return true;
       },
       SongImportWizardComponent::Mode::Import,
       ImportedSongData{}, SongProjectCreation::resolveDestination);
+#if !JUCE_IOS && !JUCE_ANDROID
+  panel->setProjectDestinationPrompt(
+      [safeThis, exportedCopy](const ImportedSongData &song,
+                              SongImportWizardComponent::ProjectDestinationCompletion completion) {
+        if (safeThis != nullptr)
+          safeThis->chooseProjectCreationDestination(song, std::move(completion), exportedCopy);
+      });
+#endif
 
   if (withinLibrary)
     showLibraryCreationPage(std::move(panel));
@@ -4178,8 +4381,18 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         refreshEditedSong();
         return true;
       });
+  panel->setProjectRecoverySubmit([editedSongId = trimmedSongId, refreshEditedSong](ImportedSongData song, juce::String &error, const SongImportProgressFn &progress) {
+    song.id = editedSongId;
+    if (!SongLibraryStore::updateSong(std::move(song), &error, progress, true)) return false;
+    juce::MessageManager::callAsync(refreshEditedSong);
+    return true;
+  });
   panel->refreshThemeColours();
+#if !JUCE_IOS && !JUCE_ANDROID
+  showLibraryCreationPage(std::move(panel));
+#else
   showSongImportOverlay(std::move(panel));
+#endif
 }
 
 void SongListPanel::openSetlistManager() {

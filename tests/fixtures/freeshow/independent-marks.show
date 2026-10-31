@@ -1,0 +1,228 @@
+[
+  "pw-synthetic-validation",
+  {
+    "name": "PlayWorship - Prueba propia",
+    "category": "song",
+    "settings": {
+      "activeLayout": "principal",
+      "template": null
+    },
+    "timestamps": {
+      "created": 1792248070595,
+      "modified": null,
+      "used": null
+    },
+    "quickAccess": {},
+    "meta": {
+      "author": "Material de prueba propio",
+      "copyright": "Fixture de validación técnica"
+    },
+    "slides": {
+      "intro": {
+        "group": "Intro",
+        "color": "#439cb3",
+        "settings": {},
+        "notes": "Material sintético de validación, sin copyright ajeno.",
+        "items": [
+          {
+            "style": "top:320px;left:180px;height:440px;width:1560px;",
+            "align": "center",
+            "lines": [
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Comienza nuestra canción",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              },
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Una luz al caminar",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "chorus": {
+        "group": "Coro",
+        "color": "#439cb3",
+        "settings": {},
+        "notes": "Material sintético de validación, sin copyright ajeno.",
+        "items": [
+          {
+            "style": "top:320px;left:180px;height:440px;width:1560px;",
+            "align": "center",
+            "lines": [
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Cantamos junto al río",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              },
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Con alegría y paz",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "children": [
+          "chorus-child"
+        ]
+      },
+      "chorus-child": {
+        "group": null,
+        "color": null,
+        "settings": {},
+        "notes": "Material sintético de validación, sin copyright ajeno.",
+        "items": [
+          {
+            "style": "top:320px;left:180px;height:440px;width:1560px;",
+            "align": "center",
+            "lines": [
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "La luz nos acompaña",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              },
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Volvemos a empezar",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "literal-coro2": {
+        "group": "Coro2",
+        "color": "#439cb3",
+        "settings": {},
+        "notes": "Material sintético de validación, sin copyright ajeno.",
+        "items": [
+          {
+            "style": "top:320px;left:180px;height:440px;width:1560px;",
+            "align": "center",
+            "lines": [
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Coro2 es nombre literal",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              },
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "No es pantalla ni repetición",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "ending": {
+        "group": "Final",
+        "color": "#439cb3",
+        "settings": {},
+        "notes": "Material sintético de validación, sin copyright ajeno.",
+        "items": [
+          {
+            "style": "top:320px;left:180px;height:440px;width:1560px;",
+            "align": "center",
+            "lines": [
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Terminamos la prueba",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              },
+              {
+                "align": "center",
+                "text": [
+                  {
+                    "value": "Gracias por escuchar",
+                    "style": "font-size: 100px;color:#ffffff;"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "layouts": {
+      "principal": {
+        "name": "Principal",
+        "notes": "Coro de dos pantallas repetido dos veces",
+        "slides": [
+          {
+            "id": "intro"
+          },
+          {
+            "id": "chorus"
+          },
+          {
+            "id": "literal-coro2"
+          },
+          {
+            "id": "chorus"
+          },
+          {
+            "id": "ending"
+          }
+        ]
+      },
+      "alternativo": {
+        "name": "Alternativo",
+        "notes": "Orden alternativo",
+        "slides": [
+          {
+            "id": "chorus"
+          },
+          {
+            "id": "intro"
+          },
+          {
+            "id": "chorus"
+          },
+          {
+            "id": "ending"
+          }
+        ]
+      }
+    },
+    "media": {}
+  }
+]

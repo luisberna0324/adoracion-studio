@@ -1262,6 +1262,15 @@ void testNativeLyricsPersistence(const Fixtures &fixtures) {
   lyrics.text = juce::String::fromUTF8(u8"Aquí 🎹 cantamos\nTodos juntos");
   expect(applySongLyricsSection(lyrics, 0, 16, "verse") &&
              applySongLyricsSection(lyrics, 17, 12, "chorus"), "native fixture has valid UTF16 lyric ranges");
+  expect(setSongLyricsChord(lyrics, 0, "Am7") && setSongLyricsChord(lyrics, 11, "D/F#") &&
+             lyrics.schemaVersion == 2,
+         "native persistence fixture contains version-two chords including an exact position inside a word");
+  const auto firstChordId = lyrics.chords[0].id, wordChordId = lyrics.chords[1].id;
+  const auto exactChords = [&](const std::optional<SongLyricsDocument> &value, int shift) {
+    return value && value->schemaVersion == 2 && value->chords.size() == 2 &&
+        value->chords[0].id == firstChordId && value->chords[0].offset == shift && value->chords[0].symbol == "Am7" &&
+        value->chords[1].id == wordChordId && value->chords[1].offset == 11 + shift && value->chords[1].symbol == "D/F#";
+  };
   document.song.lyrics = lyrics;
   const auto canonical = [](const auto &value) {
     return value ? juce::JSON::toString(songLyricsToVar(*value), true) : juce::String();
@@ -1289,8 +1298,9 @@ void testNativeLyricsPersistence(const Fixtures &fixtures) {
   juce::String error;
   expect(ProjectStore::save(document, archive, &error), "native lyrics save in a real project");
   ProjectDocument reopened;
-  expect(ProjectStore::open(archive, reopened, &error) && canonical(reopened.song.lyrics) == originalLyrics,
-         "project reopen preserves text, native section IDs and UTF16 ranges");
+  expect(ProjectStore::open(archive, reopened, &error) && canonical(reopened.song.lyrics) == originalLyrics &&
+             exactChords(reopened.song.lyrics, 0),
+         "real pwproj save and reopen retain version-two chord IDs, symbols and exact UTF16 positions");
   expect(ProjectStore::settingsJsonEqual(reopened.settings, document.settings) &&
              ProjectStore::serializeSettings(reopened.settings).getProperty("lyrics", {}).isVoid(),
          "native lyrics are portable content rather than mixer/settings versions");
@@ -1303,7 +1313,8 @@ void testNativeLyricsPersistence(const Fixtures &fixtures) {
     return *found;
   };
   auto registered = findSong(id);
-  expect(canonical(registered.lyrics) == originalLyrics, "library restart retains native lyric text and ranges");
+  expect(canonical(registered.lyrics) == originalLyrics && exactChords(registered.lyrics, 0),
+         "songs.json reload retains version-two chord IDs, symbols, exact UTF16 positions and lyric sections");
   bool changed = false;
   auto oldSong = SongLibraryStore::songDataToVar(registered);
   oldSong.getDynamicObject()->removeProperty("lyrics");
@@ -1317,6 +1328,8 @@ void testNativeLyricsPersistence(const Fixtures &fixtures) {
   registered.title = "Updated while editor was open";
   registered.artist = "Current artist"; registered.bpm = 132; registered.key = "D";
   expect(SongLibraryStore::updateSongMetadata(registered, &error), "concurrent metadata edit establishes latest values");
+  expect(exactChords(findSong(id).lyrics, 0),
+         "an unrelated metadata save preserves the existing version-two chord document in songs.json");
   CloudUploadRequest upload;
   expect(CloudProjectArchive::buildUpload(archive, "native-lyrics-cloud", 0, upload, &error),
          "cloud preparation includes native lyric content without network");
@@ -1373,8 +1386,9 @@ void testNativeLyricsPersistence(const Fixtures &fixtures) {
   }), "native save commits a worker-prepared content-only transaction");
   expect(interleaved && stageWasOffMessageThread, "test genuinely changes metadata, setlists and mixer after worker preparation");
   registered = findSong(id);
-  expect(canonical(registered.lyrics) == canonical(std::optional<SongLyricsDocument>(edited)),
-         "native save survives library reload");
+  expect(canonical(registered.lyrics) == canonical(std::optional<SongLyricsDocument>(edited)) &&
+             exactChords(registered.lyrics, 4),
+         "asynchronous lyric save survives songs.json reload with stable chord IDs and shifted UTF16 anchors");
   expect(registered.title == "Updated while editor was open" && registered.artist == "Current artist" &&
              registered.bpm == 132 && registered.key == "D", "native save preserves the latest unrelated song metadata");
   const auto concurrentLibrary = SongLibraryStore::loadLibrarySnapshot();
@@ -1385,7 +1399,8 @@ void testNativeLyricsPersistence(const Fixtures &fixtures) {
   expect(sidecar.loadFileAsString() == sidecarAfterUserEdit && archive.getLastModificationTime() == originalMtime,
          "content-only save preserves exact sidecar bytes and its precedence over embedded settings");
   expect(ProjectStore::open(archive, reopened, &error) &&
-             canonical(reopened.song.lyrics) == canonical(registered.lyrics), "native save survives project reopening");
+             canonical(reopened.song.lyrics) == canonical(registered.lyrics) && exactChords(reopened.song.lyrics, 4),
+         "content-only worker update survives pwproj reopening with both exact chord anchors and stable identities");
   expect(ProjectStore::settingsJsonEqual(reopened.settings, expectedSettings) &&
              reopened.settings.mix.stems.front().volume == 0.19f,
          "native lyric save preserves mixer edits made during ZIP preparation and every window value");
@@ -1459,7 +1474,136 @@ void testNativeLyricsPersistence(const Fixtures &fixtures) {
   expect(SongLibraryStore::updateSongMetadata(legacy, &error) &&
              runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(legacy.id, edited, &error); }) &&
              canonical(findSong(legacy.id).lyrics) == canonical(std::optional<SongLyricsDocument>(edited)) &&
-             findSong(legacy.id).title == "Latest legacy title", "dedicated native save also preserves current legacy metadata");
+             exactChords(findSong(legacy.id).lyrics, 4) && findSong(legacy.id).title == "Latest legacy title",
+         "legacy songs.json lyric save retains both version-two chords and current unrelated metadata");
+}
+
+void testInstrumentalLyricsPersistence(const Fixtures &fixtures) {
+  SongLyricsDocument lyrics;
+  juce::String introId, soloId;
+  expect(addSongLyricsInstrumentalBlock(lyrics, 0, "intro", "Intro", 4, &introId) &&
+             addSongLyricsInstrumentalBlock(lyrics, 0, "instrumental", "Solo", 4, &soloId),
+         "instrumental persistence fixture contains separate Intro and Solo cards without a lyric character");
+  const auto introRowId = lyrics.instrumentalBlocks[0].rows[0].id;
+  const auto firstCellId = lyrics.instrumentalBlocks[0].rows[0].cells[0].id;
+  const auto secondCellId = lyrics.instrumentalBlocks[0].rows[0].cells[1].id;
+  lyrics.instrumentalBlocks[0].rows[0].barLengths = {2, 2};
+  expect(setSongLyricsInstrumentalCell(lyrics, introId, introRowId, firstCellId, "Cmaj7") &&
+             setSongLyricsInstrumentalCell(lyrics, introId, introRowId, secondCellId, "G/B") &&
+             lyrics.text.isEmpty() && lyrics.chords.empty() && lyrics.schemaVersion == 3,
+         "instrumental symbols, empty cells and bars are independent of every UTF16 lyric offset");
+  const auto canonical = [](const std::optional<SongLyricsDocument> &value) {
+    return value ? juce::JSON::toString(songLyricsToVar(*value), true) : juce::String();
+  };
+  const auto original = canonical(lyrics);
+  ProjectDocument document;
+  document.song.id = juce::Uuid().toString(); document.song.projectId = document.song.id;
+  document.song.title = "Instrumental cards fixture"; document.song.blankSong = true;
+  document.song.bpm = 96; document.song.key = "C"; document.song.timeSignature = "4/4";
+  document.song.lyrics = lyrics; document.settings.tempoBpm = 96;
+  const auto archive = fixtures.directory.getChildFile("instrumental-lyrics.pwproj");
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error), "a real pwproj saves instrumental-only cards without generated audio");
+  ProjectDocument reopened;
+  expect(ProjectStore::open(archive, reopened, &error) && canonical(reopened.song.lyrics) == original &&
+             reopened.song.lyrics->text.isEmpty() && reopened.song.lyrics->instrumentalBlocks.size() == 2,
+         "pwproj reopen preserves schema-three block/row/cell IDs, ordering, symbols, empty cells and bar partitions");
+  expect(SongLibraryStore::registerProjectSong(reopened.song), "register the instrumental-only project in the real library");
+  const auto id = reopened.song.id;
+  const auto findSong = [&] {
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto found = std::find_if(songs.begin(), songs.end(), [&](const auto &song) { return song.id == id; });
+    expect(found != songs.end(), "instrumental-only project remains registered in songs.json");
+    return *found;
+  };
+  auto registered = findSong();
+  expect(canonical(registered.lyrics) == original,
+         "songs.json reload retains both instrumental cards despite the completely empty lyric text");
+  registered.title = "Current instrumental title";
+  expect(SongLibraryStore::updateSongMetadata(registered, &error) && canonical(findSong().lyrics) == original,
+         "unrelated song metadata edits preserve every schema-three instrumental field");
+  auto edited = lyrics;
+  const auto soloRowId = edited.instrumentalBlocks[1].rows[0].id;
+  const auto soloCellId = edited.instrumentalBlocks[1].rows[0].cells[2].id;
+  juce::String extraRow;
+  expect(setSongLyricsInstrumentalCell(edited, soloId, soloRowId, soloCellId, "D/F#") &&
+             addSongLyricsInstrumentalRow(edited, introId, 4, &extraRow), "edit only instrumental content in a detached draft");
+  expect(runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(id, edited, &error); }) &&
+             canonical(findSong().lyrics) == canonical(edited) && findSong().title == "Current instrumental title" &&
+             ProjectStore::open(archive, reopened, &error) && canonical(reopened.song.lyrics) == canonical(edited),
+         "content-only worker update roundtrips instrumental edits through both songs.json and the pwproj manifest");
+  expect(ProjectStore::settingsJsonEqual(reopened.settings, document.settings) && reopened.song.stems.empty(),
+         "instrumental lyric persistence changes neither project settings nor audio data");
+  auto invalid = edited;
+  invalid.instrumentalBlocks[0].rows[0].barLengths = {3};
+  juce::MemoryBlock projectBefore, libraryBefore, projectAfter, libraryAfter;
+  expect(archive.loadFileAsData(projectBefore) && fixtures.libraryFile.loadFileAsData(libraryBefore) &&
+             !runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(id, invalid, &error); }) &&
+             archive.loadFileAsData(projectAfter) && fixtures.libraryFile.loadFileAsData(libraryAfter) &&
+             projectBefore == projectAfter && libraryBefore == libraryAfter,
+         "invalid nested instrumental data cannot modify either persisted file even partially");
+  for (auto &block : edited.instrumentalBlocks)
+    for (auto &row : block.rows) for (auto &cell : row.cells) cell.symbol.reset();
+  normalizeSongLyricsSchema(edited);
+  expect(edited.schemaVersion == 3 && runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(id, edited, &error); }) &&
+             ProjectStore::open(archive, reopened, &error) && hasSongLyrics(reopened.song.lyrics) &&
+             canonical(reopened.song.lyrics) == canonical(edited) && canonical(findSong().lyrics) == canonical(edited),
+         "empty instrumental cards survive real persistence after clearing their last symbol");
+}
+
+void testLyricsCardReorderingPersistence(const Fixtures &fixtures) {
+  SongLyricsDocument lyrics;
+  lyrics.text = "Uno\nDos\nTres";
+  lyrics.sections = {{"card-uno", "verse", 0, 3}, {"card-dos", "chorus", 4, 3}, {"card-tres", "bridge", 8, 4}};
+  juce::String legacyIntro;
+  expect(setSongLyricsChord(lyrics, 8, "Cmaj7") && setSongLyricsChord(lyrics, 12, "G/B") &&
+             addSongLyricsInstrumentalBlock(lyrics, 0, "intro", "Intro", 1, &legacyIntro),
+         "prepare real card-move persistence with exact line-end chords and a retained legacy Intro");
+  const auto rowId = lyrics.instrumentalBlocks[0].rows[0].id, cellId = lyrics.instrumentalBlocks[0].rows[0].cells[0].id;
+  expect(setSongLyricsInstrumentalCell(lyrics, legacyIntro, rowId, cellId, "Dm7"),
+         "legacy Intro has content which reordering must never discard");
+  const auto firstChord = lyrics.chords[0].id, endChord = lyrics.chords[1].id;
+  ProjectDocument document;
+  document.song.id = juce::Uuid().toString(); document.song.projectId = document.song.id;
+  document.song.title = "Reorder lyrics fixture"; document.song.blankSong = true;
+  document.song.bpm = 96; document.song.key = "C"; document.song.timeSignature = "4/4";
+  document.song.lyrics = lyrics; document.settings.tempoBpm = 96; document.settings.mix.master.volume = 0.42f;
+  const auto archive = fixtures.directory.getChildFile("reordered-lyrics.pwproj");
+  juce::String error;
+  ProjectDocument reopened;
+  expect(ProjectStore::save(document, archive, &error) && ProjectStore::open(archive, reopened, &error) &&
+             SongLibraryStore::registerProjectSong(reopened.song), "save and register the actual reorderable project fixture");
+  const auto canonical = [](const std::optional<SongLyricsDocument> &value) {
+    return value ? juce::JSON::toString(songLyricsToVar(*value), true) : juce::String();
+  };
+  const auto findSong = [&] {
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto found = std::find_if(songs.begin(), songs.end(), [&](const auto &song) { return song.id == document.song.id; });
+    expect(found != songs.end(), "reordered lyric project remains in songs.json"); return *found;
+  };
+  auto moved = lyrics;
+  expect(moveSongLyricsCardBefore(moved, "card-tres", "card-uno") && moved.text == "Tres\nUno\nDos" &&
+             moved.sections[0].id == "card-tres" && moved.sections[1].id == "card-uno" && moved.sections[2].id == "card-dos" &&
+             moved.chords[0].id == firstChord && moved.chords[0].offset == 0 &&
+             moved.chords[1].id == endChord && moved.chords[1].offset == 4,
+         "atomic card move retains lyric IDs and relocates the original EOF chord to its body's new line end");
+  expect(runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(document.song.id, moved, &error); }) &&
+             canonical(findSong().lyrics) == canonical(moved) && ProjectStore::open(archive, reopened, &error) &&
+             canonical(reopened.song.lyrics) == canonical(moved),
+         "reordered text, section IDs and every chord anchor survive songs.json reload and real pwproj reopen");
+  expect(ProjectStore::settingsJsonEqual(reopened.settings, document.settings) && reopened.song.stems.empty() &&
+             reopened.song.lyrics->instrumentalBlocks[0].id == legacyIntro &&
+             reopened.song.lyrics->instrumentalBlocks[0].rows[0].id == rowId &&
+             reopened.song.lyrics->instrumentalBlocks[0].rows[0].cells[0].id == cellId &&
+             reopened.song.lyrics->instrumentalBlocks[0].rows[0].cells[0].symbol == "Dm7",
+         "saving a card reorder preserves exact legacy instrumental content, project settings and audio state");
+  const auto text = moved.text;
+  expect(moveSongLyricsCardBefore(moved, legacyIntro, "card-dos") && moved.text == text &&
+             moved.instrumentalBlocks[0].anchorUtf16 == 9 &&
+             runLyricsWorker([&] { return SongLibraryStore::updateSongLyrics(document.song.id, moved, &error); }) &&
+             ProjectStore::open(archive, reopened, &error) && canonical(reopened.song.lyrics) == canonical(moved) &&
+             canonical(findSong().lyrics) == canonical(moved),
+         "moving only the inherited Intro persists its new anchor without changing lyric text or cell identities");
 }
 
 void testBlankSongPersistence(const Fixtures &fixtures) {
@@ -1559,6 +1703,8 @@ int main() {
     testAutomaticLegacyStemStorage(fixtures);
     testColdProjectExtractionProgress(fixtures);
     testNativeLyricsPersistence(fixtures);
+    testInstrumentalLyricsPersistence(fixtures);
+    testLyricsCardReorderingPersistence(fixtures);
     testBlankSongPersistence(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

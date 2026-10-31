@@ -948,3 +948,124 @@ Resultado local: 5/5 suites correctas. Las pruebas de I/O usan raices temporales
 privadas; el handler de accesibilidad usa un peer nativo oculto. Esto no acredita
 el teclado del iPhone/Android fisico ni un despliegue Cloud. El backend necesita
 aceptar/persistir BPM sin `Math.floor` antes de subir canciones de BPM decimal.
+
+
+### Acordes contextuales nativos en iOS (2026-10-28)
+
+Cobertura de la implementación integrada:
+
+- `song_lyrics`: esquema 1 histórico, esquema 2 con acordes, anclas UTF-16,
+  límites, edición transaccional y conservación de documentos futuros opacos.
+- `chordpro`: importación/exportación de acordes dentro de palabras, secciones
+  y metadatos; rechazos explícitos sin modificar el documento de entrada.
+- `MTControlsNativeSongLyricsUITests`: caso final sobre el bridge UIKit real,
+  después de los casos históricos de tarjetas. Un cursor colapsado ofrece
+  Acorde sin Sección; una selección mantiene ambos y las acciones nativas
+  Copy/Paste. Coloca Am7 sobre la r de «esperanza» después de un emoji, conserva
+  texto/cursor/teclado, verifica dos símbolos cercanos sin solape, Undo/Redo de
+  metadata y texto, revisión obsoleta, composición IME y guardado/reapertura
+  con JSON canónico idéntico. El reporte se escribe en
+  `Documents/native-lyrics-ui-report.json` y stdout `NATIVE_LYRICS_UI_RESULT`.
+
+El harness usa los selectores de producción que ejecuta el menú contextual;
+comprueba la jerarquía de `UIMenu` y sus acciones, sin simular que ha pulsado el
+menú del sistema. Su guardado/reapertura valida el bridge y el documento; las
+pruebas de proyecto deben acreditar por separado el I/O de `.pwproj`. Un build,
+un reporte de simulador, una instalación y la revisión manual del iPhone físico
+son evidencias distintas.
+
+Resultados locales confirmados:
+
+- `song_lyrics`: 131 comprobaciones correctas; `chordpro`: 65 correctas.
+- `song_project_creation`: 1/1 correcta (2,77 s), con `.pwproj` y `songs.json`
+  reales; conserva IDs, símbolos y posiciones. Log de persistencia:
+  `/tmp/playworship-chords-persistence-test.log`.
+- Compilación Debug arm64 de `MTControlsNativeSongLyricsUITests`: correcta.
+  Pasada final en el simulador iPhone 16 dedicado «PlayWorship Native Chords QA», iOS
+  26.5: **176 comprobaciones correctas**, `success: true` y salida 0.
+  Logs: `/tmp/playworship-ios-chords-ui-build.log`,
+  `/tmp/playworship-ios-chords-ui-settled-build.log` y
+  `/tmp/playworship-ios-chords-ui-settled-run.log`. Reporte copiado:
+  `/tmp/playworship-ios-chords-ui-report.json`.
+- La captura `/tmp/playworship-ios-chords-settled-preview.png` procede del window UIKit
+  real del harness con ambos acordes; no es un diseño simulado. La pasada
+  incluye la creación correcta del PNG en Documents, tras 0,3 s de runloop
+  normal sin cambiar la selección. La revisión visual confirmó el cursor sobre
+  la letra, ambas anclas sin solape y la tarjeta limitada a su párrafo marcado.
+- Compilación firmada de la app para iPhone físico: correcta. Instalación y
+  arranque por Wi-Fi en iPhone 16 «Luchoelquesabemucho»: confirmados, con firma
+  y ausencia del dispositivo en el registro USB verificadas por el helper.
+  Logs: `/tmp/playworship-ios-chords-device-final-build.log` y
+  `/tmp/playworship-ios-chords-iphone-install.log`.
+
+El runtime del simulador emitió avisos de accesibilidad/lexicón; la primera
+pasada también mostró el assert Debug de `SharedResourcePointer` al cerrar,
+después del reporte correcto. No se ocultaron ni se cuentan como fallos de las
+comprobaciones. Queda pendiente la revisión táctil manual del menú, lupa,
+selección, edición y acordes en el iPhone físico instalado.
+
+
+### Menú automático y reordenación de tarjetas en iOS (2026-10-28)
+
+Las fixtures históricas de texto, tarjetas, selección y acordes se conservan.
+Los casos finales cambian para verificar el flujo vigente:
+
+- El menú al soltar la pulsación mantiene Acorde/Sección y sus acciones nativas;
+  no ofrece Crear sección, Intro/Solo/Instrumental vacíos ni cuadrícula de puntos.
+  Se conservan las guardas de revisión, escritura, IME, scroll y cancelación.
+- Un documento v3 heredado muestra C/Am7 de sólo lectura, sin círculos vacíos ni
+  controles para añadir filas o eliminar secciones. El fondo de letra no encierra
+  su tarjeta. Un verso que contiene ese bloque no puede moverse como unidad;
+  el rechazo y el Save dejan idéntico el JSON.
+- Cada tarjeta completa tiene su propia asa con `UIDragInteraction` habilitado.
+  Nuestra interacción no se instala sobre el `UITextView` ni sustituye el drag
+  de texto que pueda proporcionar UIKit. El contenedor raíz tiene un drop nativo.
+- El payload contiene sourceId/revision/editorToken y el tipo propio
+  `com.playworship.lyrics-card`. La sesión permite Move dentro de la app y se
+  restringe a ella. Otro token y una revisión obsoleta no se aceptan como drop.
+- Tres tarjetas con Unicode y acordes se mueven antes de otra y a EOF. Se comprueba
+  texto real, rangos UTF-16, símbolos/IDs/anclas, no-op sin Undo, Undo/Redo y
+  guardar/reabrir con el mismo JSON canónico.
+
+La fixture conduce los callbacks de producción con una sesión local de prueba y
+el selector real del movimiento. Comprueba interacciones UIKit instaladas y sus
+payloads, pero no sintetiza una secuencia táctil nativa de drag-and-drop. Esa
+convivencia con la lupa y la experiencia física deben verificarse por separado.
+
+Para inspección manual, `MTCONTROLS_NATIVE_LYRICS_MANUAL=1` deja el editor abierto
+sin checks, timeout ni quit. `MTCONTROLS_NATIVE_LYRICS_MANUAL_FIXTURE=reorder`
+abre tres tarjetas normales con letra/acordes; `mixed` carga una muestra v3 de
+compatibilidad. `simctl launch` recibe esas variables con prefijo `SIMCTL_CHILD_`.
+El log usa `NATIVE_LYRICS_MANUAL_READY` y no genera un reporte de éxito. Guardar
+sólo confirma el bridge de esa fixture, sin I/O de proyectos.
+
+Modelo portable: 201 comprobaciones correctas y persistencia real 2/2 correcta,
+con evidencia en `/tmp/playworship-card-reorder-tests.log`. Esto cubre también
+IDs con texto idéntico, acordes en el separador final, rechazos de destinos
+anidados y conservación de filas/celdas heredadas.
+
+Compilación Debug arm64 y ejecución UIKit de esta reordenación: **247
+comprobaciones correctas**, `success: true` y salida 0, en el simulador iPhone 16
+dedicado con iOS 26.5. Logs: `/tmp/playworship-lyrics-reorder-ui-final-build.log`
+y `/tmp/playworship-lyrics-reorder-ui-run.log`. Reporte copiado:
+`/tmp/playworship-lyrics-reorder-ui-report.json`.
+
+Las capturas reales `/tmp/playworship-lyrics-reorder-readonly-preview.png` y
+`/tmp/playworship-lyrics-reordered-preview.png` se guardaron después de 0,3 s de
+runloop normal. La inspección confirmó símbolos legacy sin puntos/controles,
+fondos separados, asas y orden final Verso/Puente/Coro con C/G/Am7 conservados.
+El runtime emitió avisos de accesibilidad/lexicón y el assert Debug de
+`SharedResourcePointer` al cerrar después del reporte, sin fallos en los checks.
+
+El modo manual `reorder` permitió intentar con CUA el arrastre del asa de Coro
+hacia arriba. No se observó un cambio de orden: la herramienta no mantuvo la
+pulsación de lift durante el arrastre. Ese intento no valida el gesto táctil real.
+
+La app firmada compiló, se instaló y arrancó correctamente por Wi-Fi en el
+iPhone 16 físico «Luchoelquesabemucho», con firma y ausencia de USB verificadas.
+Los objetos compilados son posteriores a las fuentes finales. Logs:
+`/tmp/playworship-lyrics-reorder-device-build.log` y
+`/tmp/playworship-lyrics-reorder-iphone-install.log`.
+La QA táctil del arrastre en el iPhone físico queda pendiente de la prueba del
+usuario. Los resultados anteriores de creación/celdas instrumentales no acreditan
+este flujo, cuya UI ya no ofrece esas operaciones.
