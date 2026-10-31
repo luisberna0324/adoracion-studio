@@ -2276,9 +2276,7 @@ private:
   __weak auto weakSelf = self;
   juce::String current;
   for (const auto &chord : document.chords) if (chord.offset == static_cast<int>(range.location)) current = chord.symbol;
-  void (^remove)(void) = nil;
-  if (current.isNotEmpty()) remove = ^{ [weakSelf removeChordAtRange:range revision:revision]; };
-  return [self chordMenuWithCurrent:current choose:^(juce::String symbol) { [weakSelf applyChord:symbol range:range revision:revision]; } remove:remove];
+  return [self chordMenuWithCurrent:current choose:^(juce::String symbol) { [weakSelf applyChord:symbol range:range revision:revision]; } remove:nil];
 }
 - (UIMenu *)menuForTextView:(UITextView *)textView range:(NSRange)range suggested:(NSArray<UIMenuElement *> *)actions {
   if (textView == self.editor) return [self menuForRange:range suggested:actions];
@@ -2290,7 +2288,19 @@ private:
   if (busy || self.editor.markedTextRange != nil) return [UIMenu menuWithChildren:actions];
   NSMutableArray<UIMenuElement *> *menus = [NSMutableArray new];
   const auto revision = documentRevision;
-  if ([self canPlaceChordAtRange:range revision:revision]) [menus addObject:[self chordMenuForRange:range revision:revision]];
+  if ([self canPlaceChordAtRange:range revision:revision]) {
+    for (const auto &chord : document.chords) {
+      if (chord.offset != static_cast<int>(range.location)) continue;
+      __weak auto weakSelf = self;
+      UIAction *remove = [UIAction actionWithTitle:[self label:"removeChordTitle"]
+          image:[UIImage systemImageNamed:@"trash"] identifier:@"nativeLyricsChordRemove"
+          handler:^(UIAction *) { [weakSelf removeChordAtRange:range revision:revision]; }];
+      remove.attributes = UIMenuElementAttributesDestructive;
+      [menus addObject:remove];
+      break;
+    }
+    [menus addObject:[self chordMenuForRange:range revision:revision]];
+  }
   if (range.length > 0) {
     NSMutableArray<UIMenuElement *> *choices = [NSMutableArray new];
     __weak auto weakSelf = self;

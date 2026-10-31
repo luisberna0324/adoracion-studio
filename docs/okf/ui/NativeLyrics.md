@@ -27,6 +27,8 @@ y menú de edición de UIKit. iPhone solicita portrait y restaura la orientació
 al cerrar. iPad conserva las orientaciones admitidas y usa el área segura y el
 teclado de la ventana. La vista adapta sus colores al tema de PlayWorship.
 
+En iOS, si el cursor coincide con el anclaje de un acorde, el menú nativo muestra **Quitar acorde** como primera acción, seguido del submenú **Acordes**. Quitar conserva el texto y registra deshacer; la comprobación de revisión sigue protegiendo el rango.
+
 ## Selección y secciones de letra
 
 Seleccionar texto permite abrir **Sección** desde el menú nativo de edición.
