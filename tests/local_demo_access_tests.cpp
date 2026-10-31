@@ -80,6 +80,14 @@ struct LocalDemoAccessTestAccess {
     expect(!editor.localDemoSession && !hasCloudIdentity(editor),
            "phone input fixture grants no demo login, Firebase identity or license");
   }
+  static bool relayoutPhoneInputUi(MTControlsAudioProcessorEditor &editor) {
+    if (!editor.mainUiInitialized)
+      return false;
+    // Keep the explicitly simulated phone profile through native host/focus
+    // resize callbacks too. Do not reopen the drawer or alter its state.
+    editor.layoutMainUi(true);
+    return true;
+  }
   static SongListPanel &library(MTControlsAudioProcessorEditor &editor) {
     return *dynamic_cast<SongListPanel *>(editor.songListPanel.get());
   }
@@ -596,7 +604,17 @@ void testPhoneSongEditTextInputSurvivesRelayout() {
   expect(DemoSongService::ensureInstalled(song).wasOk(),
          "song editor input fixture uses a real local song without network access");
   MTControlsAudioProcessor processor;
-  MTControlsAudioProcessorEditor editor(processor);
+  class PhoneProfileEditor final : public MTControlsAudioProcessorEditor {
+  public:
+    using MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor;
+    bool simulatePhoneProfile = false;
+    void resized() override {
+      if (simulatePhoneProfile &&
+          LocalDemoAccessTestAccess::relayoutPhoneInputUi(*this))
+        return;
+      MTControlsAudioProcessorEditor::resized();
+    }
+  } editor(processor);
   LocalDemoAccessTestAccess::initializePhoneInputUi(editor);
   juce::DocumentWindow focusWindow("PlayWorship song editor input regression",
                                     juce::Colours::black, 0);
@@ -606,10 +624,11 @@ void testPhoneSongEditTextInputSurvivesRelayout() {
   focusWindow.centreWithSize(focusWindow.getWidth(), focusWindow.getHeight());
   focusWindow.setVisible(true);
   focusWindow.toFront(true);
-  // initializeMainUi queues a native desktop work-area expansion. Finish that
-  // host startup before simulating the phone layout; otherwise the first
-  // dispatch loop (at Close) legitimately restores the desktop drawer policy.
+  // Finish native desktop work-area startup before simulating a phone. The
+  // fixture then retains that profile for later host/focus resize callbacks;
+  // macOS itself cannot infer the phone profile from these window dimensions.
   drainMessages(100);
+  editor.simulatePhoneProfile = true;
   LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800);
   auto &library = LocalDemoAccessTestAccess::library(editor);
   library.openLocalLibrary();
