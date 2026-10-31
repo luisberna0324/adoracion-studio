@@ -8,6 +8,10 @@ timestamp: 2026-10-05
 
 # Mac App Store — perfil opcional de PlayWorship
 
+La siguiente entrega comun se prepara como **2.4.0**. La variante Store usa la
+misma version visible que iOS/iPadOS y los instaladores, con build macOS
+independiente. Ver [Version unificada](UnifiedVersioning.md).
+
 `MTCONTROLS_MAC_APP_STORE=ON` crea una variante para macOS con Xcode. Por
 defecto esta desactivada. El perfil de escritorio habitual conserva su
 empaquetado, helpers y firma local; iOS y Android mantienen sus configuraciones.

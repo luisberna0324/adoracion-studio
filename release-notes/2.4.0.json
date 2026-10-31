@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "version": "2.4.0",
+  "status": "draft",
+  "platforms": ["windows", "macos", "android", "ios"],
+  "title": "Una misma version en todos tus dispositivos",
+  "summary": "Preparacion de una numeracion comun para Windows, macOS, Android, iPhone y iPad.",
+  "changes": [
+    {
+      "label": "Mejoras",
+      "items": ["Unificamos la numeracion de PlayWorship para identificar mas facilmente cada entrega en las distintas plataformas."]
+    }
+  ]
+}

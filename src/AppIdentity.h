@@ -1,7 +1,8 @@
 #pragma once
+#include "AppVersion.h"
 
 #ifndef MTCONTROLS_APP_VERSION
-#define MTCONTROLS_APP_VERSION "1.1.4"
+#define MTCONTROLS_APP_VERSION PLAYWORSHIP_RELEASE_VERSION
 #endif
 
 namespace playworship {

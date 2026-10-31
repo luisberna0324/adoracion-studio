@@ -1,5 +1,11 @@
 # QA fuera de Actions y releases manuales
 
+La siguiente entrega se prepara con version unificada **2.4.0** en
+`src/AppVersion.h`. Usar `release_kind=minor` despues de 2.3.6. El resolver
+comprueba que el SemVer calculado coincida con el del SHA seleccionado antes
+de generar instaladores. Ver [Version unificada](UnifiedVersioning.md) para
+iOS/iPadOS, Mac Store y los contadores de build independientes.
+
 Solo `.github/workflows/ci.yml` permanece activo: genera instaladores de release
 mediante `workflow_dispatch`. No hay eventos push, PR, merge, tag, schedule,
 workflow_run ni workflows auxiliares. Actions no ejecuta suites de QA,

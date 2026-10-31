@@ -1,13 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 
-set(MTCONTROLS_APP_VERSION "1.1.4" CACHE STRING
-    "Semantic version used for build metadata (MAJOR.MINOR.PATCH)")
+include(cmake/ReleaseVersion.cmake)
 set(MTCONTROLS_IOS_BUILD_NUMBER "2" CACHE STRING
     "Monotonically increasing App Store build number")
-
-if(DEFINED ENV{MTCONTROLS_APP_VERSION} AND NOT "$ENV{MTCONTROLS_APP_VERSION}" STREQUAL "")
-    set(MTCONTROLS_APP_VERSION "$ENV{MTCONTROLS_APP_VERSION}")
-endif()
 
 if(NOT MTCONTROLS_APP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "MTCONTROLS_APP_VERSION must match MAJOR.MINOR.PATCH, got: ${MTCONTROLS_APP_VERSION}")

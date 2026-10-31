@@ -9,7 +9,7 @@ on:
         default: main
         type: string
       release_kind:
-        description: "Tipo de incremento semver desde el ultimo tag estable vX.Y.Z"
+        description: "Incremento desde el ultimo tag; debe coincidir con src/AppVersion.h (2.4.0 requiere minor desde 2.3.x)"
         required: true
         default: patch
         type: choice
@@ -108,9 +108,16 @@ jobs:
               git rev-parse --verify --end-of-options "${requested}^{commit}"
             fi
           }
+          verify_source_version() {
+            # Historical tags without the canonical header retain their original versioning.
+            if git cat-file -e "$1:src/AppVersion.h" 2>/dev/null; then
+              python3 scripts/release_version.py --ref "$1" --expect "$2"
+            fi
+          }
           # An explicitly requested stable tag keeps its own version.
           if [[ "${REF_INPUT}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             RELEASE_SHA="$(git rev-parse --verify --end-of-options "refs/tags/${REF_INPUT}^{commit}")"
+            verify_source_version "${RELEASE_SHA}" "${REF_INPUT#v}"
             echo "release_ref=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
             echo "semver=${REF_INPUT#v}" >> "${GITHUB_OUTPUT}"
             echo "tag=${REF_INPUT}" >> "${GITHUB_OUTPUT}"
@@ -160,6 +167,7 @@ jobs:
 
           TAG="v${SEMVER}"
           RELEASE_REF="$(resolve_ref "${REF_INPUT}")"
+          verify_source_version "${RELEASE_REF}" "${SEMVER}"
           TAG_EXISTS="false"
 
           # A collision must not silently replace the requested revision.

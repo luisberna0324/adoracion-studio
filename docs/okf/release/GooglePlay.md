@@ -65,8 +65,10 @@ revisor ni debe anunciarse como prueba gratuita pública sin autenticación.
   `android/app/src/main/AndroidManifest.xml`.
 - `compileSdk=36`, `targetSdk=36`, `minSdk=29`; la configuración actual compila
   `arm64-v8a` y usa NDK `28.1.13356709`.
-- Las variables `PLAYWORSHIP_VERSION_NAME` y `PLAYWORSHIP_VERSION_CODE`
-  sustituyen los valores de desarrollo predeterminados `1.1.4` y `1`.
+- La version visible se lee de `src/AppVersion.h`. Si se proporciona
+  `PLAYWORSHIP_VERSION_NAME`, debe coincidir con esa fuente.
+  `PLAYWORSHIP_VERSION_CODE` es un contador independiente y obligatorio para
+  APK/AAB Release; en Debug conserva el valor de desarrollo `1`.
 - En el workflow auditado, la versión viene del resolver SemVer y el código
   Android de `github.run_number`. El run siguiente puede cambiar mientras se
   prepara el envío: confirmar el número real, conservarlo en la evidencia y
