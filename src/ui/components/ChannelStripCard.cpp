@@ -1,5 +1,6 @@
 #include "ChannelStripCard.h"
 #include "../SectionAutomationVisuals.h"
+#include "../../data/Localization.h"
 
 #include <cmath>
 #include <utility>
@@ -34,6 +35,22 @@ void setBoundsIfChanged(juce::Component &component,
 }
 } // namespace
 
+void ChannelStripCard::FaderLinkButton::paintButton(
+    juce::Graphics &g, const bool mouseOver, const bool buttonDown) {
+  getLookAndFeel().drawButtonBackground(
+      g, *this, findColour(juce::TextButton::buttonColourId), mouseOver, buttonDown);
+  const auto colour = findColour(getToggleState()
+      ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId)
+      .withMultipliedAlpha(isEnabled() ? 1.0f : 0.5f);
+  const float iconSize = juce::jmin(18.0f, juce::jmin(getWidth(), getHeight()) * 0.72f);
+  const auto icon = getLocalBounds().toFloat().withSizeKeepingCentre(iconSize, iconSize);
+  drawSvgIcon(g, icon, SvgIconName::FadersLinked, colour);
+  if (hasKeyboardFocus(true)) {
+    g.setColour(UITheme::accent);
+    g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(2.0f), 3.0f, 1.0f);
+  }
+}
+
 ChannelStripCard::ChannelStripCard(
     const juce::String &channelName, ChannelStripLookAndFeel &lookAndFeelRef,
     StereoVUMeter::LevelProvider levelProvider, bool isCompact)
@@ -45,6 +62,8 @@ ChannelStripCard::ChannelStripCard(
           [this] { return muteButton.getToggleState(); }, isCompact),
       cardBgColour(UITheme::cardBg), channelBandColour(UITheme::accent),
       channelBandTextColour(UITheme::onAccent) {
+  volSlider.setComponentID("volumeFader");
+  volSlider.setName(L10n::tr("Volumen de ", "Volume for ") + name);
   volSlider.setSliderStyle(juce::Slider::LinearVertical);
   volSlider.setViewportIgnoreDragFlag(true);
   volSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -91,6 +110,25 @@ ChannelStripCard::ChannelStripCard(
   muteButton.setLookAndFeel(&lookAndFeel);
   muteButton.setComponentID("muteButton");
   addAndMakeVisible(muteButton);
+
+  faderLinkButton.setButtonText(L10n::tr("Vincular instrumentos", "Link instruments"));
+  faderLinkButton.setName(faderLinkButton.getButtonText());
+  faderLinkButton.setTooltip(faderLinkButton.getButtonText());
+  faderLinkButton.setComponentID("linkInstrumentFaders");
+  faderLinkButton.setClickingTogglesState(true);
+  faderLinkButton.setViewportIgnoreDragFlag(true);
+  faderLinkButton.setLookAndFeel(&lookAndFeel);
+  faderLinkButton.onClick = [this] {
+    if (midiLearnSelectable) {
+      faderLinkButton.setToggleState(!faderLinkButton.getToggleState(), juce::dontSendNotification);
+      return;
+    }
+    if (onFaderLinkToggled)
+      onFaderLinkToggled(faderLinkButton.getToggleState());
+  };
+  addChildComponent(faderLinkButton);
+  setFaderLinkButtonState(false);
+  refreshThemeColours();
   addAndMakeVisible(powerButton);
   powerButton.setViewportIgnoreDragFlag(true);
   powerButton.setVisible(false);
@@ -113,10 +151,13 @@ ChannelStripCard::ChannelStripCard(
       onVolumeDragEnded(static_cast<float>(volSlider.getValue()));
   };
   volSlider.onDragStart = [this] {
-    if (!midiLearnSelectable)
+    if (midiLearnSelectable) {
+      if (onMidiLearnTargetSelected && midiVolumeTargetId >= 0)
+        onMidiLearnTargetSelected(midiVolumeTargetId);
       return;
-    if (onMidiLearnTargetSelected && midiVolumeTargetId >= 0)
-      onMidiLearnTargetSelected(midiVolumeTargetId);
+    }
+    if (onVolumeDragStarted)
+      onVolumeDragStarted();
   };
   gainKnob.onValueChange = [this] {
     if (midiLearnSelectable) {
@@ -209,6 +250,14 @@ void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
     // left edge inside the card, including its footer, without a new gutter.
     g.setColour(UITheme::cardBorder);
     g.fillRect(0, 0, 1, getHeight());
+  }
+  if (faderLinked) {
+    const auto frame = volSlider.getBounds().toFloat().expanded(2.0f)
+        .getIntersection(getLocalBounds().toFloat().reduced(1.0f));
+    g.setColour(UITheme::accent.withAlpha(0.12f));
+    g.drawRoundedRectangle(frame, 4.0f, 4.0f);
+    g.setColour(UITheme::accent.withAlpha(0.92f));
+    g.drawRoundedRectangle(frame, 4.0f, 1.3f);
   }
   drawGainValueTooltip(g);
   if (sectionAutomated || sectionAutomationEditing) {
@@ -304,7 +353,10 @@ void ChannelStripCard::drawGainValueTooltip(juce::Graphics &g) const {
 }
 
 void ChannelStripCard::resized() {
-  const bool hasButtonRow = soloVisible || muteVisible;
+  const bool showLinkButton = faderLinkButtonVisible && !soloVisible;
+  faderLinkButton.setVisible(showLinkButton);
+  setBoundsIfChanged(faderLinkButton, {});
+  const bool hasButtonRow = soloVisible || muteVisible || showLinkButton;
   const int bandTop = juce::jmax(
       0, getHeight() - bottomContentInset - layout.channelBandHeight);
   const int buttonsY = hasButtonRow
@@ -374,18 +426,24 @@ void ChannelStripCard::resized() {
   }
 
   const int buttonsX = (getWidth() - layout.soloWidth) / 2;
-  if (soloVisible && muteVisible) {
+  if (muteVisible && (soloVisible || showLinkButton)) {
+    if (!soloVisible)
+      setBoundsIfChanged(soloButton, {});
+    auto &firstButton = soloVisible ? soloButton : muteButton;
+    juce::Component &secondButton = soloVisible
+        ? static_cast<juce::Component &>(muteButton)
+        : static_cast<juce::Component &>(faderLinkButton);
     juce::FlexBox buttonRow;
     buttonRow.flexDirection = juce::FlexBox::Direction::row;
     buttonRow.justifyContent = juce::FlexBox::JustifyContent::center;
     buttonRow.items.add(
-        juce::FlexItem(soloButton)
+        juce::FlexItem(firstButton)
             .withFlex(1.0f)
             .withHeight(static_cast<float>(layout.soloHeight))
             .withMargin(juce::FlexItem::Margin(
                 0.0f, static_cast<float>(layout.buttonGap), 0.0f, 0.0f)));
     buttonRow.items.add(
-        juce::FlexItem(muteButton)
+        juce::FlexItem(secondButton)
             .withFlex(1.0f)
             .withHeight(static_cast<float>(layout.soloHeight)));
     buttonRow.performLayout(juce::Rectangle<float>(
@@ -411,6 +469,11 @@ void ChannelStripCard::resized() {
           : juce::Rectangle<int>(buttonsX, buttonsY, layout.soloWidth,
                                  layout.soloHeight);
   setBoundsIfChanged(muteButton, muteBounds);
+  if (showLinkButton) {
+    setBoundsIfChanged(muteButton, {});
+    setBoundsIfChanged(faderLinkButton,
+                       {buttonsX, buttonsY, layout.soloWidth, layout.soloHeight});
+  }
 }
 
 const juce::String &ChannelStripCard::getChannelName() const { return name; }
@@ -461,6 +524,49 @@ void ChannelStripCard::setVolume(float volume) {
   suppressVolumeCallback = true;
   volSlider.setValue(volume, juce::dontSendNotification);
   suppressVolumeCallback = false;
+}
+
+void ChannelStripCard::setLinkedVolume(const float volume) {
+  suppressVolumeCallback = true;
+  volSlider.setValue(juce::jlimit(0.0f, 1.0f, volume), juce::dontSendNotification);
+  suppressVolumeCallback = false;
+}
+
+void ChannelStripCard::setFaderLinkButtonVisible(const bool visible) {
+  if (faderLinkButtonVisible == visible) return;
+  faderLinkButtonVisible = visible;
+  resized();
+}
+
+void ChannelStripCard::setFaderLinkButtonState(const bool linked) {
+  faderLinkButton.setToggleState(linked, juce::dontSendNotification);
+  faderLinkButton.setTooltip(linked
+      ? L10n::tr("Instrumentos vinculados: mueve cualquiera de los faders iluminados.",
+                  "Instruments linked: move any highlighted fader.")
+      : L10n::tr("Vincular instrumentos", "Link instruments"));
+}
+
+void ChannelStripCard::setFaderLinkButtonEnabled(const bool enabled) {
+  faderLinkButton.setEnabled(enabled);
+}
+
+void ChannelStripCard::setFaderLinkButtonTooltip(const juce::String &tooltip) {
+  if (faderLinkButton.getTooltip() != tooltip)
+    faderLinkButton.setTooltip(tooltip);
+}
+
+void ChannelStripCard::setOnFaderLinkToggled(std::function<void(bool)> cb) {
+  onFaderLinkToggled = std::move(cb);
+}
+
+void ChannelStripCard::setFaderLinked(const bool linked) {
+  if (faderLinked == linked) return;
+  faderLinked = linked;
+  volSlider.setDescription(linked
+      ? L10n::tr("Iguala el volumen de todos los instrumentos vinculados.",
+                  "Sets all linked instruments to the same volume.") : juce::String{});
+  refreshMidiLearnTooltips();
+  repaint(volSlider.getBounds().expanded(5));
 }
 
 void ChannelStripCard::setSectionAutomationState(const bool automated, const bool editing) {
@@ -550,11 +656,22 @@ void ChannelStripCard::refreshThemeColours() {
   muteButton.setColour(juce::TextButton::buttonOnColourId,
                        UITheme::accentMuted);
 
+  // Share the Mute palette as well as its LookAndFeel and row geometry.
+  for (const auto colourId : {juce::TextButton::textColourOffId,
+                              juce::TextButton::textColourOnId,
+                              juce::TextButton::buttonColourId,
+                              juce::TextButton::buttonOnColourId})
+    faderLinkButton.setColour(colourId, muteButton.findColour(colourId));
+
   repaint();
 }
 
 void ChannelStripCard::setOnVolumeChanged(std::function<void(float)> cb) {
   onVolumeChanged = std::move(cb);
+}
+
+void ChannelStripCard::setOnVolumeDragStarted(std::function<void()> cb) {
+  onVolumeDragStarted = std::move(cb);
 }
 
 void ChannelStripCard::setOnVolumeDragEnded(std::function<void(float)> cb) {
@@ -678,7 +795,11 @@ void ChannelStripCard::refreshMidiLearnTooltips() {
     return withMidiAssignmentTooltip(baseText, midiCode);
   };
 
-  volSlider.setTooltip(tooltipForTarget(midiVolumeTargetId, "Volume"));
+  const auto volumeHint = faderLinked
+      ? L10n::tr("Volumen de instrumentos vinculados", "Linked instrument volume")
+      : juce::String("Volume");
+  const auto volumeMidiHint = tooltipForTarget(midiVolumeTargetId, volumeHint);
+  volSlider.setTooltip(volumeMidiHint.isEmpty() && faderLinked ? volumeHint : volumeMidiHint);
   gainKnob.setTooltip(tooltipForTarget(midiGainTargetId, "Gain"));
   muteButton.setTooltip(tooltipForTarget(midiMuteTargetId, "Mute"));
   soloButton.setTooltip(tooltipForTarget(midiSoloTargetId, "Solo"));
@@ -716,4 +837,5 @@ void ChannelStripCard::clearLookAndFeelFromControls() {
   gainLabel.setLookAndFeel(nullptr);
   soloButton.setLookAndFeel(nullptr);
   muteButton.setLookAndFeel(nullptr);
+  faderLinkButton.setLookAndFeel(nullptr);
 }

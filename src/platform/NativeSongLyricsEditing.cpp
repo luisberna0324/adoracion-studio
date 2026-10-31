@@ -80,7 +80,7 @@ std::vector<bool> completeParagraphsForSections(const SongLyricsDocument &docume
 }
 
 bool replaceText(SongLyricsDocument &document, int start, int length, const juce::String &replacement) {
-  if (!isValidSongLyricsDocument(document)) return false;
+  if (!isEditableSongLyricsDocument(document)) return false;
   auto candidate = document;
   juce::String owner;
   int ownerStart = 0;
@@ -111,7 +111,7 @@ bool replaceText(SongLyricsDocument &document, int start, int length, const juce
 }
 
 bool setText(SongLyricsDocument &document, const juce::String &text) {
-  if (!isValidSongLyricsDocument(document)) return false;
+  if (!isEditableSongLyricsDocument(document)) return false;
   if (document.text == text) return true;
   const int oldSize = songLyricsUtf16Length(document.text), newSize = songLyricsUtf16Length(text);
   if (oldSize < 0 || newSize < 0 || newSize > kSongLyricsMaxUtf16Length) return false;

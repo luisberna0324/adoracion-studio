@@ -756,6 +756,8 @@ SvgIconData getSvgIconData(const SvgIconName icon) {
     return {BinaryData::volume_x_svg, BinaryData::volume_x_svgSize};
   case SvgIconName::FileAudio:
     return {BinaryData::file_audio_svg, BinaryData::file_audio_svgSize};
+  case SvgIconName::FadersLinked:
+    return {BinaryData::faders_linked_svg, BinaryData::faders_linked_svgSize};
   }
   return {};
 }

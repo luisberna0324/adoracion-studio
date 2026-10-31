@@ -53,6 +53,18 @@ El editor de [Letra nativa](NativeLyrics.md), abierto desde el menú de una
 canción local, usa UIKit a pantalla completa. En iPhone solicita portrait y al
 cerrar restaura la máscara previa. En iPad usa la orientación actual, el área
 segura y el teclado de UIKit; no cambia el perfil ni la distribución del player.
+En iOS, colocar el cursor abre **Acorde** en el menú contextual nativo; una
+selección conserva también **Sección**. Lupa, tiradores, pegado y teclado siguen
+siendo de UIKit. Los símbolos son decoraciones sobre las posiciones UTF-16 del
+texto; TextKit reserva sus filas y evita solapes sin insertar espacios. No se
+abre un modal de posición. El observador de pulsación prolongada que solicita
+el menú al soltar es pasivo y simultáneo: no sustituye la lupa ni la selección.
+Los cambios de texto, IME o scroll invalidan la solicitud pendiente. Mantener
+pulsado el encabezado de una tarjeta completa inicia su arrastre nativo; el
+separador indica dónde se soltará. El cuerpo conserva la selección y la lupa de UIKit. Mover una tarjeta
+permuta letra y acordes con Undo/Redo; no cambia la reproducción ni las
+orientaciones del player. Las filas instrumentales heredadas se conservan como
+contenido de sólo lectura, sin puntos ni controles para crear filas.
 
 En teléfonos, el botón de tres puntos horizontales del `TopBar` incluye
 `Ensayo`. Abre `PracticePanel` como superficie completa y solicita portrait;

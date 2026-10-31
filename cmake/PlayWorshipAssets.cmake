@@ -40,5 +40,6 @@ set(MTCONTROLS_ASSET_FILES
         assets/ui-icons/trash.svg
         assets/ui-icons/volume_x.svg
         assets/ui-icons/file_audio.svg
+        assets/ui-icons/faders_linked.svg
 )
 list(TRANSFORM MTCONTROLS_ASSET_FILES PREPEND "${CMAKE_CURRENT_LIST_DIR}/../")

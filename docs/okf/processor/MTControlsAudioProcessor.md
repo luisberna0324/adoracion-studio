@@ -509,6 +509,21 @@ script de análisis distinga ambos modos dentro del mismo escenario.
 | `setMetronomeVolume(float)` | volume (0-1) | Volumen |
 | `getMetronomeVolume()` | — | Volumen actual |
 
+La única perilla de `CLICK DYN`, rotulada `GAIN`, representa el nivel combinado
+`volume * gain` entre 0 y 4 (hasta aproximadamente +12 dB). La unidad 1 conserva
+el nivel anterior y ocupa el centro del recorrido; un doble clic recupera 1.
+El tooltip muestra dB. `ClickDivisionPanel::setVolume` y sus callbacks
+`onVolumeChanged`/`onVolumeDragEnded` usan este nivel combinado 0..4 sólo en ese
+panel: no redefinen el volumen 0..1 del processor.
+
+Al mover la perilla, `ChannelGridPanel` transforma niveles hasta 1 en
+`volume=level, gain=1`, y niveles superiores en `volume=1, gain=level`.
+La carga y los refrescos sólo muestran el producto existente, sin normalizar
+ni escribir la mezcla guardada. Al terminar el gesto se persisten el volumen
+0..1 y la ganancia independientes en `ClickDynMixSnapshot`, manteniendo su
+formato y las canciones previas. MIDI y remoto conservan sus controles y rangos
+separados; el refresco visual refleja el producto de ambos.
+
 ### Mute/Solo/Gain
 
 | Método | Parámetros | Descripción |

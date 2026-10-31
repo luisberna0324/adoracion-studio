@@ -2164,8 +2164,11 @@ void SongImportWizardComponent::updateSummaryText() {
             juce::String(static_cast<int>(included)) + " / " +
             juce::String(static_cast<int>(stems.size())));
   if (mode == Mode::Import && resolveProjectDestination) {
-    lines.add(L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
-                      "A .pwproj project will be created in the local library."));
+    lines.add(promptProjectDestination
+                  ? L10n::tr(u8"Al guardar podrás elegir Biblioteca local o una ubicación para el proyecto .pwproj.",
+                             "When saving, choose Local library or a location for the .pwproj project.")
+                  : L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
+                             "A .pwproj project will be created in the local library."));
   }
   if (mode == Mode::Edit && excluded > 0) {
     lines.add(L10n::tr("Stems removidos al guardar: ",
@@ -2546,6 +2549,34 @@ void SongImportWizardComponent::submitSong() {
       juce::String(static_cast<int>(stems.size())));
 
   auto songData = buildSongData();
+  if (mode == Mode::Import && resolveProjectDestination && promptProjectDestination) {
+    const auto generation = ++destinationPromptGeneration;
+    keepSubmissionActive = true;
+    const auto destinationSong = songData;
+    promptProjectDestination(destinationSong,
+        [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
+         generation, songData = std::move(songData)](juce::File destination,
+                                                    juce::String error) mutable {
+          if (safeThis == nullptr || !safeThis->isSubmitting ||
+              safeThis->destinationPromptGeneration != generation)
+            return;
+          // Every prompt result is consumed once, including cancellation. A
+          // delayed completion from an older request must not submit a retry.
+          ++safeThis->destinationPromptGeneration;
+          if (destination == juce::File{} || error.isNotEmpty()) {
+            safeThis->setSubmitting(false);
+            if (error.isNotEmpty())
+              juce::NativeMessageBox::showMessageBoxAsync(
+                  juce::MessageBoxIconType::WarningIcon,
+                  L10n::tr("Ubicación del proyecto", "Project location"), error);
+            return;
+          }
+          songData.projectPath = destination.getFullPathName();
+          if (!safeThis->submitSongInBackground(std::move(songData)))
+            safeThis->setSubmitting(false);
+        });
+    return;
+  }
   if (mode == Mode::Import && resolveProjectDestination) {
     juce::File destination;
     juce::String destinationError;

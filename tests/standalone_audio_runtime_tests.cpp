@@ -3,6 +3,10 @@
 #include "IsolatedTestRoot.h"
 #include "data/AssetBootstrapManager.h"
 #include "ui/NativeEditorBoundsConstrainer.h"
+#include "ui/panels/ChannelGridPanel.h"
+#include "ui/components/ChannelStripLookAndFeel.h"
+#include "ui/components/ChannelStripCard.h"
+#include "data/ProjectStore.h"
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -477,6 +481,411 @@ void testRealProcessorMonoClickAndGuide() {
   runtime.stop();
 }
 
+juce::Slider *findClickGainKnob(juce::Component &component) {
+  if (component.getComponentID() == "clickDynGain")
+    return dynamic_cast<juce::Slider *>(&component);
+  for (auto *child : component.getChildren())
+    if (auto *knob = findClickGainKnob(*child)) return knob;
+  return nullptr;
+}
+
+void endClickGainGesture(juce::Slider &knob) {
+  const auto position = knob.getLocalBounds().toFloat().getCentre();
+  const auto now = juce::Time::getCurrentTime();
+  knob.mouseUp({juce::Desktop::getInstance().getMainMouseSource(), position,
+      juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
+      1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &knob, &knob,
+      now, position, now, 1, true});
+}
+
+void testClickDynGainKnobPortableRoundTrip() {
+  ProjectDocument document;
+  document.song.id = "click-gain-ui-project";
+  document.song.projectId = document.song.id;
+  document.song.title = "Click gain UI project";
+  document.song.blankSong = true;
+  document.song.bpm = 120.0;
+  document.song.timeSignature = "4/4";
+  // An old project may use both independent controls. Merely displaying the
+  // combined knob must neither normalise that saved pair nor alter its sound.
+  document.settings.clickDynMix.volume = 0.4f;
+  document.settings.clickDynMix.gain = 2.5f;
+  const auto archive = isolatedTestRoot().getChildFile("click-gain-ui.pwproj");
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error), "click gain fixture saves");
+  ProjectDocument reopened;
+  expect(ProjectStore::open(archive, reopened, &error) &&
+             SongLibraryStore::registerProjectSong(reopened.song),
+         "click gain fixture opens through the portable library");
+  const auto setlist = SongLibraryStore::createSetlist("Click gain UI setlist");
+  expect(SongLibraryStore::addSongToSetlist(setlist, reopened.song.id) &&
+             SongLibraryStore::setActiveSetlistId(setlist),
+         "click gain fixture is the active setlist item");
+
+  auto processor = std::make_unique<MTControlsAudioProcessor>();
+  processor->setMetronomeVolume(reopened.settings.clickDynMix.volume);
+  processor->setMetronomeGain(reopened.settings.clickDynMix.gain);
+  ChannelStripLookAndFeel lookAndFeel;
+  ChannelGridPanel grid(lookAndFeel, *processor);
+  grid.setSize(1200, 700);
+  grid.setSong(reopened.song);
+  auto *knob = findClickGainKnob(grid);
+  expect(knob != nullptr, "the real mixer exposes its existing click knob");
+  expect(juce::approximatelyEqual(knob->getValue(), 1.0) &&
+             juce::approximatelyEqual(processor->getMetronomeVolume(), 0.4f) &&
+             juce::approximatelyEqual(processor->getMetronomeGain(), 2.5f),
+         "opening an old mix displays its effective level without changing its stored controls");
+
+  // Exercise the assembled UI callback and actual drag-end persistence path,
+  // not a duplicate of the mapping formula or a direct processor setter.
+  knob->setValue(2.5, juce::sendNotificationSync);
+  expect(juce::approximatelyEqual(processor->getMetronomeVolume(), 1.0f) &&
+             juce::approximatelyEqual(processor->getMetronomeGain(), 2.5f),
+         "the same knob can boost the real click bus above its previous maximum");
+  endClickGainGesture(*knob);
+  grid.flushPendingPersistenceNow();
+  expect(ProjectStore::savePendingPortableChanges(archive, &error) &&
+             ProjectStore::open(archive, reopened, &error),
+         "boosted click state consolidates and reopens as a portable project");
+  expect(juce::approximatelyEqual(reopened.settings.clickDynMix.volume, 1.0f) &&
+             juce::approximatelyEqual(reopened.settings.clickDynMix.gain, 2.5f),
+         "drag end stores gain separately, without clipping or applying boost twice on reload");
+
+  knob->setValue(0.6, juce::sendNotificationSync);
+  endClickGainGesture(*knob);
+  grid.flushPendingPersistenceNow();
+  expect(ProjectStore::savePendingPortableChanges(archive, &error) &&
+             ProjectStore::open(archive, reopened, &error) &&
+             juce::approximatelyEqual(reopened.settings.clickDynMix.volume, 0.6f) &&
+             juce::approximatelyEqual(reopened.settings.clickDynMix.gain, 1.0f),
+         "lowering the same knob removes prior boost and persists normal attenuation");
+  processor->setMetronomeVolume(reopened.settings.clickDynMix.volume);
+  processor->setMetronomeGain(reopened.settings.clickDynMix.gain);
+  grid.setSong(reopened.song);
+  knob = findClickGainKnob(grid);
+  expect(knob != nullptr && std::abs(knob->getValue() - 0.6) < 1.0e-6,
+         "rebuilt mixer reads the portable click level back into the same knob");
+}
+
+juce::Component *findMixerControl(juce::Component &component,
+                                  const juce::String &identifier) {
+  if (component.getComponentID() == identifier) return &component;
+  for (auto *child : component.getChildren())
+    if (auto *match = findMixerControl(*child, identifier)) return match;
+  return nullptr;
+}
+
+ChannelStripCard *findMixerStrip(juce::Component &component,
+                                const juce::String &name) {
+  if (auto *strip = dynamic_cast<ChannelStripCard *>(&component))
+    if (strip->getChannelName() == name) return strip;
+  for (auto *child : component.getChildren())
+    if (auto *match = findMixerStrip(*child, name)) return match;
+  return nullptr;
+}
+
+void beginLinkedFaderGesture(juce::Slider &fader) {
+  if (fader.onDragStart) fader.onDragStart();
+}
+
+void testLinkedFaderControlLayouts() {
+  ChannelStripLookAndFeel lookAndFeel;
+  for (const bool compact : {false, true}) {
+    for (const float scale : {0.82f, 1.0f, 1.4f}) {
+      ChannelStripCard master("MASTER", lookAndFeel, [] {
+        return std::pair<float, float>{0.0f, 0.0f};
+      }, compact);
+      master.setSoloVisible(false);
+      master.setMuteAlignedToFader(true);
+      master.setLayoutScale(scale);
+      master.setSize(juce::roundToInt((compact ? 72.0f : 90.0f) * scale),
+                     juce::roundToInt((compact ? 276.0f : 244.0f) * scale));
+      auto *mute = dynamic_cast<juce::Button *>(findMixerControl(master, "muteButton"));
+      auto *link = dynamic_cast<juce::Button *>(findMixerControl(master, "linkInstrumentFaders"));
+      expect(mute != nullptr && link != nullptr, "Master layout owns its mute and link controls");
+      master.setFaderLinkButtonVisible(true);
+      ChannelStripCard reference("INSTRUMENT", lookAndFeel, [] {
+        return std::pair<float, float>{0.0f, 0.0f};
+      }, compact);
+      reference.setLayoutScale(scale);
+      reference.setSize(master.getWidth(), master.getHeight());
+      auto *referenceSolo = dynamic_cast<juce::Button *>(findMixerControl(reference, "soloButton"));
+      auto *referenceMute = dynamic_cast<juce::Button *>(findMixerControl(reference, "muteButton"));
+      expect(referenceSolo != nullptr && referenceMute != nullptr &&
+                 !referenceSolo->getBounds().isEmpty() &&
+                 mute->getBounds() == referenceSolo->getBounds() &&
+                 link->getBounds() == referenceMute->getBounds(),
+             "Master mute/link matches the ordinary Solo/Mute row width, spacing and centring at every supported scale");
+      expect(!link->getBounds().isEmpty() && link->getWidth() >= 12 &&
+                 master.getLocalBounds().contains(link->getBounds()) &&
+                 master.getLocalBounds().contains(mute->getBounds()) &&
+                 !link->getBounds().intersects(mute->getBounds()),
+             "compact and standard Master layouts keep both buttons inside and separate at every supported scale");
+    }
+  }
+}
+
+void testLinkedInstrumentFadersPortableRoundTrip() {
+  testLinkedFaderControlLayouts();
+  const auto source = isolatedTestRoot().getChildFile("linked-faders-source.flac");
+  {
+    juce::FlacAudioFormat format;
+    std::unique_ptr<juce::OutputStream> stream = source.createOutputStream();
+    auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+        .withSampleRate(48000.0).withNumChannels(1).withBitsPerSample(16));
+    expect(writer != nullptr, "linked mixer fixture uses a local lossless source");
+    juce::AudioBuffer<float> audio(1, 2048);
+    audio.clear(); audio.setSample(0, 32, 0.25f);
+    expect(writer->writeFromAudioSampleBuffer(audio, 0, audio.getNumSamples()),
+           "linked mixer source audio writes");
+  }
+  ProjectDocument document;
+  document.song.id = "linked-faders-ui-project";
+  document.song.projectId = document.song.id;
+  document.song.title = "Linked instrument faders";
+  document.song.bpm = 120.0;
+  document.song.timeSignature = "4/4";
+  const std::array<const char *, 5> names{{"Click", "Guide", "Drums", "Bass", "Piano"}};
+  const std::array<const char *, 5> categories{{"Click", "Cues", "Drums", "Bass", "Keys"}};
+  const std::array<float, 5> initialVolumes{{0.48f, 0.35f, 0.6f, 0.3f, 0.0f}};
+  for (size_t i = 0; i < names.size(); ++i) {
+    ImportedStemData stem;
+    stem.stemId = "linked-" + juce::String(names[i]).toLowerCase();
+    stem.displayName = names[i]; stem.category = categories[i];
+    stem.fileName = source.getFileName();
+    stem.sourcePath = stem.storedPath = source.getFullPathName();
+    stem.sampleRate = 48000; stem.channels = 1; stem.durationSec = 2048.0 / 48000.0;
+    document.song.stems.push_back(stem);
+    StemMixSnapshot mix;
+    mix.stemId = stem.stemId; mix.volume = initialVolumes[i];
+    document.settings.mix.stems.push_back(mix);
+  }
+  document.settings.mix.master.volume = 0.73f;
+  document.settings.clickDynMix.volume = 0.51f;
+  document.settings.dynamicGuideMix.volume = 0.33f;
+  const auto archive = isolatedTestRoot().getChildFile("linked-faders-ui.pwproj");
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error), "linked mixer project saves");
+  ProjectDocument reopened;
+  expect(ProjectStore::open(archive, reopened, &error) &&
+             SongLibraryStore::registerProjectSong(reopened.song),
+         "linked mixer project registers through the portable library");
+  const auto setlist = SongLibraryStore::createSetlist("Linked faders UI setlist");
+  expect(SongLibraryStore::addSongToSetlist(setlist, reopened.song.id) &&
+             SongLibraryStore::setActiveSetlistId(setlist),
+         "linked mixer project is the active setlist item");
+
+  auto processor = std::make_unique<MTControlsAudioProcessor>();
+  juce::StringArray paths;
+  for (const auto &stem : reopened.song.stems) paths.add(stem.storedPath);
+  expect(processor->loadSongStems(paths, reopened.song.id, reopened.song.title, "C", 120.0),
+         "real processor loads the linked instruments");
+  juce::StringArray stemIds;
+  for (const auto &stem : reopened.song.stems) stemIds.add(stem.stemId);
+  processor->setSectionAutomationStemIds(stemIds);
+  processor->setStemClickGuideMask({true, true, false, false, false});
+  processor->setStemGuideMask({false, true, false, false, false});
+  for (int i = 0; i < static_cast<int>(initialVolumes.size()); ++i)
+    processor->setStemVolume(i, initialVolumes[static_cast<size_t>(i)]);
+  processor->setMasterVolume(0.73f);
+  processor->setMetronomeVolume(0.51f);
+  processor->setDynamicGuideVolume(0.33f);
+  processor->setPadsVolume(0.42f);
+  ChannelStripLookAndFeel lookAndFeel;
+  ChannelGridPanel grid(lookAndFeel, *processor);
+  grid.setSize(1200, 700);
+  grid.setSong(reopened.song);
+  auto *master = findMixerStrip(grid, "MASTER");
+  auto *drumStrip = findMixerStrip(grid, "DRUMS");
+  auto *bassStrip = findMixerStrip(grid, "BASS");
+  auto *pianoStrip = findMixerStrip(grid, "PIANO");
+  auto *guideStrip = findMixerStrip(grid, "GUIDE");
+  expect(master != nullptr && drumStrip != nullptr && bassStrip != nullptr && pianoStrip != nullptr && guideStrip != nullptr,
+         "real mixer exposes all named linked fixture strips");
+  auto *link = dynamic_cast<juce::Button *>(findMixerControl(*master, "linkInstrumentFaders"));
+  auto *drums = dynamic_cast<juce::Slider *>(findMixerControl(*drumStrip, "volumeFader"));
+  auto *bass = dynamic_cast<juce::Slider *>(findMixerControl(*bassStrip, "volumeFader"));
+  auto *piano = dynamic_cast<juce::Slider *>(findMixerControl(*pianoStrip, "volumeFader"));
+  auto *guide = dynamic_cast<juce::Slider *>(findMixerControl(*guideStrip, "volumeFader"));
+  auto *mute = dynamic_cast<juce::Button *>(findMixerControl(*master, "muteButton"));
+  expect(link != nullptr && drums != nullptr && bass != nullptr && piano != nullptr && guide != nullptr && mute != nullptr,
+         "link toggle and existing native faders are available in their real strips");
+  expect(link->isVisible() && link->isEnabled() && !link->getToggleState(),
+         "instrument linking is an explicit initially inactive mixer mode");
+  expect(!link->getBounds().intersects(mute->getBounds()) &&
+             master->getLocalBounds().contains(link->getBounds()),
+         "link control occupies the free space beside Master mute without overlap");
+  const auto close = [](float actual, float expected) { return std::abs(actual - expected) < 1.0e-5f; };
+  const auto expectFixedBuses = [&] {
+    expect(close(processor->getMasterVolume(), 0.73f) &&
+               close(processor->getMetronomeVolume(), 0.51f) &&
+               close(processor->getDynamicGuideVolume(), 0.33f) &&
+               close(processor->getPadsVolume(), 0.42f) &&
+               close(processor->getStemVolume(0), 0.48f) &&
+               close(processor->getStemVolume(1), 0.35f),
+           "group gestures leave Master, dynamic buses, Pads, click and guide stems untouched");
+  };
+  const auto toggle = [&](bool enabled) {
+    link->setToggleState(enabled, juce::dontSendNotification);
+    expect(static_cast<bool>(link->onClick), "link toggle has an assembled mixer callback");
+    link->onClick();
+  };
+  toggle(true);
+  expect(link->getToggleState() && close(processor->getStemVolume(2), 0.6f) &&
+             close(processor->getStemVolume(3), 0.3f) && close(processor->getStemVolume(4), 0.0f),
+         "activating the group changes no instrument level");
+  expectFixedBuses();
+  expect(drums->getDescription().isNotEmpty() && bass->getDescription().isNotEmpty() &&
+             piano->getDescription().isNotEmpty(),
+         "every eligible instrument is linked, including an instrument initially at zero");
+  beginLinkedFaderGesture(*drums);
+  drums->setValue(0.3, juce::sendNotificationSync);
+  endClickGainGesture(*drums);
+  expect(close(processor->getStemVolume(2), 0.3f) && close(processor->getStemVolume(3), 0.3f) &&
+             close(processor->getStemVolume(4), 0.3f),
+         "the first linked movement sets every instrument to the source fader's absolute level");
+  // A second finger on an excluded guide strip must remain independent, and
+  // ending that finger must not release the first finger's musical gesture.
+  beginLinkedFaderGesture(*drums);
+  drums->setValue(0.24, juce::sendNotificationSync);
+  beginLinkedFaderGesture(*guide);
+  guide->setValue(0.2, juce::sendNotificationSync);
+  endClickGainGesture(*guide);
+  expect(close(processor->getStemVolume(1), 0.2f) &&
+             close(processor->getStemVolume(2), 0.24f) && close(processor->getStemVolume(3), 0.24f) &&
+             close(processor->getStemVolume(4), 0.24f),
+         "an excluded guide remains independently adjustable during a linked instrument drag");
+  drums->setValue(0.3, juce::sendNotificationSync);
+  endClickGainGesture(*drums);
+  expect(close(processor->getStemVolume(1), 0.2f) &&
+             close(processor->getStemVolume(2), 0.3f) && close(processor->getStemVolume(3), 0.3f) &&
+             close(processor->getStemVolume(4), 0.3f),
+         "releasing the independent guide preserves the continuing instrument group's gesture");
+  beginLinkedFaderGesture(*guide);
+  guide->setValue(0.35, juce::sendNotificationSync);
+  endClickGainGesture(*guide);
+  expectFixedBuses();
+  // A second leader with no drag-start callback exercises wheel/keyboard entry.
+  bass->setValue(0.2, juce::sendNotificationSync);
+  endClickGainGesture(*bass);
+  expect(close(processor->getStemVolume(2), 0.2f) && close(processor->getStemVolume(3), 0.2f) &&
+             close(processor->getStemVolume(4), 0.2f),
+         "another illuminated instrument can equalize the group without a pointer drag-start");
+  toggle(false);
+  beginLinkedFaderGesture(*drums);
+  drums->setValue(1.0, juce::sendNotificationSync);
+  endClickGainGesture(*drums);
+  toggle(true);
+  expect(close(processor->getStemVolume(2), 1.0f) && close(processor->getStemVolume(3), 0.2f) &&
+             close(processor->getStemVolume(4), 0.2f),
+         "reactivating linking preserves unequal starting levels until the next movement");
+  beginLinkedFaderGesture(*bass);
+  bass->setValue(0.8, juce::sendNotificationSync);
+  endClickGainGesture(*bass);
+  expect(close(processor->getStemVolume(2), 0.8f) && close(processor->getStemVolume(3), 0.8f) &&
+             close(processor->getStemVolume(4), 0.8f) &&
+             std::abs(bass->getValue() - 0.8) < 1.0e-5,
+         "an instrument initially at the top does not limit another source fader or retain its old level");
+  beginLinkedFaderGesture(*piano);
+  piano->setValue(1.0, juce::sendNotificationSync);
+  endClickGainGesture(*piano);
+  expect(close(processor->getStemVolume(2), 1.0f) && close(processor->getStemVolume(3), 1.0f) &&
+             close(processor->getStemVolume(4), 1.0f),
+         "moving any linked instrument to the top places the entire group at the top");
+  beginLinkedFaderGesture(*drums);
+  drums->setValue(0.0, juce::sendNotificationSync);
+  endClickGainGesture(*drums);
+  expect(close(processor->getStemVolume(2), 0.0f) && close(processor->getStemVolume(3), 0.0f) &&
+             close(processor->getStemVolume(4), 0.0f),
+         "moving one linked instrument fully down places every instrument at zero");
+  beginLinkedFaderGesture(*bass);
+  bass->setValue(0.5, juce::sendNotificationSync);
+  endClickGainGesture(*bass);
+  expect(close(processor->getStemVolume(2), 0.5f) && close(processor->getStemVolume(3), 0.5f) &&
+             close(processor->getStemVolume(4), 0.5f),
+         "raising a linked fader from silence to the middle places every instrument at the same middle level");
+  beginLinkedFaderGesture(*piano);
+  piano->setValue(0.25, juce::sendNotificationSync);
+  endClickGainGesture(*piano);
+  expect(close(processor->getStemVolume(2), 0.25f) && close(processor->getStemVolume(3), 0.25f) &&
+             close(processor->getStemVolume(4), 0.25f),
+         "the originally silent instrument can lead the entire group at an absolute level");
+  beginLinkedFaderGesture(*piano);
+  piano->setValue(0.5, juce::sendNotificationSync);
+  endClickGainGesture(*piano);
+  expect(close(processor->getStemVolume(2), 0.5f) && close(processor->getStemVolume(3), 0.5f) &&
+             close(processor->getStemVolume(4), 0.5f),
+         "repeated linked gestures retain equal levels rather than restoring the original proportions");
+  expectFixedBuses();
+  grid.flushPendingPersistenceNow();
+  expect(ProjectStore::savePendingPortableChanges(archive, &error) &&
+             ProjectStore::open(archive, reopened, &error),
+         "all linked changes consolidate into and reopen from the portable project");
+  for (const auto &expected : std::array<std::pair<const char *, float>, 3>{{
+           {"linked-drums", 0.5f}, {"linked-bass", 0.5f}, {"linked-piano", 0.5f}}}) {
+    const auto found = std::find_if(reopened.settings.mix.stems.begin(), reopened.settings.mix.stems.end(),
+        [&](const StemMixSnapshot &mix) { return mix.stemId == expected.first; });
+    expect(found != reopened.settings.mix.stems.end() && close(found->volume, expected.second),
+           "portable persistence includes every affected linked instrument, not just the dragged fader");
+  }
+  expect(close(reopened.settings.mix.master.volume, 0.73f) &&
+             close(reopened.settings.clickDynMix.volume, 0.51f) &&
+             close(reopened.settings.dynamicGuideMix.volume, 0.33f),
+         "portable group changes do not rewrite the independent buses");
+  toggle(false);
+  expect(drums->getDescription().isEmpty() && bass->getDescription().isEmpty() &&
+             piano->getDescription().isEmpty(),
+         "deactivating linking removes every fader's linked indication");
+  beginLinkedFaderGesture(*drums);
+  drums->setValue(0.2, juce::sendNotificationSync);
+  endClickGainGesture(*drums);
+  expect(close(processor->getStemVolume(2), 0.2f) && close(processor->getStemVolume(3), 0.5f) &&
+             close(processor->getStemVolume(4), 0.5f),
+         "deactivating linking restores ordinary independent fader editing");
+  toggle(true);
+  grid.setMidiLearnActive(true);
+  expect(!link->getToggleState() && !link->isEnabled(),
+         "entering MIDI Learn disarms linking without reinterpreting mapped Master controls");
+  grid.setMidiLearnActive(false);
+  toggle(true);
+  SongArrangementPartSnapshot verse;
+  verse.id = "linked-verse"; verse.name = "Verse";
+  verse.startSec = 0.0; verse.endSec = 0.04;
+  SongArrangementSnapshot arrangement; arrangement.parts.push_back(verse);
+  processor->setSongArrangement(arrangement, false);
+  expect(processor->beginSectionAutomationEditing(verse.id),
+         "open the real section automation draft for the loaded linked instruments");
+  const auto awaitUnlinkedButton = [&](const bool expectedEnabled, const char *message) {
+    const auto started = juce::Time::getMillisecondCounter();
+    const auto ready = [&] { return !link->getToggleState() && link->isEnabled() == expectedEnabled; };
+    while (!ready() && juce::Time::getMillisecondCounter() - started < 1000) {
+      // This console fixture has no long-running native app event loop. Deliver
+      // due JUCE timers while awaiting the observable UI state, not a fixed delay.
+      juce::Timer::callPendingTimersSynchronously();
+      if (!ready()) juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    }
+    if (!ready())
+      std::cerr << "Linked fader automation fixture: editing="
+                << processor->isSectionAutomationEditing() << ", toggle="
+                << link->getToggleState() << ", enabled=" << link->isEnabled()
+                << ", expectedEnabled=" << expectedEnabled << '\n';
+    expect(ready(), message);
+  };
+  awaitUnlinkedButton(false,
+      "entering section automation editing disarms linking before multi-instrument draft changes");
+  expect(processor->finishSectionAutomationEditing(false), "discard the isolated automation draft");
+  awaitUnlinkedButton(true,
+      "leaving automation editing reenables linking without silently reactivating it");
+  toggle(true);
+  auto nextSong = reopened.song; nextSong.id = "linked-next-song";
+  grid.setSong(nextSong);
+  master = findMixerStrip(grid, "MASTER");
+  link = dynamic_cast<juce::Button *>(findMixerControl(*master, "linkInstrumentFaders"));
+  expect(link != nullptr && !link->getToggleState(),
+         "switching songs always leaves the next mixer in ordinary unlinked mode");
+  expectFixedBuses();
+}
+
 void testRealProcessorLayoutLimits() {
   auto processor = std::make_unique<MTControlsAudioProcessor>();
   auto layout = processor->getBusesLayout();
@@ -500,14 +909,26 @@ void testRealProcessorLayoutLimits() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
   juce::ScopedJuceInitialiser_GUI initialiseJuce;
   try {
+    if (argc == 2 && juce::String(argv[1]) == "--click-gain-only") {
+      testClickDynGainKnobPortableRoundTrip();
+      std::cout << "Click Dyn gain: mixer UI and portable-project round trip passed\n";
+      return 0;
+    }
+    if (argc == 2 && juce::String(argv[1]) == "--linked-faders-only") {
+      testLinkedInstrumentFadersPortableRoundTrip();
+      std::cout << "Linked instrument faders: mixer UI, equal levels and portable persistence passed\n";
+      return 0;
+    }
     testRealProcessorRuntime(8);
     testRealProcessorRuntime(2);
     testRealProcessorRuntime(64);
     testRealProcessorMonoClickAndGuide();
     testRealProcessorLayoutLimits();
+    testClickDynGainKnobPortableRoundTrip();
+    testLinkedInstrumentFadersPortableRoundTrip();
     testRuntime(2);
     testRuntime(8);
     testRuntime(64);

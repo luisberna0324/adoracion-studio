@@ -716,6 +716,16 @@ if(MTCONTROLS_BUILD_TESTS)
     endif()
     add_test(NAME song_lyrics COMMAND "$<TARGET_FILE:MTControlsSongLyricsTests>")
 
+    juce_add_console_app(MTControlsChordProTests PRODUCT_NAME "ChordPro Codec Tests")
+    target_sources(MTControlsChordProTests PRIVATE tests/chordpro_tests.cpp
+        src/data/SongLyrics.cpp src/data/ChordProCodec.cpp)
+    target_include_directories(MTControlsChordProTests PRIVATE src)
+    target_link_libraries(MTControlsChordProTests PRIVATE juce::juce_core)
+    if(MSVC)
+        target_compile_options(MTControlsChordProTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME chordpro COMMAND "$<TARGET_FILE:MTControlsChordProTests>")
+
     juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
     target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
         src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
@@ -1337,6 +1347,8 @@ target_sources(MTControls
         src/data/SongData.h
         src/data/SongLyrics.cpp
         src/data/SongLyrics.h
+        src/data/ChordProCodec.cpp
+        src/data/ChordProCodec.h
         src/data/SongLibraryStore.cpp
         src/data/PortableFlacConversion.cpp
         src/data/PortableFlacConversion.h

@@ -44,6 +44,13 @@ public:
   void refreshThemeColours();
   void setOnDismissRequested(std::function<void()> callback);
   void setEmbeddedLibraryPage(bool enabled);
+  using ProjectDestinationCompletion = std::function<void(juce::File, juce::String)>;
+  using ProjectDestinationPrompt = std::function<void(
+      const ImportedSongData &, ProjectDestinationCompletion)>;
+  /** Optional asynchronous native destination UI; empty path means cancel. */
+  void setProjectDestinationPrompt(ProjectDestinationPrompt prompt) {
+    promptProjectDestination = std::move(prompt);
+  }
   bool isSubmissionInProgress() const { return isSubmitting; }
 
 private:
@@ -147,6 +154,8 @@ private:
       onSubmit;
   std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
       resolveProjectDestination;
+  ProjectDestinationPrompt promptProjectDestination;
+  uint64_t destinationPromptGeneration = 0;
   std::function<bool(ImportedSongData, juce::String &)> onMetadataOnlySubmit;
   std::function<void()> onDismissRequested;
   Mode mode = Mode::Import;

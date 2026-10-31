@@ -1075,6 +1075,10 @@ void LibraryCatalogPanel::setOnSongConvertRequested(SongConvertRequested cb) {
   onSongConvertRequested = std::move(cb);
 }
 
+void LibraryCatalogPanel::setOnProjectExportRequested(SongEditRequested cb) {
+  onProjectExportRequested = std::move(cb);
+}
+
 void LibraryCatalogPanel::setOnProjectUploadRequested(
     ProjectUploadRequested cb) {
   onProjectUploadRequested = std::move(cb);
@@ -1713,6 +1717,19 @@ std::unique_ptr<juce::Component> LibraryCatalogPanel::createRowMenu(
              });
            }, SvgIconName::Pencil});
     }
+#if !JUCE_IOS && !JUCE_ANDROID
+    if (!remoteLibrary && selectedItem.isProjectBacked && selectedItem.isProjectAvailable &&
+        !selectedItem.isSharedCloud && onProjectExportRequested) {
+      actions.push_back(
+          {L10n::tr("Exportar copia del proyecto...", "Export project copy..."), true, false, false,
+           [safeThis, songId = selectedItem.songId] {
+             juce::MessageManager::callAsync([safeThis, songId] {
+               if (safeThis != nullptr && !safeThis->remoteLibrary && safeThis->onProjectExportRequested)
+                 safeThis->onProjectExportRequested(songId);
+             });
+           }, SvgIconName::FileAudio});
+    }
+#endif
     if (!selectedItem.isProjectBacked) {
       actions.push_back(
           {L10n::tr("Convertir a proyecto...", "Convert to project..."), true, false, false,

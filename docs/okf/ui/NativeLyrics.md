@@ -1,9 +1,9 @@
 ---
 type: Technical Contract
 title: Native Song Lyrics
-description: Editores nativos de letra y fragmentos musicales para iOS y Android
+description: Editores nativos de letra, secciones y acordes con posiciones UTF-16
 resource: src/platform/NativeSongLyricsEditor.mm
-timestamp: 2026-10-25T00:00:00-03:00
+timestamp: 2026-10-28T00:00:00-03:00
 ---
 
 # Letra nativa de la canción
@@ -39,7 +39,11 @@ círculo navega a la tarjeta y coloca un cursor al inicio, sin seleccionar el bl
 ni abrir el teclado si estaba oculto; su estado activo acompaña la posición visible.
 Si todas las tarjetas caben en el editor, conserva la última elección explícita.
 La navegación resuelve el layout pendiente del destino antes de calcular el scroll;
-la caché decorativa se invalida junto al layout nativo.
+la caché decorativa se invalida junto al layout nativo. Sus mapas de bandas se
+limpian antes de delegar la invalidación a TextKit: cambiar los insets puede
+provocar layout síncrono, y limpiar después borraría la geometría recién creada.
+La presentación puede reconstruir una tarjeta a partir de su fragmento de línea
+si la caché aún no contiene ese bloque.
 Versos, coros y pre-coros se numeran por su orden en la letra. Los demás tipos
 sólo añaden número si se repiten. Los colores identifican el tipo, y los nombres
 y códigos completos permanecen disponibles para accesibilidad.
@@ -86,8 +90,9 @@ agrupación nativa y restaura los rangos correspondientes al texto que queda.
 
 La presentación conserva un único `UITextView` transparente con TextKit y un
 layout manager propio para calcular la geometría. Los fondos son una vista hermana
-por debajo del editor; los encabezados, otra por encima. Ambas decoraciones dejan
-pasar los gestos al texto. No se pinta una tarjeta opaca en el paso de dibujo del
+por debajo del editor; los encabezados, otra por encima. El fondo y las áreas
+libres del overlay dejan pasar los gestos al texto. El encabezado de una tarjeta
+movible recibe directamente el arrastre. No se pinta una tarjeta opaca en el paso de dibujo del
 layout manager: eso tapaba el resaltado de selección nativo dentro de la tarjeta.
 La selección, pegado, teclado, Undo/Redo y offsets UTF-16 siguen perteneciendo al
 texto real. Los encabezados son elementos UIKit accesibles y nunca se guardan
@@ -109,7 +114,8 @@ de selección y el scroll necesario para escribir por encima del teclado.
 La restauración explícita del viewport se reserva para asignar o quitar marcas
 y actualizar la escala, no para cada carácter. La composición marcada del teclado
 no se reformatea hasta confirmarse, incluso cuando termina sin otro cambio de
-selección. No se agregan reconocedores de gestos sobre el texto.
+selección. El observador de menú descrito a continuación no sustituye los gestos de
+selección ni controla el desplazamiento de UIKit.
 
 Deshacer y Rehacer conservan también las marcas del texto que se borra y se
 recupera. El editor conserva un historial de metadatos junto al historial nativo
@@ -120,15 +126,118 @@ sustituto Unicode. Las marcas no se superponen: al aplicar otra se recorta o
 divide la anterior, conservando los fragmentos restantes. Editar texto reajusta
 los rangos. No se insertan encabezados ocultos ni espacios para posicionarlos.
 
-`SongLyricsDocument` tiene versión 1, `text` y `sections` con ID, tipo, inicio y
-longitud; su JSON declara `offsetEncoding: "utf16"`. El límite es 262144 unidades
-UTF-16 y 4096 marcas. JSON/rangos inválidos no producen un documento parcial.
+`SongLyricsDocument` conserva el esquema 1 de `text` y `sections` con ID, tipo,
+inicio y longitud. El esquema 2 añade `chords`, con ID, símbolo y posición UTF-16
+sobre el texto del documento; el JSON declara `offsetEncoding: "utf16"` en ambos.
+La primera asignación de acorde usa esquema 2; las tarjetas instrumentales
+independientes requieren esquema 3. `normalizeSongLyricsSchema` conserva el 3
+mientras quede una tarjeta, aunque todas sus celdas estén vacías; sin tarjetas,
+elige 2 si hay acordes sobre letra o 1 si no. Los límites son 262144 unidades
+UTF-16, 4096 secciones de texto y 4096 símbolos de acorde. JSON/rangos inválidos no producen un documento parcial. Una versión
+futura se conserva como documento opaco de sólo lectura, para que otra edición de
+metadata no borre información desconocida.
 La letra es `ImportedSongData::lyrics` opcional y viaja con la canción, incluida
 su metadata de proyecto y de nube; no es un ajuste de mezcla por setlist.
 
 Estas secciones son etiquetas de la letra. No crean ni modifican las secciones
-del arreglo, el transporte, la guía, las automatizaciones ni FreeShow. Acordes,
-transposición y seguimiento sincronizado no forman parte de esta primera etapa.
+del arreglo, el transporte, la guía, las automatizaciones ni FreeShow. La edición
+de acordes tampoco cambia la tonalidad o el tempo del player. Transposición y
+seguimiento sincronizado quedan fuera de este cambio.
+
+## iOS: acordes desde la selección nativa
+
+En iOS 16 o posterior el usuario coloca el cursor con los gestos y la lupa de UIKit; el menú contextual
+nativo incorpora **Acorde**. Con un cursor sin selección se ofrece Acorde y se
+conservan las acciones nativas aplicables, como Pegar. Con texto seleccionado
+conviven Acorde, Sección y las acciones sugeridas por UIKit. No se presenta un
+formulario para indicar la posición: se usa el inicio del rango capturado al
+abrir el menú. La elección permite sustituir el acorde de esa posición y quitarlo.
+Los identificadores del menú y sus acciones son `nativeLyricsChordMenu`,
+`nativeLyricsChord:<símbolo>` y `nativeLyricsChordRemove`.
+
+Un acorde queda anclado a una posición entre caracteres completos, incluso en
+medio de una palabra: `espe[Am7]ranza` se muestra con Am7 sobre la r. No se insertan
+corchetes, espacios ni objetos de texto en el `UITextView`. Los símbolos son
+etiquetas UIKit decorativas y accesibles, con ID `nativeLyricsChord:<id>`, que no
+interceptan los gestos. TextKit reserva espacio encima de la línea real; cuando
+dos símbolos cercanos se solaparían se reparten en filas, conservando la posición
+horizontal de cada ancla. El cursor y los tiradores siguen usando la altura de la
+letra, no la de las filas de acordes.
+
+Las acciones capturan la revisión del documento y se descartan si el texto o sus
+marcas cambiaron antes de ejecutarlas. Tampoco modifican una composición IME
+activa. Añadir, cambiar o quitar un acorde registra una operación de metadata en
+el `NSUndoManager` del texto; Undo/Redo conserva tanto el texto nativo como las
+anclas. Escribir antes de un acorde desplaza su posición junto con el texto
+original. Borrar el carácter que empieza en el ancla elimina ese acorde; los que
+están después del rango editado se desplazan con el texto superviviente.
+
+En iOS 13–15 el menú heredado mantiene Sección y ofrece las notas mayores
+C, D, E, F, G, A y B, además de quitar el acorde. Las variantes y los submenús
+requieren el menú de edición de iOS 16; no se eleva el mínimo del sistema.
+
+El intercambio local usa `ChordProCodec` para importar/exportar texto ChordPro:
+`[Am7]` se convierte en una marca estructurada, no en espacios de alineación.
+Acepta metadatos y los ocho tipos de sección nativos con sus alias documentados
+en el codec; no interpreta todo el lenguaje ChordPro. Una directiva o un rango
+no representable produce un error explícito antes de sustituir el documento.
+Los metadatos importados no cambian por sí solos la canción ni su reproducción.
+En iOS 14+, el botón de más acciones ofrece importar ChordPro del portapapeles y
+exportar el documento como texto mediante la hoja nativa de compartir. La lectura
+del portapapeles ocurre sólo al solicitar la importación; un error deja intacto
+el borrador. Sustituirlo exige confirmar el aviso, descarta acciones de revisión
+obsoleta y registra un único Undo del documento completo. El menú no sustituye
+las acciones Pegar/Copiar del `UITextView` ni accede al portapapeles al abrirlo.
+Android conserva el flujo nativo de texto/secciones; esta edición contextual de
+acordes corresponde a iOS.
+
+## iOS: menú al terminar la selección y reordenación de tarjetas
+
+En iOS 16+, el observador pasivo `nativeLyricsSelectionMenuObserver` solicita
+el menú al terminar una pulsación prolongada del texto. Permite reconocimiento
+simultáneo y no cancela ni retrasa los toques de UIKit. `UIEditMenuInteraction`
+conserva la lupa, el cursor, los tiradores y los reconocedores nativos. La
+solicitud se resuelve tras el runloop y se descarta si cambia la revisión, hay
+IME, guardado, escritura, scroll manual o cancelación. Escribir o navegar a una
+tarjeta no abre el menú por sí solo. Los callbacks de presentación/cierre evitan
+duplicar uno ya visible.
+
+Un cursor ofrece **Acorde** y las acciones nativas aplicables. Una selección de
+texto conserva también **Sección**. Este menú no crea tarjetas instrumentales
+vacías ni ofrece una cuadrícula de celdas para introducir acordes.
+
+Las tarjetas completas se mueven manteniendo pulsado su encabezado con ID
+`nativeLyricsCardHeader:<id>`. `UIDragInteraction` se instala directamente en
+ese encabezado; el cuerpo sigue siendo el único `UITextView` editable y
+seleccionable. El usuario mantiene pulsado el encabezado, arrastra y suelta en
+el separador entre tarjetas.
+Un `UIDropInteraction` del contenedor raíz calcula el destino y muestra un
+indicador pasivo `nativeLyricsCardDropIndicator`. No se usan los tiradores de
+selección de texto para mover tarjetas.
+
+El payload local lleva `sourceId`, `revision` y `editorToken`, un UUID por editor.
+Su tipo es `com.playworship.lyrics-card`, con visibilidad de proceso propio y
+sesión restringida a la aplicación. Un token de otro editor, revisión obsoleta,
+IME o guardado impide aceptar el movimiento. El destino es otra tarjeta o el final del conjunto de tarjetas;
+soltar en la misma posición no cambia el documento ni añade Undo.
+
+`moveLyricsCard:before:revision:` usa la transacción portable del modelo: mueve
+el texto real y permuta rangos de secciones y anclas de acordes, conservando IDs.
+No basta ordenar el array de etiquetas. Una tarjeta de letra debe cubrir párrafos
+completos y no contener un instrumental estrictamente interior. Los fragmentos
+históricos parciales no son arrastrables. Cada movimiento se confirma como una
+operación de Undo/Redo y se guarda por el flujo existente, sin cambiar transporte,
+audio o FreeShow.
+
+Los documentos heredados de esquema 3 conservan sus bloques, filas y celdas al
+abrir y guardar. Sus símbolos instrumentales se muestran como contenido de sólo
+lectura, con separación visual respecto a las tarjetas de letra. Las posiciones
+vacías y las filas heredadas conservan su distribución de compases; un bloque
+completamente vacío usa una presentación compacta. No hay puntos para celdas
+vacías ni controles de añadir fila o eliminar sección. Esta vista no
+convierte los símbolos en caracteres de la letra ni borra datos importados.
+Un bloque heredado puede moverse como tarjeta cuando lo permite el modelo;
+su contenido de filas y celdas permanece intacto.
 
 ## Guardar y cerrar
 
@@ -147,11 +256,14 @@ actualiza exclusivamente la letra sobre metadata actual; consultar
 
 ## Verificación
 
-- `song_lyrics`: Unicode, rangos, edición, solapamientos y JSON.
+- `song_lyrics`: Unicode, rangos, edición, solapamientos, anclas de acordes y JSON.
+- `chordpro`: importación/exportación, símbolos inline, UTF-16 y errores sin pérdida.
 - `song_project_creation`: persistencia de letra y conservación del proyecto.
 - `song_list_lyrics`: menús, ID estable, guardado y ciclo de vida con bridge simulado.
 - `MTControlsNativeSongLyricsUITests`: app aislada UIKit en iOS, editor real,
   menú, selección, undo, teclado, error y cierre; escribe su reporte en Documents.
+  El caso de acordes añade cursor colapsado, convivencia con Sección/Copy/Paste,
+  Am7 dentro de palabra, colisiones, revisión obsoleta, IME y guardado/reapertura.
 - La compilación o el bridge simulado no sustituyen la revisión visual del flujo
   completo en el simulador de iPhone.
 
@@ -253,6 +365,52 @@ visual del diseño de tarjetas en un iPhone físico.
   descrita corresponde al simulador.
 - Evidencia: `output/ios-lyrics-theme/` del checkout local de QA, con capturas
   `editor-ambar.png` y `enter-dentro-de-seccion.png`, reporte UIKit y log Wi-Fi.
+
+
+### Acordes contextuales — 2026-10-28
+
+- `song_lyrics`: 131 comprobaciones correctas; `chordpro`: 65 correctas.
+  `song_project_creation`: 1/1 correcta, con persistencia real de IDs y anclas.
+- Harness UIKit arm64 compilado y ejecutado en el simulador iPhone 16 dedicado con iOS
+  26.5: 176 comprobaciones correctas y salida 0. Incluye menú colapsado y con
+  selección, Am7 dentro de palabra, dos acordes cercanos sin colisión,
+  revisión obsoleta, Undo/Redo, IME y guardar/reabrir el mismo JSON.
+- Reporte y pasada final: `/tmp/playworship-ios-chords-ui-report.json` y
+  `/tmp/playworship-ios-chords-ui-settled-run.log`. El PNG real del window está
+  en `/tmp/playworship-ios-chords-settled-preview.png`; no acredita por sí solo gestos
+  manuales del menú del sistema.
+- App firmada compilada, instalada y lanzada por Wi-Fi en iPhone 16
+  «Luchoelquesabemucho»; firma y ausencia de conexión USB verificadas.
+  Evidencia: `/tmp/playworship-ios-chords-device-final-build.log` y
+  `/tmp/playworship-ios-chords-iphone-install.log`.
+- La revisión táctil manual en ese iPhone físico sigue pendiente.
+
+
+### Menú automático y reordenación — 2026-10-28
+
+- Modelo: 201 comprobaciones correctas. Persistencia real: 2/2 correcta.
+  Evidencia: `/tmp/playworship-card-reorder-tests.log`.
+- Harness UIKit arm64 compilado y ejecutado en el simulador iPhone 16 dedicado,
+  iOS 26.5: 247 comprobaciones correctas y salida 0. Conserva los casos de texto,
+  selección, acordes y menú automático; añade ausencia de Create, legacy readonly,
+  drag por asa, payload local/token/revisión, nested rechazado, movimientos
+  Unicode, Undo/Redo y guardar/reabrir con IDs y anclas conservados.
+- Logs: `/tmp/playworship-lyrics-reorder-ui-final-build.log` y
+  `/tmp/playworship-lyrics-reorder-ui-run.log`. Reporte:
+  `/tmp/playworship-lyrics-reorder-ui-report.json`.
+- Las capturas reales asentadas `/tmp/playworship-lyrics-reorder-readonly-preview.png`
+  y `/tmp/playworship-lyrics-reordered-preview.png` muestran símbolos sin puntos ni
+  controles, fondos separados y el orden final Verso/Puente/Coro con sus acordes.
+- La fixture manual `reorder` abrió tres tarjetas. CUA intentó arrastrar Coro
+  hacia arriba, pero la herramienta no mantuvo la pulsación de lift y no se
+  observó cambio de orden. El gesto real no se considera validado con ese intento.
+- Compilación firmada, instalación y arranque por Wi-Fi en el iPhone 16 físico
+  «Luchoelquesabemucho»: correctos; firma y ausencia de USB verificadas, con
+  objetos posteriores a las fuentes finales. Logs:
+  `/tmp/playworship-lyrics-reorder-device-build.log` y
+  `/tmp/playworship-lyrics-reorder-iphone-install.log`.
+- La QA táctil del arrastre en el iPhone físico queda pendiente de la prueba del
+  usuario; los callbacks de la fixture automática no sustituyen ese gesto.
 
 
 ## Android: paridad del flujo nativo
