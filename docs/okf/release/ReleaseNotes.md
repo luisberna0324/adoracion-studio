@@ -86,14 +86,16 @@ independiente, consultas al feed ni resumenes duplicados.
 `latest.json` sigue generado y disponible para consumidores que necesiten un
 resumen; el sincronizador de la landing queda preparado pero no se usa en su boton.
 
-La ayuda pide el indice de hasta 12 resumenes y el estado de la version mas
-reciente. Solo pide `versions/<version>.json` al abrir una tarjeta; conserva una
+La ayuda pide solo el indice de hasta 12 resumenes, sin consultar ni mostrar
+estados de tienda, builds, filtros o un panel de disponibilidad.
+Solo pide `versions/<version>.json` al abrir una tarjeta; conserva una
 cache validada de hasta 12 documentos. Los documentos antiguos permanecen en GCS,
 aunque salgan del indice reciente. No hay una descarga creciente del historial.
 
 Los sitios validan esquema, version, fechas, rutas y tamanos; usan consultas
 anonimas con timeout y snapshots generados si la red falla. La ayuda incluye
-por separado el ultimo detalle como asset estatico y el estado fechado. Su lista
+por separado el ultimo detalle como asset estatico. El estado fechado sigue como
+archivo operativo, fuera de la vista y del bundle del navegador. Su lista
 legacy conserva solamente notas anteriores al contrato. No editar a mano los
 snapshots ni agregar releases nuevas a esa lista. Un estado viejo no se muestra
 bajo el numero de una version nueva. La disponibilidad no habilita pagos ni
