@@ -88,6 +88,22 @@ sustituyen. Los tests interactivos y LAN mantienen su validación específica.
    Sentry/GCS, retención de tres versiones, manifiesto y tag/GitHub Release.
    Todos están protegidos por el opt-in; no hay publicación por eventos.
 
+El documento `release-notes/<version>.json` del SHA seleccionado debe estar
+aprobado (`status: released`) antes de publicar. El preflight valida contenido
+y el archivo independiente `release-status/<version>.json`; despues genera
+notas/assets de GitHub, resumen para la landing, indice ligero y detalle por
+version para la ayuda. Las notas automaticas de PR solo
+se conservan para tags historicas sin documento, anteriores a 2.4.0. Ver
+[Notas de release](ReleaseNotes.md). No se ejecutan suites QA en este flujo.
+
+Para publicar solamente disponibilidad de una release existente no borrador,
+usar `release_status_only=true`, `status_version=<version>`,
+`publish_release=true`, `export_play_signing_key=false` y
+`google_play_only=false`. La revision `ref` debe contener el estado revisado.
+Este job no construye binarios ni cambia tags, notas editoriales, catalogo,
+manifiesto de descargas o retencion. Solo publica estado JSON y su asset.
+Actualizar metadatos requiere autorizacion; no inicia una revision de tienda.
+
 Un tag explícito conserva su versión; rama/SHA calcula release_kind desde tags
 estables. La revisión fijada identifica también símbolos Sentry. No se cancela
 una operación de release activa por una ejecución nueva. Subir esta rama o

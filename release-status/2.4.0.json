@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "version": "2.4.0",
+  "verifiedOn": "2026-11-01",
+  "distribution": [
+    {
+      "channel": "windows-installer",
+      "status": "available"
+    },
+    {
+      "channel": "macos-installer",
+      "status": "available"
+    },
+    {
+      "channel": "android-apk",
+      "status": "available"
+    },
+    {
+      "channel": "mac-app-store",
+      "status": "in_review",
+      "build": "134",
+      "reviewSubmitted": true,
+      "releaseType": "manual"
+    },
+    {
+      "channel": "ios-app-store",
+      "status": "pending_review",
+      "build": "134",
+      "reviewSubmitted": true,
+      "releaseType": "manual"
+    }
+  ]
+}

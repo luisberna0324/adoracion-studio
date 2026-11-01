@@ -37,6 +37,16 @@ on:
         required: true
         default: false
         type: boolean
+      release_status_only:
+        description: "Actualizar solo disponibilidad de una release existente; no compila ni modifica tags"
+        required: true
+        default: false
+        type: boolean
+      status_version:
+        description: "Version existente para actualizar disponibilidad (ejemplo 2.4.0); solo modo estado"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -47,7 +57,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: ${{ !inputs.export_play_signing_key }}
+    if: ${{ !inputs.export_play_signing_key && !inputs.release_status_only }}
     runs-on: ubuntu-latest
     outputs:
       release_ref: ${{ steps.resolve.outputs.release_ref }}
@@ -182,8 +192,16 @@ jobs:
           echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
           echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
 
+      - name: Validate release document before building published installers
+        if: steps.resolve.outputs.publish_release == 'true'
+        shell: bash
+        env:
+          RELEASE_REF: ${{ steps.resolve.outputs.release_ref }}
+          SEMVER: ${{ steps.resolve.outputs.semver }}
+        run: python3 scripts/release_notes.py --version "$SEMVER" --ref "$RELEASE_REF" --allow-legacy
+
   export-play-signing-key:
-    if: ${{ inputs.export_play_signing_key }}
+    if: ${{ inputs.export_play_signing_key && !inputs.release_status_only }}
     name: Export encrypted Google Play signing key
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -796,7 +814,17 @@ jobs:
             git push origin "${TAG}"
           fi
 
-      - name: Create GitHub release (without binary assets)
+      - name: Render versioned release document
+        shell: bash
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          set -euo pipefail
+          if [[ -f scripts/release_notes.py ]]; then
+            python3 scripts/release_notes.py --version "$SEMVER" --allow-legacy --output-dir "$RUNNER_TEMP/release-document"
+          fi
+
+      - name: Create or update GitHub release from its document
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -804,7 +832,17 @@ jobs:
           set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
 
-          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+          if [[ -f "$RUNNER_TEMP/release-document/notes.md" ]]; then
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              gh release edit "${TAG}" --notes-file "$RUNNER_TEMP/release-document/notes.md"
+            else
+              gh release create "${TAG}" --title "${TAG}" \
+                --target "${{ needs.prepare.outputs.release_ref }}" \
+                --notes-file "$RUNNER_TEMP/release-document/notes.md"
+            fi
+            gh release upload "${TAG}" "$RUNNER_TEMP/release-document/release-notes.json" --clobber
+            gh release upload "${TAG}" "$RUNNER_TEMP/release-document/release-status.json" --clobber
+          elif ! gh release view "${TAG}" >/dev/null 2>&1; then
             gh release create "${TAG}" \
               --title "${TAG}" \
               --target "${{ needs.prepare.outputs.release_ref }}" \
@@ -876,3 +914,59 @@ jobs:
           cat "${links_md}" >> "${merged_body}"
 
           gh release edit "${TAG}" --notes-file "${merged_body}"
+
+      - uses: google-github-actions/auth@v2
+        if: hashFiles('scripts/release_notes.py') != ''
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        if: hashFiles('scripts/release_notes.py') != ''
+      - name: Publish release documents for the help page
+        if: hashFiles('scripts/release_notes.py') != ''
+        shell: bash
+        env:
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          if [[ -f "release-notes/${SEMVER}.json" ]]; then
+            bash scripts/publish_release_notes.sh
+          fi
+
+  publish-release-status:
+    if: inputs.release_status_only
+    name: Publish release availability only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Validate authorized mode and existing public release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEMVER: ${{ inputs.status_version }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          EXPORT_KEY: ${{ inputs.export_play_signing_key }}
+          GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
+        run: |
+          set -euo pipefail
+          [[ "$PUBLISH_RELEASE" == true && "$EXPORT_KEY" == false && "$GOOGLE_PLAY_ONLY" == false ]] || { echo 'Status-only requires publication opt-in and cannot combine export/Play modes.' >&2; exit 1; }
+          [[ "$SEMVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Missing stable status_version' >&2; exit 1; }
+          [[ "$(gh release view "v${SEMVER}" --json isDraft --jq '.isDraft')" == false ]] || { echo 'Target release is missing or a draft' >&2; exit 1; }
+          python3 scripts/release_notes.py --version "$SEMVER" --status-only --output-dir "$RUNNER_TEMP/release-status"
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Publish only status JSON, without replacing notes or installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+          SEMVER: ${{ inputs.status_version }}
+        run: |
+          set -euo pipefail
+          bash scripts/publish_release_notes.sh --status-only
+          gh release upload "v${SEMVER}" "$RUNNER_TEMP/release-status/release-status.json" --clobber

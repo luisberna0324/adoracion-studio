@@ -61,11 +61,18 @@ misma fuente de version de CMake. La variante Linux tambien la hereda.
 
 ## Notas y disponibilidad
 
-`release-notes/2.4.0.json` es un borrador sin fecha de publicacion. No describe
-2.4.0 como disponible ni anuncia funciones pendientes de validar. Completar las
-notas con el delta real del SHA final antes de publicarlas. La aprobacion de
-tiendas puede hacer que cada plataforma quede disponible en fechas distintas.
-La ayuda debe marcar disponibilidad por plataforma y conservar el historial.
+`release-notes/2.4.0.json` registra el contenido editorial de la entrega del
+31 de octubre. `release-status/2.4.0.json` registra por separado la disponibilidad
+independiente de cada canal en `distribution`, con su fecha de verificacion.
+`status: released` y `publishedAt` se refieren a la entrega en GitHub, no a la
+aprobacion de todas las tiendas. `platforms` identifica las plataformas objetivo;
+consultar el archivo de estado para saber cuales estan disponibles. Las funciones
+heredadas de 2.3.6 se presentan como conservadas, no como nuevas en esa entrega.
+Actions genera Markdown y JSON, un resumen minimo para la landing y un indice
+acotado para la ayuda, que carga el detalle por version bajo demanda. Los
+snapshots de respaldo son generados, no otras fuentes editoriales. La
+disponibilidad puede publicarse sin recompilar usando `release_status_only`.
+Ver [Documento de release](ReleaseNotes.md).
 
 Comprobaciones de preparacion:
 
@@ -88,3 +95,23 @@ cd android
   contador cero y assembleRelease sin contador explicito, antes de compilar.
 - Los metadatos de prueba usaron build 1. Es un fixture local, no una eleccion
   de contador para distribucion. Windows no se compilo en este Mac.
+
+## Publicacion y envios Apple, 2026-10-31
+
+- El workflow corregido `41238174619` finalizo correctamente sobre
+  `04b7915da710bc1911082ccfe778c243a1484612`. La tag `v2.4.0` y su GitHub Release
+  se publicaron; los cuatro enlaces GCS de Windows x64/x86, macOS y Android
+  devuelven HTTP 200. Esto no acredita instalacion ni QA en dispositivos.
+- Los archives Apple se construyeron localmente, no en ese workflow. iOS y
+  macOS usan version 2.4.0, build 134, con firma de distribucion y validacion
+  de los paquetes exportados. Ambas cargas fueron aceptadas por Apple.
+- Mac App Store: se retiro 1.1.5 con autorizacion del usuario y se envio 2.4.0
+  (134). Apple confirmo `Pendiente de revision`, envio
+  `8daec591-c344-4b80-8ba4-e731927f32fc`. La publicacion sigue siendo manual.
+- iPhone/iPad: la build 134 figura `Procesando` en App Store Connect; las
+  novedades estan guardadas, pero aun no se asocio ni envio a revision.
+- Apple aviso de simbolos de Bungee ausentes. Los dSYM de la aplicacion fueron
+  incluidos y verificados; las cargas finalizaron correctamente. No se
+  presenta esto como una prueba funcional de la app ni como aprobacion.
+- Los manifests, validaciones, logs y capturas locales se conservan en
+  `output/appleconnect/2.4.0-134/` y `output/appleconnect/mac-2.4.0-134/`.

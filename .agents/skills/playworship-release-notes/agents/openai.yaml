@@ -1,0 +1,4 @@
+interface:
+  display_name: "PlayWorship Release Notes"
+  short_description: "Auditar y preparar las notas de cada release"
+  default_prompt: "Usa $playworship-release-notes para preparar el resumen, detalle y disponibilidad de la proxima release de PlayWorship."
