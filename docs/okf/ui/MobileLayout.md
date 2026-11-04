@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-10-12T00:00:00-03:00
+timestamp: 2026-10-25T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -48,6 +48,23 @@ ventana, la raiz OpenGL y el editor, incluida el area segura actualizada.
 Los cambios de area segura se propagan tambien cuando el tamano de la ventana
 y del contenido permanece igual. Asi se retira el margen superior al ocultar
 la barra del sistema, sin esperar a otra rotacion o redimension.
+
+El editor de [Letra nativa](NativeLyrics.md), abierto desde el menú de una
+canción local, usa UIKit a pantalla completa. En iPhone solicita portrait y al
+cerrar restaura la máscara previa. En iPad usa la orientación actual, el área
+segura y el teclado de UIKit; no cambia el perfil ni la distribución del player.
+En iOS, colocar el cursor abre **Acorde** en el menú contextual nativo; una
+selección conserva también **Sección**. Lupa, tiradores, pegado y teclado siguen
+siendo de UIKit. Los símbolos son decoraciones sobre las posiciones UTF-16 del
+texto; TextKit reserva sus filas y evita solapes sin insertar espacios. No se
+abre un modal de posición. El observador de pulsación prolongada que solicita
+el menú al soltar es pasivo y simultáneo: no sustituye la lupa ni la selección.
+Los cambios de texto, IME o scroll invalidan la solicitud pendiente. Mantener
+pulsado el encabezado de una tarjeta completa inicia su arrastre nativo; el
+separador indica dónde se soltará. El cuerpo conserva la selección y la lupa de UIKit. Mover una tarjeta
+permuta letra y acordes con Undo/Redo; no cambia la reproducción ni las
+orientaciones del player. Las filas instrumentales heredadas se conservan como
+contenido de sólo lectura, sin puntos ni controles para crear filas.
 
 En teléfonos, el botón de tres puntos horizontales del `TopBar` incluye
 `Ensayo`. Abre `PracticePanel` como superficie completa y solicita portrait;
@@ -478,6 +495,19 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   nativa de entrada al cambiar de editor, actualizando texto, seleccion y rasgos
   del teclado mediante `reloadInputViews`. Deslizar el formulario no lo cierra.
   Al cerrar el teclado se recupera el pie con `Siguiente` sin reconstruir campos.
+- Un cambio de teclado, área segura o tamaño reajusta Biblioteca y su
+  asistente sin ocultarlos temporalmente ni vaciar sus límites mientras el
+  drawer esté abierto. Los mismos campos mantienen foco, texto, selección y
+  caret durante el reflow. Ocultar y volver a mostrar su padre en un mismo
+  `layoutMainUi` también descarta el foco en JUCE y puede cerrar/reabrir el IME
+  de Android; no se fuerza el foco ni se reabre el teclado para compensarlo.
+- `Editar canción` conserva su overlay de JUCE encima de Biblioteca y su scrim
+  después del reflow del teclado o área segura. Es hermano del drawer bajo el
+  editor principal; elevar sólo Biblioteca lo tapaba en iPhone aunque siguiera
+  abierto y con foco. El owner restaura su prioridad con `toFront(false)` sin
+  ocultar/recrear componentes ni robar foco; reautenticación y Ensayo quedan
+  por encima según el orden existente.
+  Cerrar Biblioteca sí retira su superficie y finaliza la edición habitual.
 ### Estilo compartido de selección
 
 `applyTheme` instala `SelectionLookAndFeel` como estilo global de combos y menús
@@ -727,9 +757,14 @@ de orientación, tamaño de escena, área segura, drawer y Pads en el dispositiv
 
 ## Rendimiento en Android
 
-- El wrapper Android compila `juce_opengl` y conecta un `OpenGLContext` al
-  componente raiz que contiene el editor. JUCE conserva un framebuffer y
-  repinta sus regiones invalidadas con el renderer 2D de OpenGL. El peer
+- El wrapper Android compila `juce_opengl` y conecta un unico `OpenGLContext`
+  a `MainWindow`, que contiene la raiz del editor y sus modales globales como
+  componentes hermanos. La invitacion de la demo y las condiciones de Cloud
+  quedan dentro del mismo arbol renderizado; no pueden bloquear los controles
+  mientras sus pixeles quedan ocultos detras de una superficie GL del contenido.
+  `AndroidRootComponent` conserva solamente la propiedad y el layout del editor.
+  JUCE conserva un framebuffer y repinta sus regiones invalidadas con el renderer
+  2D de OpenGL. El peer
   software anterior rasterizaba y transferia la ventana completa incluso ante
   invalidaciones pequenas, ocupando el message thread durante los gestos.
 - Cada slot del mixer conserva una imagen rasterizada en memoria de CPU. El
@@ -739,8 +774,9 @@ de orientación, tamaño de escena, área segura, drawer y Pads en el dispositiv
   el tamano fisico del slot y se libera con el componente. El cache de texturas
   del contexto tiene un presupuesto de `32 MiB`.
 - El contexto solo dibuja cuando hay invalidaciones (`setContinuousRepainting(false)`).
-  No hay un bucle de render permanente mientras la UI esta quieta. La raiz es
-  opaca y desconecta el contexto antes de destruir el editor y sus controles.
+  No hay un bucle de render permanente mientras la UI esta quieta. La raiz de
+  contenido sigue siendo opaca. `MainWindow` desconecta el contexto antes de
+  detener el runtime de audio y destruir el contenido o los modales de ventana.
 - `assembleDebug` optimiza el codigo nativo con `-O2`, incluidos los modulos JUCE
   y el motor de audio. Conserva los simbolos de debug y el APK depurable. No
   activa `fast-math` ni cambia las opciones de Release. Para depuracion paso a
@@ -899,8 +935,12 @@ activarse, pausarse o pasar por el recorte del viewport nunca cambia el tamaño
 ni el layout del título. `Sonando` depende de transporte reproduciendo;
 `Pausada` identifica la sección bajo el cursor con transporte detenido/pausado.
 `Preparando` permanece distinto de `Salto programado`, que requiere destino
-pendiente confirmado. Loop futuro se presenta como `Loop armado`. Ir conserva
-su etiqueta breve; Preparando no se duplica ni se comprime dentro del botón.
+pendiente confirmado. Loop futuro se presenta como `Loop armado` y espera la
+llegada natural. Al cambiar desde una sección que está sonando en Loop hacia
+otra, Preparando/Salto programado identifica el destino y el borde/estado Loop
+permanece en la sección saliente hasta la entrada al nuevo loop. Otra pulsación
+en Loop del destino cancela ese cambio y conserva la repetición saliente.
+Ir conserva su etiqueta breve; Preparando no se duplica ni se comprime dentro del botón.
 Ir/Loop/Mute usan etiquetas de 13 puntos. La onda y el relleno de progreso
 ceden intensidad y una sombra gradual compartida mejora la lectura de las
 acciones, sin cajas individuales ni cambios en sus blancos de 44 × 44.
@@ -975,11 +1015,15 @@ Con Reducir movimiento de macOS/iOS, el destino mantiene relleno/borde y
 `Salto programado` estáticos; el pulso consulta la misma preferencia que Loop,
 inercia y centrado. No se invalida periódicamente ese bloque sólo para pulsar.
 
-El estado muestra Preparando mientras conserva el recorrido actual y Loop. Sólo al
-estar listo en todos los stems se confirma Salto programado, libera Loop y espera el
-próximo final válido, también hacia atrás o al revisitar una sección. El destino
-no hereda Loop. Preparando aparece sólo en la línea de estado, sin pulso de cola,
-sin anunciar el destino y sin reducir sus blancos táctiles.
+Al usar Ir, el estado muestra Preparando mientras conserva el recorrido actual y
+Loop. Sólo al estar listo en todos los stems se confirma Salto programado, libera
+Loop y espera el próximo final válido, también hacia atrás o al revisitar una
+sección. El destino de Ir no hereda Loop. Al cambiar entre dos loops desde la
+sección que está sonando, en cambio, el loop saliente se conserva también después
+de confirmar la cola y el destino empieza a repetir al entrar. Limpiar el salto
+cancela ese cambio conservando el loop saliente; limpiar Loop cancela ambos.
+Preparando aparece sólo en la línea de estado, sin pulso de cola, sin anunciar
+el destino y sin reducir sus blancos táctiles.
 Mute persiste hasta el desmute explícito: Ir no desmutea y Mute no cancela Ir.
 Estas reglas se aplican en todas las presentaciones. Click conserva su excepción.
 La representación usa el estado real del transporte para cola, Loop y progreso.
@@ -995,3 +1039,36 @@ no expone actualmente una preferencia equivalente en Android.
 El timer existente invalida sólo bordes de Loop cuando el bloque no cambia;
 progreso/pulso invalidan sus bloques y el pan invalida la fila. Las secciones
 fuera del clip se omiten en el render. No hay trabajo nuevo en audio.
+
+### Canción en blanco sin zona de onda
+
+Una canción cargada explícitamente como en blanco y sin stems colapsa toda
+el área de WaveformBar a altura cero. No reserva padding ni altura expandida
+o de toolbars. El mixer y el setlist comienzan debajo de TopBar y recuperan
+ese alto; Pads conserva su drawer/popover existente. La misma distribución
+común se usa en teléfono, tablet y escritorio, con sus insets habituales.
+Al salir del perfil teléfono se restaura la visibilidad del contenido de Pads
+según el estado abierto/cerrado guardado, sin apropiarse de un panel que siga
+en su popover. No se deja su contenedor vacío por haber ocultado Pads en teléfono.
+
+No se muestran controles, regla, cursor, compases ni texto vacío de la onda.
+El selector Onda/Secciones de escritorio y la opción de Secciones del menú
+táctil no se muestran; tampoco Inicio/Fin ni Ensayo en ese menú. Transporte,
+Click, Pads, tono y tempo conservan sus componentes y su estado. El reloj
+superior muestra sólo tiempo transcurrido.
+
+`refreshWaveformPresentationForSong()` actualiza la presentación al cambiar
+el tipo de canción local/remota y sólo pide un nuevo layout al cambiar el
+estado colapsado. No toca el transporte ni recrea componentes. `layoutMainUi()`
+recibe el perfil de teléfono resuelto por `resized()` y distribuye los mismos
+componentes; permite comprobar esa geometría nativa en el harness Linux.
+La preferencia de onda expandida se conserva para la próxima canción con audio.
+
+La condición usa metadatos de la canción cargada: `blankSong` y `stems.empty()`.
+No depende del nivel de señal, de la caché de picos, de la duración ni de cuántos
+readers están disponibles durante una carga. Una canción normal silenciosa,
+en carga o con audio ausente no se convierte visualmente en blanco. Al cargar
+pistas, incluso para el mismo ID remoto, se restaura el área normal sin otra
+interacción. Agregar stems mediante la edición existente convierte la canción
+en blanco a metadatos de audio conservando su ID/proyecto. La carga y el guardado
+siguen sus transacciones existentes; el layout no reinicia el motor de audio.

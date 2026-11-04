@@ -85,6 +85,126 @@ void expectNear(const float actual, const float expected,
   expect(std::abs(actual - expected) < 1.0e-6f, message);
 }
 
+// prepareToPlay must return even when the read-ahead service is unavailable.
+// The fallback starts the worker after two seconds so the old unbounded code
+// fails its elapsed assertion instead of hanging the entire test process.
+void testPrefillReturnsWithoutAnActiveWorkerAndRecovers() {
+  RampSource source(100000);
+  juce::TimeSliceThread worker("initially inactive prefill worker");
+  StemBufferingSource bufferingSource(&source, worker, false, 32768, 2, true);
+  juce::WaitableEvent preparationFinished;
+  std::atomic<bool> fallbackStartedWorker{false};
+  std::thread fallback([&] {
+    if (!preparationFinished.wait(2000)) {
+      fallbackStartedWorker.store(true);
+      if (!worker.startThread())
+        std::abort();
+    }
+  });
+
+  const auto startedAt = juce::Time::getMillisecondCounterHiRes();
+  bufferingSource.prepareToPlay(128, 48000.0);
+  const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - startedAt;
+  preparationFinished.signal();
+  fallback.join();
+
+  juce::AudioBuffer<float> output(2, 128);
+  const juce::AudioSourceChannelInfo info(&output, 0, 128);
+  const bool readyWithoutWorker =
+      bufferingSource.waitForNextAudioBlockReady(info, 10);
+  if (!worker.isThreadRunning())
+    expect(worker.startThread(), "previously inactive read worker starts");
+  const bool readyAfterRecovery =
+      bufferingSource.waitForNextAudioBlockReady(info, 2000);
+  if (readyAfterRecovery)
+    bufferingSource.getNextAudioBlock(info);
+  bufferingSource.releaseResources();
+  expect(worker.stopThread(2000), "recovered prefill worker stops cleanly");
+
+  expect(elapsedMs < 1000.0 && !fallbackStartedWorker.load(),
+         "prefill returns promptly when its read worker is not running");
+  expect(!readyWithoutWorker,
+         "preparation without a worker cannot claim its first block is ready");
+  expect(readyAfterRecovery,
+         "readiness recovers when the read worker becomes available");
+  for (int frame = 0; frame < 128; ++frame)
+    expectNear(output.getSample(0, frame), RampSource::sampleAt(frame),
+               "recovered read-ahead delivers exact initial audio frames");
+}
+
+class DelayedTimeSliceClient final : public juce::TimeSliceClient {
+public:
+  int useTimeSlice() override {
+    entered.signal();
+    // Finite fail-safe: the original prepare loop can complete eventually,
+    // allowing its elapsed assertion to fail instead of leaving a stuck test.
+    release.wait(3000);
+    return -1;
+  }
+
+  juce::WaitableEvent entered;
+  juce::WaitableEvent release;
+};
+
+void testPrefillBudgetReturnsWhileRunningWorkerIsDelayed() {
+  RampSource source(100000);
+  juce::TimeSliceThread worker("busy prefill worker");
+  DelayedTimeSliceClient delayedClient;
+  worker.addTimeSliceClient(&delayedClient);
+  expect(worker.startThread(), "delayed read worker starts");
+  expect(delayedClient.entered.wait(2000),
+         "worker enters the controlled delay before preparation");
+  StemBufferingSource bufferingSource(&source, worker, false, 32768, 2, true);
+
+  const auto startedAt = juce::Time::getMillisecondCounterHiRes();
+  bufferingSource.prepareToPlay(128, 48000.0);
+  const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - startedAt;
+  juce::AudioBuffer<float> output(2, 128);
+  const juce::AudioSourceChannelInfo info(&output, 0, 128);
+  const bool readyWhileDelayed =
+      bufferingSource.waitForNextAudioBlockReady(info, 25);
+  delayedClient.release.signal();
+  const bool readyAfterRecovery =
+      bufferingSource.waitForNextAudioBlockReady(info, 2000);
+  if (readyAfterRecovery)
+    bufferingSource.getNextAudioBlock(info);
+  bufferingSource.releaseResources();
+  worker.removeTimeSliceClient(&delayedClient);
+  expect(worker.stopThread(2000), "delayed prefill worker stops cleanly");
+
+  expect(elapsedMs < 1000.0,
+         "prefill budget expires while a running worker is delayed");
+  expect(!readyWhileDelayed,
+         "expired prefill budget does not bypass the first-block readiness gate");
+  expect(readyAfterRecovery,
+         "read-ahead keeps filling after the prefill budget expires");
+  for (int frame = 0; frame < 128; ++frame)
+    expectNear(output.getSample(0, frame), RampSource::sampleAt(frame),
+               "delayed worker recovery preserves exact initial audio frames");
+}
+
+void testNormalPrefillPublishesReadyAudio() {
+  RampSource source(100000);
+  juce::TimeSliceThread worker("normal prefill worker");
+  expect(worker.startThread(), "normal prefill worker starts");
+  StemBufferingSource bufferingSource(&source, worker, false, 32768, 2, true);
+  bufferingSource.prepareToPlay(512, 48000.0);
+  juce::AudioBuffer<float> output(2, 512);
+  const juce::AudioSourceChannelInfo info(&output, 0, 512);
+  const bool ready = bufferingSource.waitForNextAudioBlockReady(info, 2000);
+  if (ready)
+    bufferingSource.getNextAudioBlock(info);
+  const auto misses = bufferingSource.getRealtimeMissCount();
+  bufferingSource.releaseResources();
+  expect(worker.stopThread(2000), "normal prefill worker stops cleanly");
+
+  expect(ready, "normal worker publishes its first block before playback");
+  expect(misses == 0, "normal prefilling starts playback without an underrun");
+  for (int frame = 0; frame < 512; ++frame)
+    expectNear(output.getSample(0, frame), RampSource::sampleAt(frame),
+               "normal prefill preserves exact initial audio frames");
+}
+
 void testEmptyReadAheadAdvancesAndCountsMissingFrames() {
   RampSource source(100000);
   juce::TimeSliceThread inactiveReadThread("inactive read thread");
@@ -997,6 +1117,9 @@ void testSectionEntriesPreparePinAndReleaseWithoutAudioIO() {
 } // namespace
 
 int main() {
+  testPrefillReturnsWithoutAnActiveWorkerAndRecovers();
+  testPrefillBudgetReturnsWhileRunningWorkerIsDelayed();
+  testNormalPrefillPublishesReadyAudio();
   testSectionEntriesPreparePinAndReleaseWithoutAudioIO();
   testEmptyReadAheadAdvancesAndCountsMissingFrames();
   testPartialReadAheadPreservesValidAudioAndAdvances();

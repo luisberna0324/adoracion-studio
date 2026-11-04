@@ -93,6 +93,15 @@ void testNativeLoginAndAccountConsent() {
   expect(juce::Component::getCurrentlyModalComponent() == nullptr,
          "login starts without an informational modal");
   capture(host, "login-clean-390x844");
+  host.setSize(1200, 760);
+  welcome.setBounds(host.getLocalBounds());
+  drain();
+  expect(native->isShowing() && welcome.getLocalBounds().contains(native->getBounds()),
+      "native Apple action also fits the desktop welcome layout");
+  capture(host, "login-clean-desktop-1200x760");
+  host.setSize(390, 844);
+  welcome.setBounds(host.getLocalBounds());
+  drain();
   int loginRequests = 0;
   welcome.onAppleLoginRequested = [&] { ++loginRequests; };
   {

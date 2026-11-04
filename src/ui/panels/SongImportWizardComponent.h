@@ -44,6 +44,15 @@ public:
   void refreshThemeColours();
   void setOnDismissRequested(std::function<void()> callback);
   void setEmbeddedLibraryPage(bool enabled);
+  using ProjectDestinationCompletion = std::function<void(juce::File, juce::String)>;
+  using ProjectDestinationPrompt = std::function<void(
+      const ImportedSongData &, ProjectDestinationCompletion)>;
+  /** Optional asynchronous native destination UI; empty path means cancel. */
+  void setProjectDestinationPrompt(ProjectDestinationPrompt prompt) {
+    promptProjectDestination = std::move(prompt);
+  }
+  using RecoverySubmit = std::function<bool(ImportedSongData, juce::String &, const SongImportProgressFn &)>;
+  void setProjectRecoverySubmit(RecoverySubmit callback) { recoverySubmit = std::move(callback); }
   bool isSubmissionInProgress() const { return isSubmitting; }
 
 private:
@@ -97,6 +106,7 @@ private:
   bool validateStepMapping();
   ImportedSongData buildSongData();
   void submitSong();
+  void createBlankSong();
   bool submitSongInBackground(ImportedSongData song);
   void setSubmitting(bool submitting);
   void changeStep(Step step);
@@ -107,11 +117,9 @@ private:
   void styleSecondaryButton(juce::TextButton &button);
   bool usesPhoneCreationLayout() const;
   bool usesCreationLayout() const {
-    return phoneCreationLayout ||
-           (mode == Mode::Import &&
-            (embeddedLibraryPage || !useTouchOptimisedControls()));
+    return phoneCreationLayout || embeddedLibraryPage ||
+           (mode == Mode::Import && !useTouchOptimisedControls());
   }
-  juce::String mobileMetadataSummary() const;
   void timerCallback() override;
   void revealFocusedMappingEditor();
   void revealFocusedMetadataEditor();
@@ -147,6 +155,8 @@ private:
       onSubmit;
   std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
       resolveProjectDestination;
+  ProjectDestinationPrompt promptProjectDestination;
+  uint64_t destinationPromptGeneration = 0;
   std::function<bool(ImportedSongData, juce::String &)> onMetadataOnlySubmit;
   std::function<void()> onDismissRequested;
   Mode mode = Mode::Import;
@@ -154,6 +164,10 @@ private:
   bool isSubmitting = false;
   std::unique_ptr<SongLoadProgressOverlay> submissionOverlay;
   Step currentStep = Step::Metadata;
+  void promptMissingProject(ImportedSongData song);
+  RecoverySubmit recoverySubmit;
+  bool recoveryRequested = false;
+  std::unique_ptr<juce::FileChooser> recoveryChooser;
   std::unique_ptr<juce::FileChooser> stemChooser;
   std::unique_ptr<juce::FileChooser> artworkChooser;
   std::shared_ptr<MobileImportStaging> mobileImportStaging;
@@ -206,6 +220,8 @@ private:
   juce::TextButton nextButton;
   juce::TextButton submitButton;
   juce::TextButton saveMetadataButton;
+  std::unique_ptr<juce::Button> blankSongMetadataAction;
+  bool creatingBlankSong = false;
   juce::TextButton clearSongSearchButton;
 
   SecuenciasClient secuenciasClient;

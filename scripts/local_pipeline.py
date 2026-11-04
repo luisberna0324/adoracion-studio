@@ -2,6 +2,7 @@
 """Local-only PlayWorship builds. No CI dispatch, provisioning updates or publication."""
 import argparse, datetime, hashlib, json, os, platform, plistlib, re, shutil, subprocess, sys, time, zipfile
 from pathlib import Path
+from release_version import read_version
 
 TARGETS = ['semver', 'resources', 'backend', 'windows', 'android-debug', 'android-release', 'tests', 'macos', 'ios-simulator', 'ios-device']
 class Blocked(Exception): pass
@@ -22,8 +23,9 @@ def main():
     def git(root, *a): return subprocess.check_output(['git', '-C', str(root), *a], text=True).strip()
     sha = git(repo, 'rev-parse', 'HEAD')
     if platform.system() != 'Darwin': ap.error('This pipeline requires the existing macOS toolchain; Windows is reported separately.')
-    version = str(cfg.get('version', '1.1.4'))
+    version = str(cfg.get('version', read_version()))
     if not re.fullmatch(r'\d+\.\d+\.\d+', version): ap.error('version must be MAJOR.MINOR.PATCH')
+    if version != read_version(): ap.error('Config version differs from src/AppVersion.h; update the local pipeline config')
     jobs = max(1, min(args.jobs, 3))
     selected = TARGETS if args.targets == 'all' else args.targets.split(',')
     if set(selected)-set(TARGETS): ap.error('Unknown target')
@@ -37,7 +39,7 @@ def main():
     env['NEXT_TELEMETRY_DISABLED']='1'; env['SENTRY_AUTH_TOKEN']=''
     result={'version':version,'app_commit':sha,'app_dirty':bool(git(repo,'status','--porcelain')),'jobs':jobs,'publication':False,'targets':{}}
     if args.dry_run:
-        print(json.dumps({'mode':'dry-run','platform':platform.system(),'targets':selected,'output':str(out),'juce_present':(juce/'CMakeLists.txt').exists(),'bungee_present':(bungee/'include/bungee/Bungee.h').exists(),'backend_present':(backend/'package.json').exists(),'ios_manual_signing_supplied':all(cfg.get(k) for k in ['ios_team','ios_profile','ios_identity']),'android_sdk_present':sdk.exists(),'jobs':jobs,'no_commands_executed':True},indent=2)); return 0
+        print(json.dumps({'mode':'dry-run','version':version,'platform':platform.system(),'targets':selected,'output':str(out),'juce_present':(juce/'CMakeLists.txt').exists(),'bungee_present':(bungee/'include/bungee/Bungee.h').exists(),'backend_present':(backend/'package.json').exists(),'ios_manual_signing_supplied':all(cfg.get(k) for k in ['ios_team','ios_profile','ios_identity']),'android_sdk_present':sdk.exists(),'jobs':jobs,'no_commands_executed':True},indent=2)); return 0
     out.mkdir(parents=True)
     def summary():
         (out/'summary.json').write_text(json.dumps(result,indent=2)+'\n')
@@ -117,7 +119,7 @@ def main():
                 artifact(app,f'macos-Release-{version}-{sha[:12]}.app')
                 packages=out/'macos-packages';run(['bash','scripts/package_macos_pkg.sh','--version',version,'--standalone-dir',app.parent,'--output-dir',packages])
                 result['targets'][current]['artifacts'].append(str(packages/f'playworship-macos-installer-{version}.pkg'))
-                result['targets'][current]['distribution']='Local pkg only; not notarized, no certified distribution claim; Apple opt-in OFF/source production URL'
+                result['targets'][current]['distribution']='Local pkg only; not notarized, no certified distribution claim; native Apple compiled for macOS, real Apple login requires eligible signing/profile; source production URL'
             if current in ['ios-simulator','ios-device']:
                 tool('xcodebuild');device=current=='ios-device';build=repo/'build'/('local-pipeline-ios-device' if device else 'local-pipeline-ios-simulator')
                 extra=['-DCMAKE_SYSTEM_NAME=iOS','-DCMAKE_OSX_ARCHITECTURES=arm64','-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0',f'-DCMAKE_OSX_SYSROOT={"iphoneos" if device else "iphonesimulator"}','-DMTCONTROLS_APPLE_SIGN_IN_ENABLED=ON',f'-DMTCONTROLS_IOS_BUILD_NUMBER={cfg.get("ios_build_number",4)}']

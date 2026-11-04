@@ -65,9 +65,12 @@ bool DemoSongService::isDemoSong(const ImportedSongData &song) {
 }
 
 juce::Result DemoSongService::ensureInstalled(
-    ImportedSongData &outSong, const ProjectProgressFn &onProgress) {
+    ImportedSongData &outSong, const ProjectProgressFn &onProgress,
+    ProjectDocument *outPreparedProject) {
   const juce::ScopedLock lock(installationLock());
   outSong = {};
+  if (outPreparedProject != nullptr)
+    *outPreparedProject = {};
   const auto root = SongLibraryStore::getRootDirectory();
   const auto database = root.getChildFile("songs.json");
   // SongLibraryStore supports legacy migrations, but a malformed inventory
@@ -89,6 +92,21 @@ juce::Result DemoSongService::ensureInstalled(
       return juce::Result::fail(L10n::tr(
           "Faltan archivos de la demo instalada. Elimina la demo de la Biblioteca y vuelve a recuperarla para restaurar el original.",
           "The installed demo has missing files. Remove it from the Library and recover it again to restore the original."));
+    if (outPreparedProject != nullptr) {
+      // Reuse the validated local resources. ProjectStore::open can remove a
+      // cache on a damaged packaged resource even with rebuildCache=false;
+      // never risk the user's current audio and settings to prepare this demo.
+      ProjectSongSettings localSettings;
+      if (!ProjectStore::getCachedSettings(existing->projectId, localSettings))
+        return juce::Result::fail(L10n::tr(
+            "No se pudo leer la configuración local de la demo. Los archivos se conservaron. Inténtalo nuevamente.",
+            "The demo's local settings could not be read. Your files were preserved. Try again."));
+      // The local snapshot is authoritative even when package and sidecar
+      // mtimes coincide. A missing waveform follows normal lazy regeneration.
+      *outPreparedProject = {*existing, std::move(localSettings),
+          SongLibraryStore::loadWaveformCache(existing->id),
+          juce::File(existing->projectPath)};
+    }
     outSong = *existing;
     if (onProgress)
       onProgress(1.0, L10n::tr("Demo disponible", "Demo ready"));
@@ -162,7 +180,9 @@ juce::Result DemoSongService::ensureInstalled(
         "No se pudo agregar la demo a la Biblioteca. Inténtalo nuevamente.",
         "The demo could not be added to the Library. Try again."));
   }
-  outSong = std::move(document.song);
+  outSong = document.song;
+  if (outPreparedProject != nullptr)
+    *outPreparedProject = std::move(document);
   if (onProgress)
     onProgress(1.0, L10n::tr("Demo disponible", "Demo ready"));
   return juce::Result::ok();

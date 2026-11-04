@@ -8,6 +8,12 @@ timestamp: 2026-10-12T00:00:00-03:00
 
 # Creacion de canciones
 
+El guardado completo de Editar vuelve a empaquetar el proyecto y regenera la onda mixta desde los stems incluidos, aunque no hayan cambiado sus archivos o categorías. No reutiliza los bins del proyecto anterior; actualiza la onda del paquete y su caché local al confirmar el guardado. Conserva los ajustes musicales y las letras existentes.
+
+Al guardar una edición cuyo `.pwproj` falta, el asistente conserva el borrador y ofrece Localizar proyecto, Crear nuevo proyecto o Cancelar. Localizar valida la identidad antes de actualizar; Crear exige una ruta nueva y audios disponibles, recupera ajustes del caché o setlist y conserva la identidad de biblioteca. No se muestra este aviso al abrir Editar.
+
+En Archivos, cada fila muestra el nombre visible del stem (`displayName`), con el nombre físico como tooltip y fallback si no hay título. Los nombres internos UUID de proyectos optimizados no sustituyen los títulos guardados al editar.
+
 El asistente mantiene un borrador al recorrer Detalles, Archivos, Secciones
 (mapeo de pistas) y Revisar. Retroceder no descarta nombres, categorias ni la
 seleccion Cargar. Cancelar el selector de archivos conserva los archivos previos.
@@ -17,7 +23,7 @@ area segura/teclado. Detalles tiene viewport; Archivos una lista desplazable;
 el mapeo filas apiladas; Revisar un resumen desplazable. Agregar cancion en
 escritorio usa esa misma jerarquia, indicador Detalles/Archivos/Secciones/Revisar
 y navegacion inferior. Solo reduce controles (campos de 36 px, filas de archivos
-de 48 px y mapeo de 80 px). La edicion de escritorio conserva su disposicion.
+de 48 px y mapeo de 80 px). La edicion de escritorio reutiliza el mismo formulario desplazable y la pagina interna de Agregar, con datos precargados y callbacks de actualizacion.
 El `+` del encabezado de Biblioteca abre Detalles como pagina interna de
 `SongListPanel` en escritorio, telefono y tablet, a continuacion de Biblioteca en su
 `PageContainer`. La pagina entra desde la derecha con la misma transicion
@@ -27,8 +33,7 @@ del panel y sigue sus redimensiones. La pagina de creacion se libera al terminar
 la animacion de retorno. Se conserva el contexto de busqueda/seleccion y la
 lista se recarga antes del retorno al guardar. La creacion incrustada usa el
 formulario desplazable tambien en tablets y escritorios tactiles, de modo que
-sus controles se ajustan al ancho del panel. Los accesos externos y la edicion
-mantienen su presentacion previa.
+sus controles se ajustan al ancho del panel. La pagina regresa a la vista de origen al cancelar o guardar. Los accesos externos y la edicion movil mantienen su presentacion previa.
 
 Los controles compartidos son JUCE y la entrada de texto movil usa el teclado
 del sistema. El telefono adapta el viewport y muestra la barra sobre el teclado.
@@ -47,12 +52,20 @@ conservando el checkout externo de JUCE. Para campos marcados con
 `playworshipContinuousTextInput`, mantiene el first responder, notifica los
 cambios de texto/seleccion y llama a `reloadInputViews` al transferir el foco.
 `playworshipReturnKeyNext` decide la etiqueta nativa Siguiente/Listo. El resto
-de los editores conserva el comportamiento original de JUCE. BPM usa NumberPad
+de los editores conserva el comportamiento original de JUCE. BPM solicita teclado decimal
 en iOS, con la accion Listo de la barra para terminar la entrada. La configuracion
 falla si cambia el codigo fuente esperado de JUCE, para revisar esta adaptacion
 al actualizar la dependencia. Android reutiliza la actualizacion del IME de JUCE.
 Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/uikit/uiresponder/reloadinputviews()),
 [Android keyboard visibility](https://developer.android.com/develop/ui/views/touch-and-input/keyboard-input/visibility).
+
+El editor de una canción existente se presenta en `SongWizardOverlay`, como
+hermano de Biblioteca bajo el editor principal. Al cambiar el teclado, el área
+segura o el tamaño, `layoutMainUi` mantiene ese mismo overlay por delante de
+Biblioteca y su fondo mediante `bringSongEditorOverlayToFront()` y
+`toFront(false)`. No lo reconstruye ni solicita foco de nuevo: conserva el campo,
+el borrador, la selección y el caret. Reautenticación y Ensayo mantienen su
+prioridad posterior. El cierre sólo se ejecuta por la acción explícita existente.
 
 ## Guardar
 
@@ -60,9 +73,21 @@ Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/
    ser legibles por JUCE. Escritorio admite tambien M4A (AAC o ALAC); si la
    plataforma no dispone de lector nativo, su decodificacion se valida en el
    worker de creacion antes de guardar. Revalidar antes del guardado definitivo.
-2. Elegir un nombre disponible en `MTControls/projects/` mediante
-   `SongProjectCreation::resolveDestination`, sin dialogos adicionales. El resumen
-   informa que se creara un `.pwproj` en Biblioteca; no sobrescribir homonimos.
+2. En escritorio, mostrar el diálogo nativo asíncrono `Biblioteca local` /
+   `Elegir ubicación...` / `Cancelar`. Biblioteca conserva la resolución de nombre
+   disponible en `MTControls/projects/` mediante `SongProjectCreation::resolveDestination`;
+   elegir ubicación abre el panel nativo Guardar con filtro `.pwproj` y confirmación
+   antes de reemplazar un archivo existente. El resumen anticipa esta elección.
+   Cancelar cualquiera de los dos paneles mantiene el borrador completo y permite
+   reintentar, sin guardar ni registrar una canción. La transacción está bloqueada
+   mientras se espera el destino; la generación de solicitud consume cada callback
+   una sola vez e ignora respuestas tardías de solicitudes anteriores.
+   iOS y Android mantienen su destino administrado sin este diálogo.
+   Mac App Store registra siempre el proyecto dentro del contenedor y, si se eligió
+   otra ubicación, exporta una copia conservando el URL nativo durante el worker.
+   Si esa copia falla, conserva la canción interna y muestra un aviso sin repetir
+   su creación. El resolver síncrono permanece disponible para los consumidores
+   sin interfaz nativa y las pruebas del asistente.
 3. Generar forma de onda solo con las pistas musicales y guardar con
    `ProjectStore::save`. Click/clic y guia/cues se excluyen de los picos y de la
    normalizacion visual, no del paquete ni de la reproduccion. Su duracion sigue
@@ -95,6 +120,28 @@ La edicion de proyectos tambien guarda en background con progreso y proteccion
 contra reentrancia. Al guardar metadatos o stems de un `.pwproj`, se reconstruye
 el paquete portable, se comprueba su reapertura y se conserva temporalmente el
 paquete anterior para restaurarlo si falla la actualizacion de Biblioteca.
+
+## Copia portable para otro equipo
+
+En Biblioteca local de escritorio, el menú de una canción propia con un `.pwproj`
+disponible incluye `Exportar copia del proyecto...`. Es una copia del paquete con
+pistas y configuración, independiente de `Exportar canción` en Onda, que produce
+una mezcla de audio. No se ofrece para entradas remotas, paquetes no disponibles,
+contenido compartido de Teams ni en móviles.
+
+El selector Guardar es nativo y asíncrono. Cancelar no modifica la canción ni su
+registro. Después de elegir el destino, el editor entrega sus ajustes activos al
+sistema de persistencia; un worker termina las escrituras pendientes y consolida
+el sidecar con `ProjectStore::savePendingPortableChanges` antes de copiar. Si el
+proyecto vuelve a cambiar durante esa consolidación, se informa el conflicto para
+reintentar en lugar de declarar una copia actualizada.
+
+Se conserva el URL devuelto por el picker hasta terminar. La copia usa un temporal
+y reemplazo final; un fallo no mueve el proyecto original ni reemplaza parcialmente
+un destino anterior. El progreso modal evita otro envío mientras se copia y los
+resultados vuelven al message thread con `SafePointer`. El registro de Biblioteca
+y el proyecto que usa la reproducción conservan sus rutas. El `.pwproj` exportado
+se abre con `Abrir proyecto...` en el otro equipo sin depender de la nube.
 
 ## Audio y portada
 
@@ -168,7 +215,9 @@ de compases y el ratio para el audio. El control de tempo del reproductor es el
 valor de reproduccion. Al corregir el BPM base, el tempo guardado se mueve al
 nuevo valor solo si aun coincidia con el BPM base anterior; un tempo ajustado
 por el usuario se conserva. El formulario admite BPM vacio (desconocido) o de
-20 a 300, el rango aceptado por el reproductor. El mapa de tempo automatico
+20 a 300, el rango aceptado por el reproductor. Se pueden escribir decimales
+con punto o coma (por ejemplo `120.5` o `120,5`); se conserva el valor numerico
+en biblioteca, proyecto y nube, sin convertirlo en entero. El mapa de tempo automatico
 de una sola region sigue el BPM y compas base corregidos; un mapa de tempo
 personalizado se conserva.
 
@@ -203,6 +252,10 @@ paquete para aplicar los cambios.
   original. Ademas pulsa el + real de Biblioteca, comprueba pagina interna,
   redimension, cancelacion durante la transicion y retorno tras guardar mediante
   el callback de produccion del panel.
+- `local_demo_access --phone-input-only`: drawer real con creación incrustada y
+  edición como overlay; conserva instancia, prioridad visual/hit testing,
+  borrador, selección y caret en reflows, foco cuando el SO lo concede y cierre
+  explícito. No sustituye la prueba de teclado nativo.
 - Validacion manual en iOS y Android: teclado, pickers de archivos, todos los
   pasos, cancion creada visible en Biblioteca y reapertura tras reinicio.
 
@@ -226,3 +279,71 @@ esta variable y mantiene las rutas habituales de preferencias y Biblioteca.
 La creación y edición usan título, artista, BPM y tono introducidos manualmente.
 No consultan MultiTracks/Secuencias ni descargan sus portadas. Elegir audio y
 portadas locales sigue disponible. Esta regla aplica a todas las distribuciones.
+
+## Nueva canción en blanco
+
+Detalles reutiliza la tarjeta que antes mostraba información/búsqueda de
+metadatos como única acción `Crear canción en blanco`, con la descripción
+`Empieza sin pistas de audio y usa el clic y los pads.`. No hay un botón adicional
+al pie. La tarjeta completa acepta ratón, toque y teclado, y se desplaza con los
+campos dentro del viewport; mantiene su texto accesible y se bloquea al guardar.
+Usa los metadatos habituales y la misma resolución
+de destino/transacción background que la importación. Si el título o BPM están
+vacíos, propone `Canción en blanco` y 120 BPM; un BPM explícito inválido sigue
+rechazándose. Guarda, registra en Biblioteca y cierra el asistente directamente,
+sin pasar por Archivos, Mapeo, Revisar ni otra pantalla. Siguiente conserva el
+flujo normal de importación y sus validaciones de audio. La tarjeta sólo está
+disponible en Detalles al crear un proyecto, y se oculta al editar una canción
+o avanzar a Archivos. Cancelar el destino permite reintentar.
+
+No hay un selector Libre/Con secciones ni un formulario de click/pad/secciones.
+Esos controles siguen siendo los del reproductor. El proyecto nuevo tiene cero
+stems, cero secciones y duración abierta hasta Detener, sin WAV silencioso ni
+bins de waveform. El metrónomo usa los ajustes iniciales habituales de un proyecto;
+el pad conserva su comportamiento global y sigue la tonalidad mediante el panel
+existente. No se crea una preferencia de pad por canción ni se fuerza una nota
+al cargar desde el motor.
+
+El modelo requiere `blankSong` explícito; una referencia antigua sin audio no
+se convierte en canción en blanco. `.pwproj`, Biblioteca y setlists utilizan
+sus rutas habituales. Se conserva la lectura del objeto opcional `blankSong`
+con `bars`, `clickEnabled` y `padEnabled`, y del ajuste opcional
+`settings.blankPadEnabled`, para poder reabrir proyectos del primer prototipo
+recuperable en `11f804d`. El nuevo botón usa `bars = 0`; ningún valor histórico de compases fija duración.
+Los campos históricos de acompañamiento no sustituyen los controles habituales. Los proyectos con
+audio conservan el esquema y comportamiento existentes.
+
+La canción en blanco no admite secciones ni mapa regional de tempo en esta
+versión. Su zona de onda se colapsa a altura cero y libera espacio al mixer:
+no muestra señal, regla,
+cursor, compases, tarjetas ni aviso para importar audio. Se ocultan Editar,
+Onda/Secciones y sus opciones de menú, también en Cliente. El reloj de la barra
+superior muestra sólo el tiempo transcurrido y no abre ajustes Inicio/Fin.
+Click, pad, tono y tempo mantienen sus controles habituales. Al cargar de nuevo
+una canción con audio se restauran sus vistas, edición y acciones existentes.
+Agregar stems desde la edición habitual también convierte la misma canción a
+metadatos de audio (`blankSong = false`), conservando su ID y proyecto. El área
+normal reaparece al aplicar esa carga; el layout no reinicia el transporte.
+
+Los metadatos históricos de compases/secciones del prototipo siguen siendo
+legibles, pero no definen duración ni se ejecutan en una canción en blanco.
+La creación/redimensión de secciones, regla ampliable y Fin automático/manual
+para este tipo quedan fuera del alcance de la versión. El análisis anterior
+se conserva en el historial `a25bcd9`; no hay una fase pendiente que ejecutar.
+
+### Regresión del editor superpuesto y teclado — 2026-10-25
+
+Se reprodujo en iPhone Simulator iOS 26.5: al mostrar el teclado del sistema en
+Título, Biblioteca cubría el editor aunque éste seguía abierto. La revisión de
+la compilación corregida comprobó editor visible con QWERTY y NumberPad,
+escritura mediante una tecla táctil real, transferencia Título → Artista → BPM,
+Listo para ocultar el teclado y X para regresar a Biblioteca. El borrador de QA
+se descartó al cerrar; la canción guardada no cambió.
+
+El gate enfocado `--phone-input-only` pasó sus 91 comprobaciones sobre drawer,
+creación y edición reales. La fixture consume la expansión inicial de la ventana
+del host macOS antes de simular los reflows de teléfono.
+
+Capturas antes/después y log del gate: `output/ios-song-editor-focus/` del checkout
+local de QA.
+Esta prueba acredita el simulador de iPhone; no una instalación física.

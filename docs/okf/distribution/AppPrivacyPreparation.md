@@ -8,26 +8,48 @@ timestamp: 2026-10-05T00:00:00-03:00
 
 # PlayWorship — preparacion de App Privacy
 
-Estado: **borrador local; no son respuestas enviadas al portal**. La ficha
+Estado: inventario técnico con verificaciones pendientes. La sección de
+publicación del 2026-10-23 registra las respuestas ya guardadas en el portal;
+los apartados de auditoría conservan sus pendientes históricos. La ficha
 `6819361132` comparte iOS/iPadOS y macOS, Bundle ID
 `com.multitracks.playworship`, equipo `V9T23PX769`. Los datos del registro y el
 preflight estan en [App Store](../release/AppStore.md).
 
+## Publicación de la ficha común — 2026-10-23
+
+Con autorización del responsable se corrigió App Store Connect, que todavía
+mostraba «No se recopilan datos». La ficha común de iOS y macOS publicó los
+ocho tipos del manifiesto: nombre, correo, fotos o videos (portadas), audio,
+otro contenido del usuario, ID de usuario, ID del dispositivo e historial de
+compras. En los ocho se indicó funcionalidad de la app, vinculación con la
+identidad del usuario y ausencia de seguimiento publicitario. La interfaz
+confirmó los ocho tipos completos y la publicación por Luis Berna.
+
+Esta evidencia registra las respuestas publicadas; no sustituye una auditoría
+completa de proveedores ni demuestra la aprobación de Apple. Se conservó la
+URL de privacidad existente. Evidencia local de la entrega Mac 1.1.5 (3):
+`output/appleconnect/mac-1.1.5-3/privacy-publication.json`.
+
 ## Evidencia confirmada
 
 `assets/ios/PrivacyInfo.xcprivacy` declara `NSPrivacyTracking=false` y una lista
-vacia de dominios de tracking. Para los seis tipos siguientes declara
+vacia de dominios de tracking. Para los ocho tipos siguientes declara
 `Linked=true`, `Tracking=false` y un unico proposito:
 `NSPrivacyCollectedDataTypePurposeAppFunctionality`.
 
 | Tipo declarado en el manifiesto | Identificador exacto |
 | --- | --- |
+| Nombre | `NSPrivacyCollectedDataTypeName` |
+| Fotos o videos (portadas) | `NSPrivacyCollectedDataTypePhotosorVideos` |
 | Email | `NSPrivacyCollectedDataTypeEmailAddress` |
 | ID de usuario | `NSPrivacyCollectedDataTypeUserID` |
 | ID de dispositivo | `NSPrivacyCollectedDataTypeDeviceID` |
 | Historial de compras | `NSPrivacyCollectedDataTypePurchaseHistory` |
 | Audio | `NSPrivacyCollectedDataTypeAudioData` |
 | Otro contenido del usuario | `NSPrivacyCollectedDataTypeOtherUserContent` |
+
+El inventario incluye nombre y portadas desde el commit `13534ba1`; el
+validador de Mac mantiene la misma lista exacta que el manifiesto compartido.
 
 Estos son valores comprobados del manifiesto, no una auditoria completa del
 backend o de todos los proveedores. Estar vinculado a la cuenta y usarse para
@@ -108,7 +130,7 @@ El detalle y las fuentes estan en [App Store](../release/AppStore.md#bloqueos-ad
   exponer credenciales: campos conservados, fines, vinculacion, retencion,
   terceros y borrado. Registrar las conclusiones por tipo de dato.
 - [ ] Revisar nombre/avatar, artwork, compras y diagnosticos; no asumir que
-  el listado de seis tipos ya cubre todos los flujos.
+  el listado de ocho tipos ya cubre todos los flujos.
 - [ ] Revisar las practicas de iOS y macOS de la ficha comun y reconciliar
   cualquier diferencia entre plataformas antes de responder.
 - [ ] Verificar politica accesible por HTTPS y desde la app, contacto de

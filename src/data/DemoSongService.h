@@ -22,9 +22,13 @@ public:
    * the original bundled package, including after the user deletes the demo.
    * An existing damaged entry returns an error without resetting its edits.
    *
-   * The output is cleared on failure. No account, entitlement, selection,
+   * When requested, outPreparedProject receives the validated document and
+   * current local settings so activation need not reopen the package on the
+   * message thread. Existing library metadata and local identity are retained.
+   * Both outputs are cleared on failure. No account, entitlement, selection,
    * playback or existing setlist is changed by this operation.
    */
   static juce::Result ensureInstalled(
-      ImportedSongData &outSong, const ProjectProgressFn &onProgress = {});
+      ImportedSongData &outSong, const ProjectProgressFn &onProgress = {},
+      ProjectDocument *outPreparedProject = nullptr);
 };

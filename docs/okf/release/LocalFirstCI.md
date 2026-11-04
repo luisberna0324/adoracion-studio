@@ -1,9 +1,15 @@
 # QA fuera de Actions y releases manuales
 
+La siguiente entrega se prepara con version unificada **2.4.0** en
+`src/AppVersion.h`. Usar `release_kind=minor` despues de 2.3.6. El resolver
+comprueba que el SemVer calculado coincida con el del SHA seleccionado antes
+de generar instaladores. Ver [Version unificada](UnifiedVersioning.md) para
+iOS/iPadOS, Mac Store y los contadores de build independientes.
+
 Solo `.github/workflows/ci.yml` permanece activo: genera instaladores de release
 mediante `workflow_dispatch`. No hay eventos push, PR, merge, tag, schedule,
-workflow_run ni workflows auxiliares. Actions no ejecuta tests ni checks,
-automáticos o manuales. Se retiraron tests.yml, pr-semver.yml y
+workflow_run ni workflows auxiliares. Actions no ejecuta suites de QA,
+automáticas o manuales; la generación conserva la validación del paquete firmado. Se retiraron tests.yml, pr-semver.yml y
 android-cloudbuild.yml; sus pruebas fuente permanecen intactas.
 
 ## Coordinación principal en Codex Cloud
@@ -12,8 +18,10 @@ Codex Cloud inicia y coordina QA de app/backend sobre una revisión fijada.
 Ejecutar allí todos los tests que sus dependencias permitan y guardar resultados
 por SHA. Los targets no disponibles se marcan BLOCKED; complementar Apple,
 Windows y hardware en sus entornos y devolver esos logs al informe Cloud.
-Solo cuando ese informe esté completo decidir si hace falta generar una release.
-Subir código o activar releases requiere aprobación concreta adicional.
+Ese informe permite decidir si una release esta lista para publicarse. La
+generacion manual de instaladores puede usarse para preparar su validacion;
+no declara ni certifica QA de las plataformas. Subir codigo o activar releases
+requiere aprobacion concreta adicional.
 
 ## Pipeline local complementario del mismo SHA
 
@@ -62,16 +70,17 @@ sustituyen. Los tests interactivos y LAN mantienen su validación específica.
 
 ## Solicitar release
 
-1. Completar el informe principal de QA en Codex Cloud con evidencia nativa complementaria y revisar blockers para el SHA exacto y plataformas.
-2. Tras aprobación, disparar manualmente ci.yml con ref (preferir SHA completo),
-   qa_sha completo y qa_confirmed=true. El resolver fija la revisión y falla
-   antes de la matriz si no coincide con QA. La confirmación es una declaración
-   del operador; no ejecuta ni certifica QA automáticamente.
+1. Para generar instaladores, seleccionar la revision de app que se quiere
+   construir. Antes de publicar, revisar la evidencia de QA y los blockers del
+   SHA exacto y las plataformas correspondientes.
+2. Tras aprobacion, disparar manualmente ci.yml con ref (preferir SHA completo)
+   y release_kind. El resolver fija la revision; no exige qa_sha ni
+   qa_confirmed y la generacion no ejecuta ni certifica QA automaticamente.
 3. retain_artifacts=true autoriza guardar instaladores en artefactos del run
    GitHub por siete días (almacenamiento facturable según presupuesto).
    publish_release=false genera instaladores sin uploads Sentry/GCS, cleanup,
-   manifiesto ni tag/GitHub Release. La matriz sigue consumiendo Actions y usa
-   los secretos de firma Android existentes. Solo ejecutarla por solicitud
+   manifiesto ni tag/GitHub Release. El modo completo sigue consumiendo la
+   matriz de Actions y usa los secretos de firma Android existentes. Solo ejecutarla por solicitud
    concreta de generación de release. Si retain_artifacts y publish_release
    están desactivados, prepare falla antes de compilar: no se gastan matrices
    para generar instaladores sin destino.
@@ -79,10 +88,90 @@ sustituyen. Los tests interactivos y LAN mantienen su validación específica.
    Sentry/GCS, retención de tres versiones, manifiesto y tag/GitHub Release.
    Todos están protegidos por el opt-in; no hay publicación por eventos.
 
+El documento `release-notes/<version>.json` del SHA seleccionado debe estar
+aprobado (`status: released`) antes de publicar. El preflight valida contenido
+y el archivo independiente `release-status/<version>.json`; despues genera
+notas/assets de GitHub, resumen para la landing, indice ligero y detalle por
+version para la ayuda. Las notas automaticas de PR solo
+se conservan para tags historicas sin documento, anteriores a 2.4.0. Ver
+[Notas de release](ReleaseNotes.md). No se ejecutan suites QA en este flujo.
+
+Para publicar solamente disponibilidad de una release existente no borrador,
+usar `release_status_only=true`, `status_version=<version>`,
+`publish_release=true`, `export_play_signing_key=false` y
+`google_play_only=false`. La revision `ref` debe contener el estado revisado.
+Este job no construye binarios ni cambia tags, notas editoriales, catalogo,
+manifiesto de descargas o retencion. Solo publica estado JSON y su asset.
+Actualizar metadatos requiere autorizacion; no inicia una revision de tienda.
+
 Un tag explícito conserva su versión; rama/SHA calcula release_kind desde tags
 estables. La revisión fijada identifica también símbolos Sentry. No se cancela
 una operación de release activa por una ejecución nueva. Subir esta rama o
 fusionarla necesita aprobación; nada de esta preparación despacha Actions.
+
+## App Bundle para Google Play
+
+El input booleano `google_play_only` vale `false` por defecto y conserva el
+flujo completo anterior. Con `true`, sólo se ejecutan `prepare` y el build de
+Android; macOS y Windows se omiten. No se añade otro workflow ni una suite de QA.
+
+Para preparar el AAB de una revisión aprobada:
+
+- `ref`: SHA de la revisión concreta que contiene los cambios aprobados.
+- `release_kind=patch`: calcula la siguiente versión desde el último tag estable;
+  con `v2.3.5` como último tag, el candidato es `2.3.6`. Un tag explícito conserva
+  su propia versión, como en el flujo completo.
+- `google_play_only=true`, `retain_artifacts=true`, `publish_release=false`.
+
+`prepare` rechaza `google_play_only=true` con `publish_release=true` o sin
+retención del artefacto, antes de resolver versiones y abrir la matriz. Los
+secretos Android Release existentes sólo se usan en el runner temporal; no se
+exportan al Mac ni se conserva el keystore en los artefactos. El destino es
+exclusivamente `dist/playworship-google-play-<versión>-arm64.aab`, retenido en el
+run por siete días. El nombre del artefacto incluye versión y SHA.
+
+El build ejecuta `:app:bundleRelease`, usando el número de run como `versionCode`.
+Antes de enviarlo a Play Console se debe comprobar que ese código esté libre allí.
+Se comprueba firma JAR válida y distinta de Android Debug, estructura AAB,
+bibliotecas arm64 y paquete/versión/ausencia de `debuggable` en el manifiesto de
+Release que empaqueta Gradle. La revisión del AAB final con `bundletool` confirma
+el manifiesto binario y `PAGE_ALIGNMENT_16K`; compilar o firmar no sustituye esa
+comprobación ni QA en dispositivos con páginas de 16 KB.
+
+Este modo no genera APK para la web, símbolos Sentry, carga GCS, limpieza de
+versiones, manifiesto de descargas, tag ni GitHub Release. El AAB descargado aún
+necesita carga y procesamiento en Play Console, validación de la ficha y envío a
+revisión: generar el archivo no acredita publicación. Se mantienen las
+aprobaciones concretas para subir código, ejecutar el generador y enviar la app.
+
+## Copia cifrada de firma para el alta en Google Play
+
+`export_play_signing_key=false` conserva el comportamiento de generación de
+instaladores. Sólo tras autorización concreta de transferencia de la clave a
+Google Play, puede activarse este modo manual dentro del mismo `ci.yml`.
+No añade workflows, triggers ni suites de QA.
+
+Con `export_play_signing_key=true`, `prepare` y todos los builds/publicaciones
+que dependen de él se omiten. Sólo corre `export-play-signing-key`, con token
+`contents: read`, desde `main`, con `ref` igual al SHA exacto del workflow
+revisado, `google_play_only=true`, `retain_artifacts=true` y
+`publish_release=false`. No calcula otra versión ni recompila la app.
+
+El JAR oficial PEPK se descarga por HTTPS y se compara contra el SHA-256
+revisado antes de recibir secretos. La clave pública de cifrado descargada de
+la consola de esta app queda fijada en `scripts/google-play/` con su hash.
+El wrapper Java usa la API pública de PEPK con contraseñas provenientes del
+entorno; no pasa secretos por argumentos ni llama al CLI que podría imprimirlos
+ante un error. Exige el certificado Release conocido antes de cifrar y valida
+el ZIP resultante con su certificado público.
+
+El keystore sólo se decodifica en `$RUNNER_TEMP`, con permisos restringidos, y
+se elimina mediante trap y limpieza `always` antes de conservar el artefacto.
+Únicamente se guardan ZIP cifrado y reporte público durante un día. No se
+suben a Release, web ni GCS. Descargar ese ZIP no prueba la importación: el
+propietario completa el cambio de credencial en Play Console y después se
+comparan sus huellas de firma y subida. Nunca guardar keystore sin cifrar,
+contraseñas ni secretos en el repo, artefactos o logs.
 
 ## Activación sin consumo accidental
 

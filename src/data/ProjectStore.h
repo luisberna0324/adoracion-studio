@@ -15,6 +15,8 @@ struct ProjectSongSettings {
   bool dynamicGuideCustomized = false;
   DynamicGuideMixSnapshot dynamicGuideMix;
   ClickDynMixSnapshot clickDynMix;
+  std::optional<bool> blankPadEnabled;
+  playworship::lyrics::SongLyrics freeShowCues;
 };
 
 struct ProjectDocument {
@@ -22,6 +24,18 @@ struct ProjectDocument {
   ProjectSongSettings settings;
   std::vector<float> waveformBins;
   juce::File projectFile;
+};
+
+/** Background-prepared, content-only replacement. No audio/cache/settings mutation. */
+struct PreparedProjectLyricsUpdate {
+  juce::File file;
+  juce::File stagedFile;
+  juce::String projectId;
+  juce::String baseSha256;
+  juce::int64 baseSize = 0;
+  juce::int64 baseModifiedMs = 0;
+  juce::uint64 baseFileIdentifier = 0;
+  bool cacheWasCurrent = false;
 };
 
 struct RecentProjectInfo {
@@ -64,6 +78,17 @@ public:
       ImportedSongData &outProjectSong, juce::String &outSourceSetlistName,
       juce::String *errorMessage = nullptr,
       const ProjectMigrationProgressFn &onProgress = {});
+  /** Copies ZIP payloads without audio decoding; must run off the message thread. */
+  static bool prepareLyricsUpdate(const juce::File &file,
+                                  const std::optional<SongLyricsDocument> &lyrics,
+                                  PreparedProjectLyricsUpdate &prepared,
+                                  juce::String *errorMessage = nullptr);
+  /** Worker checks the complete hash; the short final commit also checks inode/stats. */
+  static bool lyricsUpdateSourceUnchanged(const PreparedProjectLyricsUpdate &prepared,
+                                          bool verifyHash,
+                                          juce::String *errorMessage = nullptr);
+  /** Refreshes only a previously current source marker; never touches mixer sidecars. */
+  static void refreshLyricsCacheMarker(const PreparedProjectLyricsUpdate &prepared);
   static bool updateSettings(const juce::File &file,
                              const ProjectSongSettings &settings,
                              juce::String *errorMessage = nullptr);

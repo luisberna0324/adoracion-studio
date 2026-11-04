@@ -88,11 +88,16 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   volumeKnob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
   volumeKnob->setViewportIgnoreDragFlag(true);
   volumeKnob->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-  volumeKnob->setRange(0.0, 1.0);
+  volumeKnob->setComponentID("clickDynGain");
+  volumeKnob->setName("Click Dyn Gain");
+  volumeKnob->setRange(0.0, 4.0);
+  volumeKnob->setSkewFactorFromMidPoint(1.0);
+  volumeKnob->setDoubleClickReturnValue(true, 1.0);
   volumeKnob->setValue(1.0, juce::dontSendNotification);
   volumeKnob->setLookAndFeel(&lookAndFeel);
   volumeKnob->setMouseDragSensitivity(170);
   volumeKnob->onValueChange = [this] {
+    refreshGainTooltip();
     if (suppressVolumeCallback)
       return;
     if (onVolumeChanged)
@@ -104,6 +109,7 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
     if (onVolumeDragEnded)
       onVolumeDragEnded(static_cast<float>(volumeKnob->getValue()));
   };
+  refreshGainTooltip();
   addAndMakeVisible(*volumeKnob);
   addAndMakeVisible(*meter);
 
@@ -195,7 +201,7 @@ void ClickDivisionPanel::paint(juce::Graphics &g) {
     const int labelY = knobBounds.getBottom() + 2;
     g.setColour(UITheme::textSecondary);
     g.setFont(makeAppFont(7.5f, AppFontWeight::Bold));
-    g.drawFittedText("VOLUME",
+    g.drawFittedText("GAIN",
                      juce::Rectangle<int>(labelX, labelY, labelW, labelH),
                      juce::Justification::centred, 1);
   }
@@ -260,12 +266,21 @@ void ClickDivisionPanel::resized() {
                         rowW - soloW - buttonGap, rowH);
 }
 
-void ClickDivisionPanel::setVolume(const float volume) {
+void ClickDivisionPanel::setVolume(const float level) {
   if (volumeKnob->isMouseButtonDown()) return;
   suppressVolumeCallback = true;
-  volumeKnob->setValue(juce::jlimit(0.0f, 1.0f, volume),
+  volumeKnob->setValue(juce::jlimit(0.0f, 4.0f, level),
                        juce::dontSendNotification);
   suppressVolumeCallback = false;
+  refreshGainTooltip();
+}
+
+void ClickDivisionPanel::refreshGainTooltip() {
+  const auto level = static_cast<float>(volumeKnob->getValue());
+  const auto decibels = level > 0.0f
+      ? juce::String(juce::Decibels::gainToDecibels(level), 1) + " dB"
+      : juce::String("-inf dB");
+  volumeKnob->setTooltip("Gain " + decibels);
 }
 
 void ClickDivisionPanel::setPowerOn(const bool shouldBeOn) {

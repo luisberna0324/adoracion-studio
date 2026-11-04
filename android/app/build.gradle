@@ -1,5 +1,18 @@
 plugins { id 'com.android.application' }
 
+def versionHeader = rootProject.file('../src/AppVersion.h').text
+def versionMatch = versionHeader =~ /(?m)^#define PLAYWORSHIP_RELEASE_VERSION "([0-9]+\.[0-9]+\.[0-9]+)"$/
+if (!versionMatch.find()) throw new GradleException('Invalid canonical version in src/AppVersion.h')
+def releaseVersion = versionMatch.group(1)
+def requestedVersion = System.getenv('PLAYWORSHIP_VERSION_NAME')
+if (requestedVersion && requestedVersion != releaseVersion) {
+    throw new GradleException("Requested version ${requestedVersion} differs from source ${releaseVersion}")
+}
+def requestedCode = System.getenv('PLAYWORSHIP_VERSION_CODE') ?: '1'
+if (!(requestedCode ==~ /[1-9][0-9]*/) || new BigInteger(requestedCode) > 2100000000) {
+    throw new GradleException('PLAYWORSHIP_VERSION_CODE must be a positive integer up to 2100000000')
+}
+
 android {
     namespace 'com.multitracks.playworship'
     compileSdk 36
@@ -9,11 +22,14 @@ android {
         applicationId 'com.multitracks.playworship'
         minSdk 29
         targetSdk 36
-        versionCode = (System.getenv('PLAYWORSHIP_VERSION_CODE') ?: '1').toInteger()
-        versionName = System.getenv('PLAYWORSHIP_VERSION_NAME') ?: '1.1.4'
+        // Dependency-free native UI/JNI contract harness (debug instrumentation only).
+        testInstrumentationRunner 'com.rmsl.juce.NativeLyricsInstrumentation'
+        versionCode = requestedCode.toInteger()
+        versionName = releaseVersion
         externalNativeBuild {
             cmake {
                 arguments '-DANDROID_STL=c++_shared', '-DANDROID_PLATFORM=android-29'
+                arguments "-DMTCONTROLS_APP_VERSION=${releaseVersion}"
                 arguments "-DPLAYWORSHIP_ANDROID_OPTIMIZE_DEBUG=${project.findProperty('playworshipOptimizeDebug') ?: 'ON'}"
                 cppFlags '-std=c++17'
             }
@@ -39,4 +55,15 @@ android {
     }
 
     externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt'; version '3.22.1' } }
+}
+
+tasks.register('printReleaseVersion') {
+    doLast { println("PlayWorship ${android.defaultConfig.versionName} (${android.defaultConfig.versionCode})") }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { it.project == project && it.name in ['assembleRelease', 'bundleRelease'] }
+        && !System.getenv('PLAYWORSHIP_VERSION_CODE')) {
+        throw new GradleException('Release requires an explicit PLAYWORSHIP_VERSION_CODE greater than all previously distributed builds')
+    }
 }

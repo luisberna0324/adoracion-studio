@@ -1,4 +1,5 @@
 #include "MetronomePanel.h"
+#include "../../data/TempoValue.h"
 
 #include <cmath>
 #include <memory>
@@ -149,7 +150,8 @@ MetronomePanel::MetronomePopover::MetronomePopover(
   addAndMakeVisible(minusButton);
   addAndMakeVisible(plusButton);
 
-  bpmEditor.setInputRestrictions(4, "0123456789.");
+  bpmEditor.setInputRestrictions(10, "0123456789.,");
+  bpmEditor.setKeyboardType(juce::TextInputTarget::decimalKeyboard);
   bpmEditor.setJustification(juce::Justification::centred);
   bpmEditor.onReturnKey = [this] { submitBpmEditor(); };
   bpmEditor.onFocusLost = [this] { submitBpmEditor(); };
@@ -212,16 +214,16 @@ void MetronomePanel::MetronomePopover::resized() {
 void MetronomePanel::MetronomePopover::syncBpmEditor() {
   if (!bpmProvider)
     return;
-  bpmEditor.setText(juce::String(static_cast<int>(std::round(bpmProvider()))),
+  bpmEditor.setText(TempoValue::formatBpm(bpmProvider()),
                     juce::dontSendNotification);
 }
 
 void MetronomePanel::MetronomePopover::submitBpmEditor() {
   const auto text = bpmEditor.getText().trim();
-  if (text.isEmpty() || !onBpmSet)
+  if (!onBpmSet)
     return;
-  const double bpm = text.getDoubleValue();
-  if (bpm > 0.0)
+  double bpm = 0.0;
+  if (TempoValue::parseBpm(text, bpm))
     onBpmSet(bpm);
   syncBpmEditor();
 }
@@ -246,7 +248,7 @@ MetronomePanel::MetronomePanel(MTControlsAudioProcessor &processorRef)
 }
 
 void MetronomePanel::setSongBpm(double bpm) {
-  if (bpm <= 0.0)
+  if (!std::isfinite(bpm) || bpm <= 0.0)
     return;
   manualOverride = false;
   processor.setPlaybackTempoBpm(bpm);
@@ -277,7 +279,7 @@ void MetronomePanel::showPopover() {
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
       [this] { return processor.getPlaybackTempoBpm(); });
-  panel->setSize(180, 120);
+  panel->setSize(230, 120);
   panel->refreshThemeColours();
 
   presentActionPopover(std::move(panel), bpmButton.getBounds(), this);
@@ -290,13 +292,11 @@ void MetronomePanel::refreshFromProcessor() {
 }
 
 void MetronomePanel::updateBpmDisplay() {
-  bpmButton.setBpmText(
-      juce::String(
-          static_cast<int>(std::round(processor.getPlaybackTempoBpm()))));
+  bpmButton.setBpmText(TempoValue::formatBpm(processor.getPlaybackTempoBpm()));
 }
 
 void MetronomePanel::setBpmAbsolute(double bpm) {
-  if (bpm <= 0.0)
+  if (!std::isfinite(bpm) || bpm <= 0.0)
     return;
   manualOverride = true;
   processor.setPlaybackTempoBpm(bpm);

@@ -5,6 +5,8 @@
 #include "SessionAuthLogger.h"
 #include "SongLibraryStore.h"
 
+#include <cmath>
+
 namespace {
 constexpr int kTimeoutMs = 20000;
 
@@ -143,7 +145,8 @@ void CloudLibraryClient::search(
           song.title = object->getProperty("title").toString();
           song.artist = object->getProperty("artist").toString();
           song.key = object->getProperty("key").toString();
-          song.bpm = static_cast<int>(object->getProperty("bpm"));
+          song.bpm = static_cast<double>(object->getProperty("bpm"));
+          if (!std::isfinite(song.bpm)) song.bpm = 0.0;
           song.stemCount = juce::jmax(0, static_cast<int>(object->getProperty("stemCount")));
           song.revision = static_cast<int>(object->getProperty("revision"));
           song.settingsRevision =

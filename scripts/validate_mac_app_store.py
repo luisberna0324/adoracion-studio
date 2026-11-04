@@ -20,7 +20,34 @@ def command(*args):
     return result.stdout, result.stderr
 
 
-def validate(app, team_id, allow_development):
+def validate_apple_sign_in(contents, entitlements, team_id, bundle_id):
+    expected_identifier = f"{team_id}.{bundle_id}"
+    require(entitlements.get("com.apple.developer.applesignin") == ["Default"],
+            "Apple sign-in entitlement is missing from the signed app")
+    require(entitlements.get("com.apple.developer.team-identifier") == team_id,
+            "Apple sign-in app entitlement has the wrong team")
+    require(entitlements.get("com.apple.application-identifier") == expected_identifier,
+            "Apple sign-in app identifier does not match the signing team and Bundle ID")
+
+    profile_path = contents / "embedded.provisionprofile"
+    require(profile_path.is_file(), "Apple sign-in requires an embedded macOS provisioning profile")
+    profile_xml, _ = command("/usr/bin/security", "cms", "-D", "-i", str(profile_path))
+    profile = plistlib.loads(profile_xml.encode())
+    require(isinstance(profile, dict), "Invalid Apple sign-in provisioning profile")
+    require(profile.get("TeamIdentifier") == [team_id], "Apple sign-in profile has the wrong team")
+    require(profile.get("Platform") == ["OSX"], "Apple sign-in profile is not for macOS")
+    profile_entitlements = profile.get("Entitlements", {})
+    require(isinstance(profile_entitlements, dict), "Apple sign-in profile entitlements are invalid")
+    require(profile_entitlements.get("com.apple.developer.team-identifier") == team_id,
+            "Apple sign-in profile entitlement has the wrong team")
+    require(profile_entitlements.get("com.apple.application-identifier") == expected_identifier,
+            "Apple sign-in profile identifier does not match the signed app")
+    require(profile_entitlements.get("com.apple.developer.applesignin") == ["Default"],
+            "Embedded profile does not authorize the app's Apple sign-in entitlement")
+    print("PASS: Apple sign-in app/profile entitlements, team and Bundle ID match.")
+
+
+def validate(app, team_id, allow_development, require_apple_sign_in=False):
     contents = app / "Contents"
     require(app.is_dir() and app.suffix == ".app", "Pass an existing macOS .app bundle")
     info = plistlib.loads((contents / "Info.plist").read_bytes())
@@ -35,7 +62,8 @@ def validate(app, team_id, allow_development):
     privacy = plistlib.loads((contents / "Resources" / "PrivacyInfo.xcprivacy").read_bytes())
     require(privacy.get("NSPrivacyTracking") is False, "Unexpected tracking declaration")
     require(privacy.get("NSPrivacyTrackingDomains") == [], "Unexpected tracking domains")
-    expected_data = {"EmailAddress", "UserID", "DeviceID", "PurchaseHistory", "AudioData", "OtherUserContent"}
+    expected_data = {"Name", "PhotosorVideos", "EmailAddress", "UserID", "DeviceID",
+                     "PurchaseHistory", "AudioData", "OtherUserContent"}
     actual_data = set()
     for entry in privacy.get("NSPrivacyCollectedDataTypes", []):
         actual_data.add(entry.get("NSPrivacyCollectedDataType", "").removeprefix("NSPrivacyCollectedDataType"))
@@ -71,6 +99,8 @@ def validate(app, team_id, allow_development):
             "Distribution bundle allows debugging")
     require(not any("temporary-exception" in key or key.endswith("all-files") for key in entitlements),
             "Unexpected broad sandbox exception")
+    if require_apple_sign_in:
+        validate_apple_sign_in(contents, entitlements, team_id, info["CFBundleIdentifier"])
 
     macho = {b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
              b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
@@ -112,9 +142,11 @@ def main():
     parser.add_argument("--team-id", default="V9T23PX769")
     parser.add_argument("--allow-development-signing", action="store_true",
                         help="Validate a development-signed local candidate; not a distribution approval")
+    parser.add_argument("--require-apple-sign-in", action="store_true",
+                        help="Require matching Apple sign-in entitlements in the signed app and embedded profile")
     args = parser.parse_args()
     try:
-        validate(args.app.resolve(), args.team_id, args.allow_development_signing)
+        validate(args.app.resolve(), args.team_id, args.allow_development_signing, args.require_apple_sign_in)
     except (OSError, ValueError, RuntimeError, plistlib.InvalidFileException) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

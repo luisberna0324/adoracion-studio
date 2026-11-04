@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 2,
+  "version": "2.4.0",
+  "status": "released",
+  "publishedAt": "2026-10-31T20:38:17Z",
+  "platforms": [
+    "windows",
+    "macos",
+    "android",
+    "ios"
+  ],
+  "title": "Una misma versi\u00f3n en todos tus dispositivos",
+  "summary": "Una misma versi\u00f3n en todos tus dispositivos, con las mejoras recientes para preparar y acompa\u00f1ar cada servicio.",
+  "changes": [
+    {
+      "label": "Mejoras",
+      "items": [
+        "Unificamos la numeraci\u00f3n de PlayWorship para identificar m\u00e1s f\u00e1cilmente cada entrega en las distintas plataformas."
+      ]
+    },
+    {
+      "label": "Funciones conservadas",
+      "items": [
+        "Metr\u00f3nomo y tempo con BPM decimales: admite punto o coma (120.5 o 120,5) y conserva la fracci\u00f3n al guardar y reabrir el proyecto y en Ensayo. Incluido desde 2.3.6.",
+        "Click Dyn: control de ganancia para reforzar el clic por encima del nivel de referencia, con lectura en dB. Incluido desde 2.3.6.",
+        "Vinculaci\u00f3n temporal de los faders de instrumentos para igualar sus vol\u00famenes. Master, clic, gu\u00eda y Pads quedan fuera; Gain, Mute y Solo siguen siendo individuales. Incluido desde 2.3.6.",
+        "Android: editor nativo de letras organizadas por secciones. La edici\u00f3n contextual de acordes no se anuncia para Android.",
+        "Escritorio: vista Letras con marcas temporales independientes para FreeShow. El seguimiento requiere activaci\u00f3n; no es proyecci\u00f3n desde el m\u00f3vil.",
+        "En escritorio, guardado de proyectos en la biblioteca local u otra ubicaci\u00f3n disponible; si falta el proyecto original, opciones para localizarlo o crear uno nuevo con los recursos disponibles.",
+        "El editor de canciones permanece encima de la biblioteca cuando se abre el teclado."
+      ]
+    },
+    {
+      "label": "iPhone y iPad; opciones de acceso en Apple",
+      "items": [
+        "iPhone y iPad: editor nativo de letras y secciones, acordes sobre el texto, reordenaci\u00f3n de tarjetas e intercambio ChordPro desde el portapapeles. Estas funciones no cambian el transporte ni proyectan letras a FreeShow.",
+        "Las ediciones de iOS y Mac App Store habilitan la opci\u00f3n Continuar con Apple."
+      ]
+    }
+  ],
+  "highlights": [
+    "Metr\u00f3nomo y tempo con BPM decimales.",
+    "Vol\u00famenes de instrumentos vinculados.",
+    "Letras con secciones en Android y FreeShow en escritorio."
+  ]
+}

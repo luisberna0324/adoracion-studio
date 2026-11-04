@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Rama, tag estable o SHA aprobado por QA para generar instaladores de release"
+        description: "Rama, tag estable o SHA para generar instaladores de release"
         required: true
         default: main
         type: string
       release_kind:
-        description: "Tipo de incremento semver desde el ultimo tag estable vX.Y.Z"
+        description: "Incremento desde el ultimo tag; debe coincidir con src/AppVersion.h (2.4.0 requiere minor desde 2.3.x)"
         required: true
         default: patch
         type: choice
@@ -17,17 +17,18 @@ on:
           - major
           - minor
           - patch
-      qa_sha:
-        description: "SHA completo de app validado localmente/Codex Cloud; debe coincidir con ref"
-        required: true
-        type: string
-      qa_confirmed:
-        description: "Confirmar QA del mismo SHA y plataformas de release fuera de Actions"
+      retain_artifacts:
+        description: "Autorizar guardar instaladores en artefactos GitHub por 7 dias (consume almacenamiento)"
         required: true
         default: false
         type: boolean
-      retain_artifacts:
-        description: "Autorizar guardar instaladores en artefactos GitHub por 7 dias (consume almacenamiento)"
+      google_play_only:
+        description: "Generar solo el App Bundle Android firmado para Google Play; requiere retener artefacto y no publica descargas"
+        required: true
+        default: false
+        type: boolean
+      export_play_signing_key:
+        description: "Exportar solo la copia PEPK cifrada autorizada para Google Play; no genera instaladores"
         required: true
         default: false
         type: boolean
@@ -36,6 +37,16 @@ on:
         required: true
         default: false
         type: boolean
+      release_status_only:
+        description: "Actualizar solo disponibilidad de una release existente; no compila ni modifica tags"
+        required: true
+        default: false
+        type: boolean
+      status_version:
+        description: "Version existente para actualizar disponibilidad (ejemplo 2.4.0); solo modo estado"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -46,6 +57,7 @@ concurrency:
 
 jobs:
   prepare:
+    if: ${{ !inputs.export_play_signing_key && !inputs.release_status_only }}
     runs-on: ubuntu-latest
     outputs:
       release_ref: ${{ steps.resolve.outputs.release_ref }}
@@ -65,9 +77,8 @@ jobs:
           REQUESTED_REF: ${{ inputs.ref }}
           REQUESTED_RELEASE_KIND: ${{ inputs.release_kind }}
           REQUESTED_PUBLISH: ${{ inputs.publish_release }}
-          REQUESTED_QA_SHA: ${{ inputs.qa_sha }}
-          REQUESTED_QA_CONFIRMED: ${{ inputs.qa_confirmed }}
           REQUESTED_RETAIN_ARTIFACTS: ${{ inputs.retain_artifacts }}
+          REQUESTED_GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
         run: |
           set -euo pipefail
 
@@ -79,11 +90,11 @@ jobs:
           }
 
           [[ "${REQUESTED_PUBLISH}" == "true" || "${REQUESTED_RETAIN_ARTIFACTS}" == "true" ]] || { echo "Autorizar guardar artefactos o publicar; no generar instaladores sin entregables." >&2; exit 1; }
-          [[ "${REQUESTED_QA_CONFIRMED}" == "true" ]] || { echo "Confirmar QA fuera de Actions antes de generar una release." >&2; exit 1; }
-          [[ "${REQUESTED_QA_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "qa_sha requiere SHA completo de 40 caracteres." >&2; exit 1; }
-          verify_qa_sha() {
-            [[ "$1" == "${REQUESTED_QA_SHA}" ]] || { echo "La revisión resuelta no coincide con QA; repetir QA o seleccionar su SHA." >&2; exit 1; }
-          }
+
+          if [[ "${REQUESTED_GOOGLE_PLAY_ONLY}" == "true" ]]; then
+            [[ "${REQUESTED_PUBLISH}" == "false" ]] || { echo "google_play_only no permite publish_release: no publicar descargas, tags ni manifiestos." >&2; exit 1; }
+            [[ "${REQUESTED_RETAIN_ARTIFACTS}" == "true" ]] || { echo "google_play_only requiere retain_artifacts para entregar el AAB firmado." >&2; exit 1; }
+          fi
 
           REF_INPUT="$(trim "${REQUESTED_REF}")"
           if [[ -z "${REF_INPUT}" ]]; then
@@ -107,10 +118,16 @@ jobs:
               git rev-parse --verify --end-of-options "${requested}^{commit}"
             fi
           }
+          verify_source_version() {
+            # Historical tags without the canonical header retain their original versioning.
+            if git cat-file -e "$1:src/AppVersion.h" 2>/dev/null; then
+              python3 scripts/release_version.py --ref "$1" --expect "$2"
+            fi
+          }
           # An explicitly requested stable tag keeps its own version.
           if [[ "${REF_INPUT}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             RELEASE_SHA="$(git rev-parse --verify --end-of-options "refs/tags/${REF_INPUT}^{commit}")"
-            verify_qa_sha "${RELEASE_SHA}"
+            verify_source_version "${RELEASE_SHA}" "${REF_INPUT#v}"
             echo "release_ref=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
             echo "semver=${REF_INPUT#v}" >> "${GITHUB_OUTPUT}"
             echo "tag=${REF_INPUT}" >> "${GITHUB_OUTPUT}"
@@ -160,7 +177,7 @@ jobs:
 
           TAG="v${SEMVER}"
           RELEASE_REF="$(resolve_ref "${REF_INPUT}")"
-          verify_qa_sha "${RELEASE_REF}"
+          verify_source_version "${RELEASE_REF}" "${SEMVER}"
           TAG_EXISTS="false"
 
           # A collision must not silently replace the requested revision.
@@ -175,7 +192,115 @@ jobs:
           echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
           echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
 
+      - name: Validate release document before building published installers
+        if: steps.resolve.outputs.publish_release == 'true'
+        shell: bash
+        env:
+          RELEASE_REF: ${{ steps.resolve.outputs.release_ref }}
+          SEMVER: ${{ steps.resolve.outputs.semver }}
+        run: python3 scripts/release_notes.py --version "$SEMVER" --ref "$RELEASE_REF" --allow-legacy
+
+  export-play-signing-key:
+    if: ${{ inputs.export_play_signing_key && !inputs.release_status_only }}
+    name: Export encrypted Google Play signing key
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check explicit export-only request
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
+          RETAIN_ARTIFACTS: ${{ inputs.retain_artifacts }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${GITHUB_REF}" == "refs/heads/main" ]] || { echo "Signing export requires a manual request from main." >&2; exit 1; }
+          [[ "${REQUESTED_REF}" == "${GITHUB_SHA}" ]] || { echo "Signing export requires the exact reviewed workflow SHA." >&2; exit 1; }
+          [[ "${GOOGLE_PLAY_ONLY}" == "true" && "${RETAIN_ARTIFACTS}" == "true" && "${PUBLISH_RELEASE}" == "false" ]] || { echo "Signing export must retain only its encrypted artifact and must not publish releases." >&2; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/google-play
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify official PEPK and Google encryption public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          TASK_DIR="${RUNNER_TEMP}/play-signing-export"
+          mkdir -p "${TASK_DIR}/classes" "${TASK_DIR}/deliverables"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            'https://www.gstatic.com/play-apps-publisher-rapid/signing-tool/prod/pepk.jar' \
+            --output "${TASK_DIR}/pepk.jar"
+          printf '%s  %s\n' 'aaccc0774b240aa5304bdad2a49865e92f229ca73209ecb6eaafe75dc858e24e' "${TASK_DIR}/pepk.jar" | sha256sum --check --status
+          printf '%s  %s\n' '7c50d42784451af7b1f437a6298341c1f866a3dbab665f54a376e2d6c6029264' 'scripts/google-play/encryption_public_key.pem' | sha256sum --check --status
+          javac -cp "${TASK_DIR}/pepk.jar" -d "${TASK_DIR}/classes" scripts/google-play/ExportSigningKey.java
+
+      - name: Export only the encrypted copy
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          TASK_DIR="${RUNNER_TEMP}/play-signing-export"
+          trap 'rm -f "${TASK_DIR}/release.keystore"' EXIT
+          [[ -n "${ANDROID_RELEASE_KEYSTORE_BASE64}" && -n "${ANDROID_RELEASE_STORE_PASSWORD}" && -n "${ANDROID_RELEASE_KEY_ALIAS}" && -n "${ANDROID_RELEASE_KEY_PASSWORD}" ]] || { echo "Required protected Android signing secrets are missing." >&2; exit 1; }
+          printf '%s' "${ANDROID_RELEASE_KEYSTORE_BASE64}" | base64 --decode > "${TASK_DIR}/release.keystore"
+          unset ANDROID_RELEASE_KEYSTORE_BASE64
+          java -cp "${TASK_DIR}/pepk.jar:${TASK_DIR}/classes" ExportSigningKey \
+            "${TASK_DIR}/release.keystore" scripts/google-play/encryption_public_key.pem \
+            "${TASK_DIR}/deliverables/playworship-google-play-signing-encrypted.zip"
+          python3 - <<'REPORT'
+          import hashlib, json, os, pathlib
+          task_dir = pathlib.Path(os.environ['RUNNER_TEMP']) / 'play-signing-export'
+          encrypted = task_dir / 'deliverables/playworship-google-play-signing-encrypted.zip'
+          report = {
+              'packageName': 'com.multitracks.playworship',
+              'googlePlayAppId': '4972301308867133502',
+              'sourceRevision': os.environ['GITHUB_SHA'],
+              'githubRunId': os.environ['GITHUB_RUN_ID'],
+              'signingCertificateSha256': 'D1:16:2E:4A:7A:9B:B8:02:BE:08:94:8C:A3:3C:90:DA:61:F0:08:4F:AC:72:50:CB:98:1A:7D:A9:FC:26:F2:4D',
+              'pepkJarSha256': 'aaccc0774b240aa5304bdad2a49865e92f229ca73209ecb6eaafe75dc858e24e',
+              'googleEncryptionPublicKeySha256': '7c50d42784451af7b1f437a6298341c1f866a3dbab665f54a376e2d6c6029264',
+              'encryptedZipSha256': hashlib.sha256(encrypted.read_bytes()).hexdigest(),
+              'retentionDays': 1,
+          }
+          (task_dir / 'deliverables/report.json').write_text(json.dumps(report, indent=2) + '\n')
+          REPORT
+
+      - name: Remove temporary private signing material
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "${RUNNER_TEMP}/play-signing-export/release.keystore"
+          rm -rf "${RUNNER_TEMP}/play-signing-export/classes"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: google-play-encrypted-signing-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/play-signing-export/deliverables/playworship-google-play-signing-encrypted.zip
+            ${{ runner.temp }}/play-signing-export/deliverables/report.json
+          if-no-files-found: error
+          retention-days: 1
+
   build-macos:
+    if: ${{ !inputs.google_play_only }}
     name: Build macOS artifact
     needs: prepare
     runs-on: macos-latest
@@ -291,6 +416,7 @@ jobs:
           gcloud storage cp "${FILE}" "gs://${GCS_BUCKET}/${PREFIX}/macos/v${SEMVER}/"
 
   build-windows:
+    if: ${{ !inputs.google_play_only }}
     name: Build Windows artifacts
     needs: prepare
     # windows-latest currently resolves to the VS 2026 image, which does not
@@ -430,7 +556,7 @@ jobs:
           gcloud storage cp "${FILE}" "gs://${GCS_BUCKET}/${PREFIX}/windows/v${SEMVER}/"
 
   build-android:
-    name: Build signed Android APK
+    name: Build signed Android ${{ inputs.google_play_only && 'App Bundle' || 'APK' }}
     needs: prepare
     runs-on: ubuntu-latest
     steps:
@@ -467,9 +593,10 @@ jobs:
           [[ -n "${KEYSTORE_BASE64}" ]] || { echo 'Missing ANDROID_RELEASE_KEYSTORE_BASE64' >&2; exit 1; }
           printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/playworship-release.jks"
           echo "PLAYWORSHIP_ANDROID_KEYSTORE=${RUNNER_TEMP}/playworship-release.jks" >> "${GITHUB_ENV}"
-      - name: Build release APK
+      - name: Build signed Android release
         working-directory: android
         env:
+          GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
           PLAYWORSHIP_VERSION_NAME: ${{ needs.prepare.outputs.semver }}
           PLAYWORSHIP_VERSION_CODE: ${{ github.run_number }}
           PLAYWORSHIP_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
@@ -481,8 +608,13 @@ jobs:
           for value in PLAYWORSHIP_ANDROID_STORE_PASSWORD PLAYWORSHIP_ANDROID_KEY_ALIAS PLAYWORSHIP_ANDROID_KEY_PASSWORD; do
             [[ -n "${!value}" ]] || { echo "Missing Android signing secret: ${value}" >&2; exit 1; }
           done
-          ./gradlew :app:assembleRelease --no-daemon
+          if [[ "${GOOGLE_PLAY_ONLY}" == "true" ]]; then
+            ./gradlew :app:bundleRelease --no-daemon
+          else
+            ./gradlew :app:assembleRelease --no-daemon
+          fi
       - name: Verify and name release APK
+        if: ${{ !inputs.google_play_only }}
         shell: bash
         env:
           SEMVER: ${{ needs.prepare.outputs.semver }}
@@ -494,8 +626,57 @@ jobs:
           "${ANDROID_HOME}/build-tools/36.0.0/aapt" dump badging "${APK}" | grep -F "versionName='${SEMVER}'"
           mkdir -p dist
           cp "${APK}" "dist/playworship-android-${SEMVER}-arm64.apk"
+      - name: Verify and name Google Play App Bundle
+        if: inputs.google_play_only
+        shell: bash
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          AAB='android/app/build/outputs/bundle/release/app-release.aab'
+          MANIFEST='android/app/build/intermediates/bundle_manifest/release/processApplicationManifestReleaseForBundle/AndroidManifest.xml'
+          test -s "${AAB}"
+          SIGNATURE_LOG="$(mktemp)"
+          CERTIFICATE_LOG="$(mktemp)"
+          trap 'rm -f "${SIGNATURE_LOG}" "${CERTIFICATE_LOG}"' EXIT
+          jarsigner -J-Duser.language=en -verify "${AAB}" > "${SIGNATURE_LOG}" 2>&1
+          grep -F 'jar verified.' "${SIGNATURE_LOG}"
+          keytool -J-Duser.language=en -printcert -jarfile "${AAB}" > "${CERTIFICATE_LOG}" 2>&1
+          if grep -Eiq 'CN[[:space:]]*=[[:space:]]*Android[[:space:]]*Debug([,[:space:]]|$)' "${CERTIFICATE_LOG}"; then
+            echo 'Google Play requires the release upload key, not Android Debug.' >&2
+            exit 1
+          fi
+          python3 - "${AAB}" "${MANIFEST}" "${SEMVER}" "${VERSION_CODE}" <<'PY'
+          import pathlib, re, sys, xml.etree.ElementTree as ET, zipfile
+          aab, manifest, version, code = sys.argv[1:]
+          with zipfile.ZipFile(aab) as archive:
+              names = set(archive.namelist())
+              assert {'BundleConfig.pb', 'base/manifest/AndroidManifest.xml'} <= names, 'Invalid App Bundle structure'
+              assert any(re.fullmatch(r'META-INF/[^/]+\.(RSA|DSA|EC)', name) for name in names), 'Missing JAR signing block'
+              libraries = [pathlib.PurePosixPath(name) for name in names if name.startswith('base/lib/') and name.endswith('.so')]
+              assert {path.parts[2] for path in libraries} == {'arm64-v8a'}, 'Unexpected native ABI'
+              assert {'libjuce_jni.so', 'libbungee.so', 'libc++_shared.so'} <= {path.name for path in libraries}, 'Missing native library'
+          root = ET.parse(manifest).getroot()
+          android = '{http://schemas.android.com/apk/res/android}'
+          assert root.get('package') == 'com.multitracks.playworship', 'Unexpected package ID'
+          assert root.get(android + 'versionName') == version, 'Unexpected versionName'
+          assert root.get(android + 'versionCode') == code, 'Unexpected versionCode'
+          assert root.find('application').get(android + 'debuggable', 'false') != 'true', 'Debuggable app is not a release'
+          print(f'Validated release App Bundle: com.multitracks.playworship {version} ({code}), arm64-v8a')
+          PY
+          mkdir -p dist
+          cp "${AAB}" "dist/playworship-google-play-${SEMVER}-arm64.aab"
+      - name: Retain requested Google Play App Bundle
+        if: inputs.google_play_only && inputs.retain_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-google-play-${{ needs.prepare.outputs.semver }}-${{ needs.prepare.outputs.release_ref }}
+          path: dist/playworship-google-play-${{ needs.prepare.outputs.semver }}-arm64.aab
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain requested Android release installer
-        if: inputs.retain_artifacts
+        if: inputs.retain_artifacts && !inputs.google_play_only
         uses: actions/upload-artifact@v4
         with:
           name: release-android-arm64-${{ needs.prepare.outputs.semver }}-${{ needs.prepare.outputs.release_ref }}
@@ -633,7 +814,17 @@ jobs:
             git push origin "${TAG}"
           fi
 
-      - name: Create GitHub release (without binary assets)
+      - name: Render versioned release document
+        shell: bash
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          set -euo pipefail
+          if [[ -f scripts/release_notes.py ]]; then
+            python3 scripts/release_notes.py --version "$SEMVER" --allow-legacy --output-dir "$RUNNER_TEMP/release-document"
+          fi
+
+      - name: Create or update GitHub release from its document
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -641,7 +832,17 @@ jobs:
           set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
 
-          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+          if [[ -f "$RUNNER_TEMP/release-document/notes.md" ]]; then
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              gh release edit "${TAG}" --notes-file "$RUNNER_TEMP/release-document/notes.md"
+            else
+              gh release create "${TAG}" --title "${TAG}" \
+                --target "${{ needs.prepare.outputs.release_ref }}" \
+                --notes-file "$RUNNER_TEMP/release-document/notes.md"
+            fi
+            gh release upload "${TAG}" "$RUNNER_TEMP/release-document/release-notes.json" --clobber
+            gh release upload "${TAG}" "$RUNNER_TEMP/release-document/release-status.json" --clobber
+          elif ! gh release view "${TAG}" >/dev/null 2>&1; then
             gh release create "${TAG}" \
               --title "${TAG}" \
               --target "${{ needs.prepare.outputs.release_ref }}" \
@@ -713,3 +914,59 @@ jobs:
           cat "${links_md}" >> "${merged_body}"
 
           gh release edit "${TAG}" --notes-file "${merged_body}"
+
+      - uses: google-github-actions/auth@v2
+        if: hashFiles('scripts/release_notes.py') != ''
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        if: hashFiles('scripts/release_notes.py') != ''
+      - name: Publish release documents for the help page
+        if: hashFiles('scripts/release_notes.py') != ''
+        shell: bash
+        env:
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          if [[ -f "release-notes/${SEMVER}.json" ]]; then
+            bash scripts/publish_release_notes.sh
+          fi
+
+  publish-release-status:
+    if: inputs.release_status_only
+    name: Publish release availability only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Validate authorized mode and existing public release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEMVER: ${{ inputs.status_version }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+          EXPORT_KEY: ${{ inputs.export_play_signing_key }}
+          GOOGLE_PLAY_ONLY: ${{ inputs.google_play_only }}
+        run: |
+          set -euo pipefail
+          [[ "$PUBLISH_RELEASE" == true && "$EXPORT_KEY" == false && "$GOOGLE_PLAY_ONLY" == false ]] || { echo 'Status-only requires publication opt-in and cannot combine export/Play modes.' >&2; exit 1; }
+          [[ "$SEMVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Missing stable status_version' >&2; exit 1; }
+          [[ "$(gh release view "v${SEMVER}" --json isDraft --jq '.isDraft')" == false ]] || { echo 'Target release is missing or a draft' >&2; exit 1; }
+          python3 scripts/release_notes.py --version "$SEMVER" --status-only --output-dir "$RUNNER_TEMP/release-status"
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Publish only status JSON, without replacing notes or installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+          SEMVER: ${{ inputs.status_version }}
+        run: |
+          set -euo pipefail
+          bash scripts/publish_release_notes.sh --status-only
+          gh release upload "v${SEMVER}" "$RUNNER_TEMP/release-status/release-status.json" --clobber

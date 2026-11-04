@@ -8,7 +8,46 @@ timestamp: 2026-10-10T00:00:00Z
 
 # Auth — Google, Apple y correo con contrasena
 
-## Estado actual y referencia unificada (2026-10-10)
+## Verificación de bienvenida y configuración Apple — 2026-10-24
+
+La consulta de solo lectura a `https://api.playworship.app/api/auth/apple/config`
+confirmó `enabled=true` y `nativeClientId=com.multitracks.playworship`. Esto
+acredita la configuración publicada; no una autorización Apple interactiva ni
+el historial del despliegue. Las notas del 10 de octubre que siguen describen
+el estado histórico del preview, no el estado productivo actual.
+
+Las entregas iOS 1.1.5 (1) y Mac 1.1.5 (3) se compilaron con
+`MTCONTROLS_APPLE_SIGN_IN_ENABLED=OFF`: el guard de compilación excluye la
+consulta de configuración y por eso no aparece Apple, aunque el servidor lo
+habilite. La política de compilación ahora se deriva del sistema de destino:
+
+| Plataforma | Métodos de acceso |
+| --- | --- |
+| iOS/iPadOS y macOS | Apple, Google y correo |
+| Android, Windows y Linux | Google y correo |
+
+`cmake/NativeAuthProviders.cmake` habilita Apple para `iOS` y `Darwin` y lo
+deshabilita para los demás destinos, aunque la compilación se ejecute en una
+Mac. Normaliza la clave heredada `MTCONTROLS_APPLE_SIGN_IN_ENABLED` tanto en
+el código generado como en el cache; un `OFF` anterior no elimina Apple en
+una nueva compilación de iOS/Mac y un `ON` anterior no lo agrega a Android o
+Windows. Ya no es una opción de producto que deba activarse manualmente.
+
+La entrega de iOS/Mac debe incluir el entitlement
+`com.apple.developer.applesignin=[Default]` y un perfil compatible. Compilar el
+proveedor no sustituye esos requisitos de firma: una app local con firma
+ad hoc no acredita un ingreso Apple real. La UI todavía exige soporte nativo
+y la configuración correcta del servidor; fuera de iOS/Mac, el puente nativo
+no crea un botón ni inicia autorización Apple. Google y correo se conservan.
+
+Se corrigió además el cálculo de altura de `WelcomeModal`: el logo y la
+descripción se reservan por sus bloques reales, sin depender de si existe un
+proveedor Apple o una acción Debug. La comprobación Release pasó 714 checks
+locales. La revisión con componentes reales incluyó el botón Apple AppKit en
+390×844 y 1200×760, sin iniciar autenticación. Esas capturas no sustituyen
+una autorización Apple completa en un build distribuido por TestFlight.
+
+## Referencia histórica unificada (2026-10-10)
 
 Apple nativo funciona en el preview `playworship-00070-quj`; el usuario confirmo
 “Ya funciona”. El build 3 de desarrollo apunta a ese preview. Produccion conserva
@@ -285,8 +324,9 @@ asociaciones Admin incluso cuando el proveedor no la impone. Firebase providerDa
 coincidente requiere acceso existente y vinculo explicito. El vinculo exige
 Firebase ID token no revocado y auth_time de los ultimos cinco minutos.
 
-La configuracion se habilita solo cuando coinciden settings server-only,
-capacidad/perfiles y build opt-in. El preview ya tiene clave y cifrado mediante
+La entrega debe reunir configuración server-only, capacidad/perfiles y un
+destino iOS/macOS, que ya compila el proveedor automáticamente. Las notas de
+preview siguientes corresponden al 10 de octubre. El preview ya tiene clave y cifrado mediante
 el mecanismo de secretos existente, audiencia `com.multitracks.playworship`,
 capacidad y perfil iOS de desarrollo Apple; el usuario confirmo acceso real.
 Produccion no se ha promovido. Distribucion conserva el bloqueo de perfiles
@@ -365,7 +405,7 @@ demuestran configuracion del portal ni autorizacion Apple real.
 El editor debe cancelar el puente al destruirse e invalidar su generacion de
 intento antes de aplicar respuestas de red demoradas: cancelar la hoja no
 cancela un intercambio HTTP ya iniciado. Las claves Apple y tokens de
-revocacion permanecen en servidor. El opt-in de entitlements agrega
+revocacion permanecen en servidor. La configuración de iOS/macOS agrega
 `com.apple.developer.applesignin = [Default]` al plist de entitlements generado
 por JUCE, preservando Sandbox y permisos existentes; no lo agrega a Info.plist.
 El portal y perfil de firma deben habilitar esa capacidad por separado.
@@ -384,6 +424,10 @@ La bienvenida ofrece **Prueba sin conexión** únicamente en builds Debug
 (`JUCE_DEBUG`), en escritorio, iOS y Android. Release y distribución no agregan
 el botón ni permiten abrir el formulario, invocar el login local o restaurar
 una sesión de prueba persistida. El simulador no constituye una excepción.
+`EmailAuthenticationForm::isLocalDemoMode` devuelve `false` en compilación
+fuera de Debug, para excluir también las cadenas de acceso de prueba del
+binario optimizado sin cambiar el formulario de desarrollo. Configuración
+aplica el mismo gate a los rótulos y al valor de usuario de sesión demo.
 Abre un formulario separado del acceso con correo: usuario y contraseña son
 `usuarioplay0324`. Su callback `launchLocalDemoLogin` compara esos valores
 localmente; nunca llama a Firebase ni al backend. No representa una cuenta o
@@ -488,6 +532,15 @@ escritorio y adaptada al ancho disponible en móvil. La tarjeta ajusta su altura
 al paso actual: proveedores, acceso por correo, crear/recuperar contraseña y
 correo solicitado. Al reducirse la altura, el contenido del formulario permite
 scroll sin perder el botón Volver.
+
+En el paso de proveedores la altura preferida se calcula con todos los bloques
+visibles: logo incluido, título, descripción, estado y acciones disponibles. El
+logo y la descripción no dependen de que Apple esté habilitado ni del botón de
+prueba exclusivo de Debug. Si la altura real no alcanza, se ocultan esos dos
+bloques antes de reducir las acciones. Las tarjetas compactas conservan acciones
+de `48 px`; sólo la combinación de todos los proveedores con un estado, sin
+altura suficiente, usa acciones de `44 px` y espacios menores. Los controles
+permanecen separados y dentro de la superficie también con `360 px` de alto.
 
 Los pasos de correo reservan `24 px` arriba y abajo dentro de la tarjeta y
 `20 px` entre la cabecera y el formulario. La confirmación usa un icono de

@@ -1,6 +1,7 @@
 #include "SongImportWizardComponent.h"
 
 #include "../../data/Localization.h"
+#include "../../data/TempoValue.h"
 #include "../../data/SessionAuthLogger.h"
 #include "../../data/SongLibraryStore.h"
 #include "../UiCommon.h"
@@ -87,6 +88,55 @@ combinedPhoneInsets(const juce::BorderSize<int> &safe,
           juce::jmax(safe.getRight(), keyboard.getRight())};
 #endif
 }
+
+void drawMetadataCard(juce::Graphics &g, juce::Rectangle<float> card,
+                      const juce::String &title, const juce::String &description,
+                      bool highlighted = false) {
+  juce::ColourGradient gradient(
+      UITheme::accent.withAlpha(0.10f), card.getX(), card.getCentreY(),
+      UITheme::cardBgHover.withAlpha(0.96f), card.getRight(), card.getCentreY(), false);
+  g.setGradientFill(gradient);
+  g.fillRoundedRectangle(card, 14.0f);
+  g.setColour(highlighted ? UITheme::accent : UITheme::cardBorder.withAlpha(0.62f));
+  g.drawRoundedRectangle(card.reduced(0.5f), 14.0f, highlighted ? 1.8f : 1.0f);
+  auto icon = card.withWidth(48.0f).withSizeKeepingCentre(48.0f, 54.0f).reduced(8.0f);
+  g.setColour(UITheme::accent.withAlpha(0.10f));
+  g.fillRoundedRectangle(icon.expanded(5.0f), 10.0f);
+  drawSvgIcon(g, icon, SvgIconName::AudioWaveform, UITheme::accent);
+  auto text = card.reduced(66.0f, 9.0f);
+  text.setRight(card.getRight() - 38.0f);
+  g.setColour(UITheme::textPrimary);
+  g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
+  g.drawFittedText(title, text.removeFromTop(24.0f).toNearestInt(),
+                   juce::Justification::centredLeft, 1);
+  g.setColour(UITheme::textSecondary);
+  g.setFont(makeAppFont(13.0f, AppFontWeight::Regular));
+  g.drawFittedText(description, text.toNearestInt(), juce::Justification::centredLeft, 3);
+  const float cx = card.getRight() - 25.0f, cy = card.getCentreY();
+  juce::Path chevron;
+  chevron.startNewSubPath(cx - 4.0f, cy - 6.0f);
+  chevron.lineTo(cx + 2.0f, cy);
+  chevron.lineTo(cx - 4.0f, cy + 6.0f);
+  g.setColour(UITheme::textSecondary);
+  g.strokePath(chevron, juce::PathStrokeType(2.0f));
+}
+
+class BlankSongMetadataCard final : public juce::Button {
+public:
+  BlankSongMetadataCard()
+      : juce::Button(L10n::tr("Crear canción en blanco", "Create blank song")) {
+    setDescription(L10n::tr("Empieza sin pistas de audio y usa el clic y los pads.",
+                           "Start without audio tracks and use the click and pads."));
+    setTooltip(getDescription());
+    setExplicitFocusOrder(6);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  }
+  void paintButton(juce::Graphics &g, bool over, bool down) override {
+    g.setOpacity(isEnabled() ? 1.0f : 0.5f);
+    drawMetadataCard(g, getLocalBounds().toFloat(), getButtonText(), getDescription(),
+                     over || down || hasKeyboardFocus(false));
+  }
+};
 
 class MobileWizardButtonLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
@@ -263,7 +313,9 @@ public:
     if (fileName.isEmpty())
       fileName = L10n::tr("Archivo no disponible", "File unavailable");
 
-    titleLabel.setText(fileName, juce::dontSendNotification);
+    titleLabel.setText(stem.displayName.isNotEmpty() ? stem.displayName : fileName,
+                       juce::dontSendNotification);
+    titleLabel.setTooltip(fileName);
 
     juce::String meta = stem.category.isNotEmpty() ? stem.category : "Other";
     if (stem.sampleRate > 0)
@@ -417,6 +469,9 @@ SongImportWizardComponent::SongImportWizardComponent(
       resolveProjectDestination(std::move(projectDestinationResolver)),
       onMetadataOnlySubmit(std::move(onSaveMetadataOnly)),
       mode(modeIn), initialSong(std::move(initialSongIn)) {
+  blankSongMetadataAction = std::make_unique<BlankSongMetadataCard>();
+  blankSongMetadataAction->onClick = [this] { createBlankSong(); };
+  addChildComponent(*blankSongMetadataAction);
   setSize(820, 620);
 
   titleLabel.setText(mode == Mode::Edit
@@ -499,11 +554,11 @@ SongImportWizardComponent::SongImportWizardComponent(
                       L10n::tr(u8"Título de canción", "Song title"));
   configureTextEditor(artistEditor, L10n::tr("Artista", "Artist"));
   configureTextEditor(bpmEditor, "BPM");
-  bpmEditor.setInputRestrictions(3, "0123456789");
-  bpmEditor.setKeyboardType(juce::TextInputTarget::numericKeyboard);
+  bpmEditor.setInputRestrictions(10, "0123456789.,");
+  bpmEditor.setKeyboardType(juce::TextInputTarget::decimalKeyboard);
   bpmEditor.setTooltip(L10n::tr(
-      "BPM original de la canción: ajusta la referencia musical. El tempo de reproducción se cambia en el reproductor.",
-      "Original song BPM: changes the musical reference. Playback tempo is adjusted in the player."));
+      "BPM original de la canción: admite decimales con punto o coma (120.5 o 120,5). El tempo de reproducción se cambia en el reproductor.",
+      "Original song BPM: accepts decimals with a dot or comma (120.5 or 120,5). Playback tempo is adjusted in the player."));
   addAndMakeVisible(songTitleEditor);
   addAndMakeVisible(artistEditor);
   addAndMakeVisible(bpmEditor);
@@ -907,36 +962,6 @@ bool SongImportWizardComponent::usesPhoneCreationLayout() const {
   return getWidth() > 0 && getWidth() < 600 && isPhoneSizedTouchLayout(*this);
 }
 
-juce::String SongImportWizardComponent::mobileMetadataSummary() const {
-  int trackCount = 0;
-  double duration = 0.0;
-
-  if (selectedSongDetail.has_value()) {
-    trackCount = static_cast<int>(selectedSongDetail->tracks.size());
-    duration = selectedSongDetail->durationSeconds;
-  }
-
-  if (trackCount == 0)
-    trackCount = static_cast<int>(std::count_if(
-        stems.begin(), stems.end(),
-        [](const StemDraft &stem) { return stem.include; }));
-  if (duration <= 0.0) {
-    for (const auto &stem : stems)
-      duration = juce::jmax(duration, stem.durationSec);
-  }
-
-  if (trackCount == 0 && duration <= 0.0)
-    return L10n::tr("Se completarán al agregar los archivos",
-                    "Completed after adding files");
-
-  juce::String text;
-  if (trackCount > 0)
-    text << trackCount << " " << L10n::tr("pistas", "tracks");
-  if (duration > 0.0)
-    text << (text.isNotEmpty() ? u8" • " : "")
-         << formatTimeSeconds(duration);
-  return text;
-}
 
 void SongImportWizardComponent::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
@@ -1037,48 +1062,11 @@ void SongImportWizardComponent::paintPhoneMetadata(juce::Graphics &g) {
       }
     }
 
-    if (currentStep == Step::Metadata && !metadataCardBounds.isEmpty()) {
-      auto card = metadataCardBounds.toFloat();
-      juce::ColourGradient cardGradient(
-          UITheme::accent.withAlpha(0.10f), card.getX(), card.getCentreY(),
-          UITheme::cardBgHover.withAlpha(0.96f), card.getRight(),
-          card.getCentreY(), false);
-      g.setGradientFill(cardGradient);
-      g.fillRoundedRectangle(card, 14.0f);
-      g.setColour(UITheme::cardBorder.withAlpha(0.62f));
-      g.drawRoundedRectangle(card.reduced(0.5f), 14.0f, 1.0f);
-
-      auto iconTile = card.withWidth(48.0f).reduced(8.0f);
-      g.setColour(UITheme::accent.withAlpha(0.10f));
-      g.fillRoundedRectangle(iconTile.expanded(5.0f), 10.0f);
-      drawSvgIcon(g, iconTile, SvgIconName::AudioWaveform, UITheme::accent);
-
-      auto text = card.reduced(66.0f, 9.0f);
-      text.setRight(card.getRight() - 38.0f);
-      g.setColour(UITheme::textPrimary);
-      g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
-      g.drawFittedText(mode == Mode::Edit
-                           ? L10n::tr("BPM original", "Original BPM")
-                           : L10n::tr("Metadatos detectados", "Detected metadata"),
-                       text.removeFromTop(24.0f).toNearestInt(),
-                       juce::Justification::centredLeft, 1);
-      g.setColour(UITheme::textSecondary);
-      g.setFont(makeAppFont(13.0f, AppFontWeight::Regular));
-      g.drawFittedText(mode == Mode::Edit
-                           ? L10n::tr("Tempo de reproducción: en el reproductor.",
-                                      "Playback tempo: in the player.")
-                           : mobileMetadataSummary(), text.toNearestInt(),
-                       juce::Justification::centredLeft, 2);
-
-      const float cx = card.getRight() - 25.0f;
-      const float cy = card.getCentreY();
-      juce::Path chevron;
-      chevron.startNewSubPath(cx - 4.0f, cy - 6.0f);
-      chevron.lineTo(cx + 2.0f, cy);
-      chevron.lineTo(cx - 4.0f, cy + 6.0f);
-      g.setColour(UITheme::textSecondary);
-      g.strokePath(chevron, juce::PathStrokeType(2.0f));
-    }
+    if (mode == Mode::Edit && currentStep == Step::Metadata && !metadataCardBounds.isEmpty())
+      drawMetadataCard(g, metadataCardBounds.toFloat(),
+                       L10n::tr("BPM original", "Original BPM"),
+                       L10n::tr("Tempo de reproducción: en el reproductor.",
+                                "Playback tempo: in the player."));
 }
 
 void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
@@ -1527,7 +1515,8 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
                   static_cast<juce::Component *>(&secuenciasArtworkPreview),
                   static_cast<juce::Component *>(&secuenciasArtworkCaption),
                   static_cast<juce::Component *>(&changeArtworkLabel),
-                  static_cast<juce::Component *>(&clearSongSearchButton)}) {
+                  static_cast<juce::Component *>(&clearSongSearchButton),
+                  static_cast<juce::Component *>(blankSongMetadataAction.get())}) {
     if (c->getParentComponent() != metadataParent)
       metadataParent->addChildComponent(c);
     c->setVisible(visible);
@@ -1539,6 +1528,8 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
   secuenciasDetailLabel.setVisible(false);
   secuenciasArtworkCaption.setVisible(false);
   clearSongSearchButton.setVisible(false);
+  blankSongMetadataAction->setVisible(visible && mode == Mode::Import &&
+      static_cast<bool>(resolveProjectDestination));
   if (!visible) {
     artworkOverlayButtonBounds = {};
     metadataCardBounds = {};
@@ -1596,7 +1587,8 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     timeSignatureBox.setBounds(col.removeFromTop(fieldH));
 
     bounds.removeFromTop(12);
-    metadataCardBounds = bounds.removeFromTop(70);
+    metadataCardBounds = bounds.removeFromTop(mode == Mode::Import ? 84 : 70);
+    blankSongMetadataAction->setBounds(metadataCardBounds);
 
     if (!secuenciasResults.empty()) {
       const int listH = juce::jmin(
@@ -1667,6 +1659,10 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
   timeSignatureBox.setBounds(col.removeFromTop(fieldH));
 
   left.removeFromTop(10);
+  if (blankSongMetadataAction->isVisible()) {
+    metadataCardBounds = left.removeFromTop(84);
+    blankSongMetadataAction->setBounds(metadataCardBounds);
+  }
   secuenciasStatusLabel.setBounds(left.removeFromTop(16));
   left.removeFromTop(4);
   secuenciasDetailLabel.setBounds(left.removeFromTop(40));
@@ -1982,7 +1978,7 @@ void SongImportWizardComponent::handleSelectedStemFiles(
 void SongImportWizardComponent::preloadFromExistingSong() {
   songTitleEditor.setText(initialSong.title, juce::dontSendNotification);
   artistEditor.setText(initialSong.artist, juce::dontSendNotification);
-  bpmEditor.setText(initialSong.bpm > 0 ? juce::String(initialSong.bpm)
+  bpmEditor.setText(initialSong.bpm > 0 ? TempoValue::formatBpm(initialSong.bpm)
                                         : juce::String(),
                     juce::dontSendNotification);
   if (initialSong.key.isNotEmpty())
@@ -2170,8 +2166,11 @@ void SongImportWizardComponent::updateSummaryText() {
             juce::String(static_cast<int>(included)) + " / " +
             juce::String(static_cast<int>(stems.size())));
   if (mode == Mode::Import && resolveProjectDestination) {
-    lines.add(L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
-                      "A .pwproj project will be created in the local library."));
+    lines.add(promptProjectDestination
+                  ? L10n::tr(u8"Al guardar podrás elegir Biblioteca local o una ubicación para el proyecto .pwproj.",
+                             "When saving, choose Local library or a location for the .pwproj project.")
+                  : L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
+                             "A .pwproj project will be created in the local library."));
   }
   if (mode == Mode::Edit && excluded > 0) {
     lines.add(L10n::tr("Stems removidos al guardar: ",
@@ -2201,6 +2200,7 @@ void SongImportWizardComponent::updateSummaryText() {
 void SongImportWizardComponent::goToNextStep() {
   if (isSubmitting)
     return;
+  creatingBlankSong = false;
   switch (currentStep) {
   case Step::Metadata:
     if (!validateStepMetadata())
@@ -2233,6 +2233,10 @@ void SongImportWizardComponent::saveMetadataOnly() {
     // Updating a portable project repacks its manifest and artwork. Keep that
     // disk work off the UI thread and retain staged mobile picker files.
     setSubmitting(true);
+    if (!juce::File(initialSong.projectPath).existsAsFile()) {
+      promptMissingProject(buildSongData());
+      return;
+    }
     if (!submitSongInBackground(buildSongData()))
       setSubmitting(false);
     return;
@@ -2379,13 +2383,14 @@ bool SongImportWizardComponent::validateStepMetadata() {
     return false;
   }
   const auto bpmText = bpmEditor.getText().trim();
+  double bpm = 0.0;
   if (bpmText.isNotEmpty() &&
-      (bpmText.getIntValue() < 20 || bpmText.getIntValue() > 300)) {
+      (!TempoValue::parseBpm(bpmText, bpm) || bpm < 20.0 || bpm > 300.0)) {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
         L10n::tr("BPM fuera de rango", "BPM out of range"),
-        L10n::tr("Usa un BPM original entre 20 y 300, o déjalo vacío si es desconocido.",
-                 "Use an original BPM between 20 and 300, or leave it empty if unknown."));
+        L10n::tr("Usa un BPM original entre 20 y 300; admite decimales con punto o coma. Déjalo vacío si es desconocido.",
+                 "Use an original BPM between 20 and 300; decimals may use a dot or comma. Leave it empty if unknown."));
     return false;
   }
   return true;
@@ -2425,10 +2430,12 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
 
   song.title = songTitleEditor.getText().trim();
   song.artist = artistEditor.getText().trim();
-  song.bpm = bpmEditor.getText().getIntValue();
+  song.bpm = 0.0;
+  TempoValue::parseBpm(bpmEditor.getText(), song.bpm);
   song.key = keyBox.getText().trim();
   song.timeSignature = timeSignatureBox.getText().trim();
-  song.fileType = stems.empty() ? "remote-reference" : "FLAC";
+  song.fileType = (creatingBlankSong || song.blankSong) ? "blank"
+      : (stems.empty() ? "remote-reference" : "FLAC");
   song.artworkSource = selectedArtworkUrl.trim();
   // A newly selected cover must not be shadowed by the old local image when
   // the project package is rebuilt. An unchanged source keeps its local copy.
@@ -2438,6 +2445,16 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   if (song.createdMs <= 0)
     song.createdMs = juce::Time::getCurrentTime().toMilliseconds();
 
+  if (creatingBlankSong) {
+    song.blankSong = true;
+    song.blankSongBars = 0;
+    song.blankClickEnabled = ClickDynMixSnapshot{}.metronomeEnabled;
+    song.blankPadEnabled = false; // Legacy metadata only; pads retain normal session controls.
+    song.stems.clear();
+    song.arrangement = {};
+    song.tempoMap = {};
+    return song;
+  }
   song.stems.clear();
   song.stems.reserve(stems.size());
   std::set<juce::String> usedStemIds;
@@ -2482,17 +2499,73 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   }
 
   sortStemsForStripOrder(song.stems);
+  if (song.blankSong && !song.stems.empty()) {
+    song.blankSong = false;
+    song.blankSongBars = 0;
+    song.fileType = "FLAC";
+  }
 
   return song;
 }
 
+void SongImportWizardComponent::createBlankSong() {
+  if (isSubmitting || mode != Mode::Import || currentStep != Step::Metadata ||
+      !resolveProjectDestination) return;
+  finishTextEditing();
+  if (songTitleEditor.getText().trim().isEmpty())
+    songTitleEditor.setText(L10n::tr("Canción en blanco", "Blank song"), false);
+  if (bpmEditor.getText().trim().isEmpty()) bpmEditor.setText("120", false);
+  if (!validateStepMetadata()) return;
+  creatingBlankSong = true;
+  submitSong();
+}
+
+void SongImportWizardComponent::promptMissingProject(ImportedSongData song) {
+  auto safe = juce::Component::SafePointer<SongImportWizardComponent>(this);
+  juce::AlertWindow::showYesNoCancelBox(juce::MessageBoxIconType::WarningIcon,
+      L10n::tr("Proyecto no encontrado", "Project not found"),
+      L10n::tr("No encontramos el proyecto. Localízalo o crea uno nuevo con los datos y audios disponibles.",
+               "Locate the missing project or create a new one with the available data and audio."),
+      L10n::tr("Localizar proyecto", "Locate project"), L10n::tr("Crear nuevo proyecto", "Create new project"),
+      L10n::tr("Cancelar", "Cancel"), this,
+      juce::ModalCallbackFunction::create([safe, song = std::move(song)](int result) mutable {
+        if (!safe) return;
+        if (result == 0 || !safe->recoverySubmit) { safe->setSubmitting(false); return; }
+        const bool locate = result == 1;
+        safe->recoveryChooser = std::make_unique<juce::FileChooser>(
+            locate ? L10n::tr("Localizar proyecto", "Locate project") : L10n::tr("Crear nuevo proyecto", "Create new project"),
+            juce::File{}, "*.pwproj");
+        safe->recoveryChooser->launchAsync(
+            locate ? juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                   : juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+            [safe, song = std::move(song), locate](const juce::FileChooser &chooser) mutable {
+              if (!safe) return;
+              auto file = chooser.getResult();
+              if (file == juce::File{}) { safe->setSubmitting(false); return; }
+              if (!locate) file = file.withFileExtension("pwproj");
+              if (!locate && file.exists()) {
+                safe->setSubmitting(false);
+                juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                    L10n::tr("Crear proyecto", "Create project"),
+                    L10n::tr("Elige un nombre nuevo para conservar el archivo existente.", "Choose a new name to preserve the existing file."));
+                return;
+              }
+              song.projectPath = file.getFullPathName();
+              safe->recoveryRequested = true;
+              if (!safe->submitSongInBackground(std::move(song))) safe->setSubmitting(false);
+              safe->recoveryRequested = false;
+            });
+      }));
+}
+
 void SongImportWizardComponent::submitSong() {
-  if (isSubmitting || currentStep != Step::Review)
+  if (isSubmitting || (currentStep != Step::Review && !creatingBlankSong))
     return;
 
   // Sources may disappear between the file picker and the final review.
   // Re-check the complete draft before choosing a destination or writing it.
-  if (!validateStepMetadata() || !validateStepMapping() || !validateStepImport())
+  if (!validateStepMetadata() ||
+      (!creatingBlankSong && (!validateStepMapping() || !validateStepImport())))
     return;
 
   if (!onSubmit) {
@@ -2520,6 +2593,41 @@ void SongImportWizardComponent::submitSong() {
       juce::String(static_cast<int>(stems.size())));
 
   auto songData = buildSongData();
+  if (mode == Mode::Edit && isProjectBackedSong(initialSong) &&
+      !juce::File(initialSong.projectPath).existsAsFile()) {
+    keepSubmissionActive = true;
+    promptMissingProject(std::move(songData));
+    return;
+  }
+
+  if (mode == Mode::Import && resolveProjectDestination && promptProjectDestination) {
+    const auto generation = ++destinationPromptGeneration;
+    keepSubmissionActive = true;
+    const auto destinationSong = songData;
+    promptProjectDestination(destinationSong,
+        [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
+         generation, songData = std::move(songData)](juce::File destination,
+                                                    juce::String error) mutable {
+          if (safeThis == nullptr || !safeThis->isSubmitting ||
+              safeThis->destinationPromptGeneration != generation)
+            return;
+          // Every prompt result is consumed once, including cancellation. A
+          // delayed completion from an older request must not submit a retry.
+          ++safeThis->destinationPromptGeneration;
+          if (destination == juce::File{} || error.isNotEmpty()) {
+            safeThis->setSubmitting(false);
+            if (error.isNotEmpty())
+              juce::NativeMessageBox::showMessageBoxAsync(
+                  juce::MessageBoxIconType::WarningIcon,
+                  L10n::tr("Ubicación del proyecto", "Project location"), error);
+            return;
+          }
+          songData.projectPath = destination.getFullPathName();
+          if (!safeThis->submitSongInBackground(std::move(songData)))
+            safeThis->setSubmitting(false);
+        });
+    return;
+  }
   if (mode == Mode::Import && resolveProjectDestination) {
     juce::File destination;
     juce::String destinationError;
@@ -2629,7 +2737,7 @@ bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
   // The persistence callback owns its inputs; all UI work is posted back.
   auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
   const bool started = juce::Thread::launch(
-      [save = onSubmit, song = std::move(song), safeThis,
+      [save = recoveryRequested ? recoverySubmit : onSubmit, song = std::move(song), safeThis,
        staging = mobileImportStaging]() mutable {
         // Retain staged sources if the wizard is destroyed externally while
         // the project still packages them on this worker.
@@ -2704,6 +2812,7 @@ void SongImportWizardComponent::setSubmitting(const bool submitting) {
   for (auto *button : {&submitButton, &backButton, &nextButton, &cancelButton,
                        &saveMetadataButton})
     button->setEnabled(!submitting);
+  blankSongMetadataAction->setEnabled(!submitting);
   mobileCloseButton.setEnabled(!submitting);
   keyboardDoneButton.setEnabled(!submitting);
 }

@@ -8,6 +8,7 @@
 #include "audio/PracticeListening.h"
 #include "audio/StemCache.h"
 #include "data/AppSettings.h"
+#include "data/ArrangementIdentity.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/SongLibraryStore.h"
 #include "telemetry/Telemetry.h"
@@ -212,6 +213,12 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
               .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playworship::telemetry::initialize();
+#if !JUCE_IOS && !JUCE_ANDROID
+  const auto freeShowEndpoint = AppSettings::getFreeShowEndpoint();
+  playworship::lyrics::ConnectionSettings freeShowSettings{freeShowEndpoint.host, freeShowEndpoint.port, {}};
+  if (playworship::lyrics::FreeShowClient::validateSettings(freeShowSettings))
+    freeShowClient.configure(std::move(freeShowSettings));
+#endif
   playbackFormatManager.registerBasicFormats();
   // P0 (perf): one-shot migration de directorios de cache legacy
   // cuyos nombres contengan caracteres que sanitizeCacheKey() ahora
@@ -386,7 +393,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     if (const int confirmed = getPendingArrangementPartJumpIndex(); confirmed >= 0) {
-      setArrangementJumpCommand(confirmed, false); // Re-prepare after device/rate invalidates resident buffers.
+      setArrangementJumpCommand(confirmed, false,
+          (arrangementJumpCommand.load() & kArrangementLoopOnArrival) != 0); // Re-prepare after device/rate invalidates resident buffers.
       arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
     }
     playbackSampleRate = sampleRate;
@@ -399,6 +407,11 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     }
     transportClock.prepare(sampleRate);
     rebuildSectionScheduler();
+#if !JUCE_IOS && !JUCE_ANDROID
+    lyricsCueScheduler.setMaximumDeliveryAgeFrames(
+        playworship::audio::TransportClock::secondsToFrames(0.75, sampleRate));
+    rebuildLyricsCueScheduler();
+#endif
     configureSectionEntryCache();
     metronome.prepare(sampleRate);
     for (auto &track : stemTracks)
@@ -729,7 +742,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   playworship::audio::DynamicGuideEvents guideEvents;
   int pendingGuideLeadOffsetThisBlock = -1;
   juce::int64 guideBlockStartFrame = 0;
-  bool guideTimelinePlaying = false;
+  bool songTimelinePlaying = false;
   const playworship::audio::SectionScheduler::Snapshot *guideTimelineSnapshot = &audioSectionSnapshot;
   bool dynamicGuideShouldRender = false;
   bool dynamicGuideAnnouncementsActive = false;
@@ -788,8 +801,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           dynamicGuideLatencyDelay.reset();
           virtualTimelineStateFlushedThisBlock = true;
         };
-    const bool isPlaying = getTransportState() == TransportState::playing;
-    guideTimelinePlaying = isPlaying;
+    const bool isPlaying = getTransportState() == TransportState::playing &&
+                           transportClock.isPlaying();
+    songTimelinePlaying = isPlaying;
+#if !JUCE_IOS && !JUCE_ANDROID
+    lyricsCueScheduler.beginBlock(lyricsCueScheduler.acquireSnapshot(),
+                                 getTransportState() == TransportState::stopped, numSamples);
+    freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+#endif
     const bool dynamicGuideEnabled =
         dynamicGuideEnabledState.load(std::memory_order_relaxed);
     const bool arrangementEditingActive =
@@ -945,6 +964,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (controlSeekCommandObserved) {
       const double seekTarget =
           seekTargetSeconds.load(std::memory_order_relaxed);
+#if !JUCE_IOS && !JUCE_ANDROID
+      const bool synchroniseLyricsForSeek =
+          lyricsSeekSynchroniseCurrent.load(std::memory_order_relaxed);
+#endif
       const juce::int64 seekSamples =
           playworship::audio::TransportClock::secondsToFrames(
               seekTarget, playbackSampleRate);
@@ -978,6 +1001,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         songCurrentPositionSeconds.store(seekTarget,
                                          std::memory_order_relaxed);
         appliedSeekRequestGeneration = requestedSeekGeneration;
+#if !JUCE_IOS && !JUCE_ANDROID
+        lyricsCueScheduler.discontinuity(seekSamples, true, synchroniseLyricsForSeek);
+        freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+#endif
         deferredArrangementTransitionPending = false;
         deferredArrangementTransitionPartIndex = -1;
 
@@ -1268,18 +1295,27 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         // while it was Preparing. Fulfil it rather than leave a same-section
         // pending command which the scheduler cannot consume.
         const bool reachedNaturally = preparingIndex == mappedPartIndex;
+        const bool requestedLoopOnArrival = (jumpCommandThisBlock & kArrangementLoopOnArrival) != 0;
         const auto confirmed = reachedNaturally ? (((jumpCommandThisBlock >> 32) + 1) << 32)
                                                : jumpCommandThisBlock | 0x10000u;
         if (arrangementJumpCommand.compare_exchange_strong(jumpCommandThisBlock, confirmed)) {
           jumpCommandThisBlock = confirmed;
           arrangementPendingJumpPartIndex.store(reachedNaturally ? -1 : preparingIndex);
-          int expectedLoop = realtimeLoopPartIndex;
-          arrangementLoopPartIndex.compare_exchange_strong(expectedLoop, -1);
-          realtimePendingPartIndex = reachedNaturally ? -1 : preparingIndex; realtimeLoopPartIndex = -1;
+          const bool loopOnArrival = requestedLoopOnArrival;
+          // A Loop-to-Loop request keeps the outgoing loop through preparation
+          // and the queued boundary. Ordinary Ir still releases it on confirmation.
+          if (!loopOnArrival || reachedNaturally) {
+            const int nextLoop = loopOnArrival ? preparingIndex : -1;
+            int expectedLoop = realtimeLoopPartIndex;
+            arrangementLoopPartIndex.compare_exchange_strong(expectedLoop, nextLoop);
+            realtimeLoopPartIndex = nextLoop;
+          }
+          realtimePendingPartIndex = reachedNaturally ? -1 : preparingIndex;
           audioArrangementRuntimeSnapshot.pendingJumpPartIndex = realtimePendingPartIndex;
-          audioArrangementRuntimeSnapshot.loopPartIndex = -1;
+          audioArrangementRuntimeSnapshot.loopPartIndex = realtimeLoopPartIndex;
           arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
-          for (auto &track : stemTracks) track->protectSectionTargets(jumpSource, -1);
+          for (auto &track : stemTracks) track->protectSectionTargets(
+              jumpSource, realtimeLoopPartIndex >= 0 ? (reachedNaturally ? jumpSource : loopSource) : -1);
         }
       }
       const int loopPartIndex = realtimeLoopPartIndex;
@@ -2326,6 +2362,27 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         }
       }
 
+#if !JUCE_IOS && !JUCE_ANDROID
+      // Follow only the arrangement spans that this callback really rendered.
+      // The destination is published after prefetch/transition confirmation;
+      // section skips and forward jumps never replay their omitted marks.
+      if (inBlockArrangementTransitionApplied) {
+        lyricsCueScheduler.renderedSpan(blockStartFrame,
+            blockStartFrame + inBlockTransitionPrefixFrames);
+        lyricsCueScheduler.discontinuity(inBlockTransitionTargetFrame);
+        lyricsCueScheduler.renderedSpan(inBlockTransitionTargetFrame,
+            inBlockTransitionTargetFrame + juce::jmax(0,
+                sourceFramesThisBlock - inBlockTransitionPrefixFrames));
+      } else {
+        auto lyricsSpanEnd = blockStartFrame + sourceFramesThisBlock;
+        if (stopAtEnd && !deferredArrangementTransitionPending)
+          lyricsSpanEnd = std::min(lyricsSpanEnd,
+              playworship::audio::TransportClock::secondsToFrames(
+                  stopAtEndSec, playbackSampleRate));
+        lyricsCueScheduler.renderedSpan(blockStartFrame, lyricsSpanEnd);
+      }
+      freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+#endif
       if (inBlockArrangementTransitionApplied) {
         transportClock.seek(inBlockTransitionTargetFrame);
         transportClock.advance(
@@ -2421,7 +2478,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
            : juce::jlimit(0.0f, 1.0f,
                           masterVolume.load(std::memory_order_relaxed))) *
       juce::jlimit(0.0f, 2.0f, masterGain.load(std::memory_order_relaxed));
-  if (usedSeparatedMix) {
+  // A source-free song has no stretched stem bus to render or align with.
+  // Running the empty bus would add its Bungee latency to the live click.
+  if (usedSeparatedMix && !stemTracks.empty()) {
     const bool timeProcessActive =
         (pitchActiveSemiTones != 0) ||
         !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
@@ -2454,7 +2513,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   }
 
   const bool metronomePlaybackActive =
-      isMetronomeEnabled() && getTransportState() == TransportState::playing;
+      // Play can arrive after this callback took its timeline snapshot.
+      // Never emit its first beat until the same callback advances the clock.
+      isMetronomeEnabled() && songTimelinePlaying &&
+      getTransportState() == TransportState::playing;
   if (metronomePlaybackActive) {
     metronomeRenderBuffer.clear();
 
@@ -2492,7 +2554,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       syncMetronomeToSourceSeconds(
           playworship::audio::TransportClock::framesToSeconds(
               inBlockTransitionTargetSourceFrame, playbackSampleRate));
-      metronome.triggerImmediateClick();
       if (inBlockTransitionOutputOffset < numSamples) {
         metronome.process(metronomeRenderBuffer,
                           inBlockTransitionOutputOffset,
@@ -2693,7 +2754,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         ? inBlockTransitionOutputOffset : numSamples;
     const int prefixSource = inBlockArrangementTransitionApplied
         ? inBlockTransitionPrefixFrames : (sourceFramesThisBlock);
-    if (guideTimelinePlaying)
+    if (songTimelinePlaying)
       guideEvents.addCues(*guideTimelineSnapshot, guideBlockStartFrame,
                           prefixSource, 0, prefixOutput);
     guideEvents.render(dynamicGuideEngine, dynamicGuideRenderBuffer, 0, prefixOutput);
@@ -2822,9 +2883,17 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         arrangementCurrentPartIndex.load(std::memory_order_relaxed);
     arrangementCurrentPartIndex.store(nextArrangementPartIndex,
                                       std::memory_order_relaxed);
-    if ((jumpCommandThisBlock & 0x10000u) != 0) {
+    if ((jumpCommandThisBlock & 0x10000u) != 0 &&
+        static_cast<int>(jumpCommandThisBlock & 0xffffu) - 1 == nextArrangementPartIndex) {
+      const bool loopOnArrival = (jumpCommandThisBlock & kArrangementLoopOnArrival) != 0;
       const auto consumed = ((jumpCommandThisBlock >> 32) + 1) << 32;
-      arrangementJumpCommand.compare_exchange_strong(jumpCommandThisBlock, consumed);
+      if (arrangementJumpCommand.compare_exchange_strong(jumpCommandThisBlock, consumed) &&
+          loopOnArrival) {
+        // Commit the new loop only when this same revision actually arrives.
+        // Cancellation or replacement must never activate a stale loop target.
+        int expectedLoop = audioArrangementRuntimeSnapshot.loopPartIndex;
+        arrangementLoopPartIndex.compare_exchange_strong(expectedLoop, nextArrangementPartIndex);
+      }
     }
     arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
     // Re-arm the jump and loop lead-ins so a fresh iteration can re-announce.
@@ -3393,7 +3462,68 @@ bool MTControlsAudioProcessor::consumePendingMidiUiCommand(int &outCommand) {
   return true;
 }
 
+#if !JUCE_IOS && !JUCE_ANDROID
+void MTControlsAudioProcessor::setSongLyrics(const playworship::lyrics::SongLyrics &lyrics) {
+  const juce::ScopedLock lock(lyricsStateLock);
+  songLyrics = lyrics;
+  rebuildLyricsCueScheduler();
+  freeShowClient.cancelPending();
+}
+
+playworship::lyrics::SongLyrics MTControlsAudioProcessor::getSongLyrics() const {
+  const juce::ScopedLock lock(lyricsStateLock);
+  return songLyrics;
+}
+
+void MTControlsAudioProcessor::rebuildLyricsCueScheduler() {
+  const juce::ScopedLock lock(lyricsStateLock);
+  std::vector<playworship::audio::LyricsCueScheduler::Cue> cues;
+  if (songLyrics.enabled) {
+    const auto count = juce::jmin(static_cast<int>(songLyrics.marks.size()),
+        playworship::audio::LyricsCueScheduler::maxCues);
+    cues.reserve(static_cast<size_t>(count));
+    for (int index = 0; index < count; ++index) {
+      const auto &mark = songLyrics.marks[static_cast<size_t>(index)];
+      const bool linkedTarget = mark.target.hide ||
+          (mark.target.showId.isNotEmpty() && mark.target.showId == songLyrics.showId &&
+           (mark.target.useActiveLayout || (mark.target.layoutId.isNotEmpty() && mark.target.layoutId == songLyrics.layoutId)));
+      if (mark.enabled && linkedTarget && std::isfinite(mark.seconds) &&
+          mark.seconds >= 0.0 && mark.seconds <= 604800.0)
+        cues.push_back({playworship::audio::TransportClock::secondsToFrames(
+            mark.seconds, playbackSampleRate > 0.0 ? playbackSampleRate : 44100.0), index});
+    }
+  }
+  lyricsCueScheduler.publish(std::move(cues), ++lyricsRevision, lyricsSongEpoch);
+  freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+}
+
+void MTControlsAudioProcessor::dispatchLyricsCueEvents() {
+  const auto status = freeShowClient.getStatus();
+  lyricsCueScheduler.setDeliveryState(status.connectionEpoch,
+      status.state == playworship::lyrics::ConnectionStatus::State::connected);
+  freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+  playworship::audio::LyricsCueScheduler::Event event;
+  while (lyricsCueScheduler.popEvent(event)) {
+    if (!lyricsCueScheduler.isCurrent(event)) continue;
+    playworship::lyrics::Target target;
+    {
+      const juce::ScopedLock lock(lyricsStateLock);
+      if (event.revision != lyricsRevision || event.cueIndex < -1 ||
+          event.cueIndex >= static_cast<int>(songLyrics.marks.size())) continue;
+      if (event.cueIndex == -1) target.hide = true; // No lyric is current before the first mark.
+      else target = songLyrics.marks[static_cast<size_t>(event.cueIndex)].target;
+    }
+    // queueTarget only hands work to the network worker. Its generation check
+    // also protects the interval between this dequeue and an effective seek.
+    freeShowClient.queueTarget(std::move(target), event.serial);
+  }
+}
+#endif
+
 void MTControlsAudioProcessor::timerCallback() {
+#if !JUCE_IOS && !JUCE_ANDROID
+  dispatchLyricsCueEvents();
+#endif
   playworship::telemetry::flushAudioIncidents();
   const double diagnosticNow = juce::Time::getMillisecondCounterHiRes();
   if (diagnosticNow - lastDiagnosticDeviceSampleMs >= 1000.0) {
@@ -3430,7 +3560,7 @@ void MTControlsAudioProcessor::timerCallback() {
   if (midiPendingPadLoadMask.load(std::memory_order_acquire) != 0 ||
       padsFullLoadRequested.load(std::memory_order_acquire) ||
       pendingPadNote.load(std::memory_order_acquire) >= 0)
-    startPadsPreloadAsync();
+    startPadsPreloadAsync(!blankSongLoaded.load(std::memory_order_relaxed));
 
   if (!isPadsPreloadRunning() &&
       padsNetworkPreloadPending.exchange(false, std::memory_order_acq_rel))
@@ -4013,7 +4143,11 @@ bool MTControlsAudioProcessor::loadSongStems(
     const juce::String &songTitle, const juce::String &songKey,
     const double songBpm,
     const std::function<void(double)> &onLoadProgress,
-    const bool deferTransitionFadeInUntilConfigured) {
+    const bool deferTransitionFadeInUntilConfigured,
+    const ImportedSongData *blankSong) {
+  const bool isBlank = blankSong != nullptr && isValidBlankSong(*blankSong);
+  if (blankSong != nullptr && (!isBlank || !stemPaths.isEmpty()))
+    return false;
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   // Snapshot playback configuration safely before we start building transports.
@@ -4027,7 +4161,7 @@ bool MTControlsAudioProcessor::loadSongStems(
   const bool wasPlayingBeforeLoad = isSongPlaying();
 
   std::vector<std::unique_ptr<StemTrack>> newTracks;
-  if (stemPaths.isEmpty())
+  if (stemPaths.isEmpty() && !isBlank)
     return false;
 
   const int pathCount = stemPaths.size();
@@ -4188,7 +4322,7 @@ bool MTControlsAudioProcessor::loadSongStems(
                      static_cast<double>(denom));
   }
 
-  if (newTracks.empty())
+  if (newTracks.empty() && !isBlank)
     return false;
 
   // prepareToPlay pre-fills each read-ahead buffer. Verify the first callback
@@ -4365,6 +4499,7 @@ bool MTControlsAudioProcessor::loadSongStems(
     masterMuted.store(false, std::memory_order_relaxed);
     requestedSeekPosition.store(-1, std::memory_order_relaxed);
 
+    blankSongLoaded.store(isBlank, std::memory_order_relaxed);
     loadedSongLengthSeconds = maxLengthSeconds;
     songStartSeconds.store(0.0, std::memory_order_relaxed);
     songEndSeconds.store(maxLengthSeconds, std::memory_order_relaxed);
@@ -4396,21 +4531,23 @@ bool MTControlsAudioProcessor::loadSongStems(
           arrangementStructurePublicationSequence);
       arrangementParts.clear();
       arrangementCues.clear();
-      ArrangementRuntimePart initialPart;
-      initialPart.id = "part-1";
-      initialPart.name = "Part";
-      initialPart.sectionKey =
-          DynamicGuideEngine::normalizeSectionKey(initialPart.name);
-      initialPart.guideTriggerId =
-          dynamicGuideEngine.resolveTriggerId(initialPart.sectionKey);
-      initialPart.startSec = 0.0;
-      initialPart.endSec = maxLengthSeconds;
-      initialPart.sourceStartSec = initialPart.startSec;
-      initialPart.sourceEndSec = initialPart.endSec;
-      arrangementParts.push_back(std::move(initialPart));
+      if (!isBlank) {
+        ArrangementRuntimePart initialPart;
+        initialPart.id = "part-1";
+        initialPart.name = "Part";
+        initialPart.sectionKey =
+            DynamicGuideEngine::normalizeSectionKey(initialPart.name);
+        initialPart.guideTriggerId =
+            dynamicGuideEngine.resolveTriggerId(initialPart.sectionKey);
+        initialPart.startSec = 0.0;
+        initialPart.endSec = maxLengthSeconds;
+        initialPart.sourceStartSec = initialPart.startSec;
+        initialPart.sourceEndSec = initialPart.endSec;
+        arrangementParts.push_back(std::move(initialPart));
+      }
       rebuildSectionScheduler();
       configureSectionEntryCache();
-      arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+      arrangementCurrentPartIndex.store(isBlank ? -1 : 0, std::memory_order_relaxed);
       setArrangementJumpCommand(-1, false);
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
       arrangementCustomActive.store(false, std::memory_order_relaxed);
@@ -4487,6 +4624,10 @@ bool MTControlsAudioProcessor::loadSongStems(
         "loadSongStems", "progress.1.0", progressUs, "");
   }
 
+  if (isBlank) {
+    setMetronomeBeatsPerBar(timeSignatureBeatsPerBar(blankSong->timeSignature));
+    setSongArrangement({}, false);
+  }
   if (shouldResumeAfterLoad && !deferTransitionFadeInUntilConfigured)
     finishPendingSongTransition();
 
@@ -4583,10 +4724,10 @@ void MTControlsAudioProcessor::playSong() {
   if (current < start || (end > 0.0 && current >= end))
     seekSongTo(start);
   else if (customArrangement)
-    seekSongTo(current);
+    seekSongToInternal(current, false);
   setTransportState(TransportState::playing);
-  if (isMetronomeEnabled())
-    metronome.triggerImmediateClick();
+  // The audio callback owns grid attacks. A control-thread preview trigger
+  // can arrive after the first callback or just before the next beat.
 }
 
 void MTControlsAudioProcessor::pauseSong() {
@@ -4608,6 +4749,9 @@ void MTControlsAudioProcessor::stopSong() {
       findArrangementPartIndexForArrangementTime(returnPositionSeconds),
       std::memory_order_relaxed);
   setArrangementJumpCommand(-1, false);
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsSeekSynchroniseCurrent.store(true, std::memory_order_relaxed);
+#endif
   seekTargetSeconds.store(returnPositionSeconds, std::memory_order_relaxed);
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
   globalSamplePosition.store(
@@ -4658,13 +4802,22 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
     end = playbackLength;
   }
   start = juce::jlimit(0.0, end, start);
-  const double target =
-      juce::jlimit(start, end, current + deltaSeconds);
+  const double target = blankSongLoaded.load() && playbackLength == 0.0
+      ? juce::jmax(0.0, current + deltaSeconds)
+      : juce::jlimit(start, end, current + deltaSeconds);
 
   seekSongTo(target);
 }
 
 void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
+  seekSongToInternal(positionSeconds, true);
+}
+
+void MTControlsAudioProcessor::seekSongToInternal(const double positionSeconds,
+                                                const bool synchroniseLyrics) {
+#if JUCE_IOS || JUCE_ANDROID
+  juce::ignoreUnused(synchroniseLyrics);
+#endif
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   transportControlRevision.fetch_add(1, std::memory_order_release);
@@ -4689,7 +4842,8 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
     end = playbackLength;
   }
   start = juce::jlimit(0.0, end, start);
-  double target = juce::jlimit(start, end, positionSeconds);
+  double target = blankSongLoaded.load(std::memory_order_relaxed) && playbackLength == 0.0
+      ? juce::jmax(0.0, positionSeconds) : juce::jlimit(start, end, positionSeconds);
   setArrangementJumpCommand(-1, false);
   const auto practiceRange = getPracticeLoopRange();
   const int loopPartIndex = practiceRange.isEmpty()
@@ -4723,6 +4877,9 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
 
   // Write target atomically. processBlock will pick this up and apply it
   // to ALL stems in the same audio callback → zero inter-stem desync.
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsSeekSynchroniseCurrent.store(synchroniseLyrics, std::memory_order_relaxed);
+#endif
   seekTargetSeconds.store(target, std::memory_order_relaxed);
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
 
@@ -4833,6 +4990,7 @@ juce::String MTControlsAudioProcessor::getPracticeLoopError() const {
 }
 
 void MTControlsAudioProcessor::setSongStartSeconds(double seconds) noexcept {
+  if (isBlankSongLoaded()) return;
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   const double sourceLength =
@@ -4865,6 +5023,7 @@ void MTControlsAudioProcessor::setSongStartSeconds(double seconds) noexcept {
 }
 
 void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
+  if (isBlankSongLoaded()) return;
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   const double sourceLength =
@@ -4897,6 +5056,7 @@ void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
 }
 
 void MTControlsAudioProcessor::setSongFadeOutSeconds(double seconds) noexcept {
+  if (isBlankSongLoaded()) return;
   const double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
   const double sourceLength =
@@ -4969,10 +5129,12 @@ double MTControlsAudioProcessor::getSongFadeOutSeconds() const noexcept {
 
 void MTControlsAudioProcessor::setSongArrangement(
     const SongArrangementSnapshot &incomingArrangement, bool isCustomArrangement) {
-  auto arrangement = incomingArrangement;
+  const bool isBlank = isBlankSongLoaded();
+  auto arrangement = isBlank ? SongArrangementSnapshot{} : incomingArrangement;
+  if (isBlank) isCustomArrangement = false;
   // All entry points (local, restored project and remote) must compile the
   // same safely migrated structure that the waveform shows.
-  migrateLegacyArrangementCues(arrangement);
+  if (!blankSongLoaded.load(std::memory_order_relaxed)) migrateLegacyArrangementCues(arrangement);
   {
     const juce::ScopedLock automationLock(sectionAutomationControlLock);
     sectionAutomationEditing.store(false, std::memory_order_release);
@@ -5011,6 +5173,7 @@ void MTControlsAudioProcessor::setSongArrangement(
                ? arrangementParts[static_cast<size_t>(index)].id
                : juce::String{};
   };
+  const bool loopOnArrival = (arrangementJumpCommand.load() & kArrangementLoopOnArrival) != 0;
   const auto preparingPartId = partIdAtIndex(getPreparingArrangementPartJumpIndex());
   const auto pendingPartId = partIdAtIndex(
       getPendingArrangementPartJumpIndex());
@@ -5184,7 +5347,7 @@ void MTControlsAudioProcessor::setSongArrangement(
     }
   }
 
-  if (next.empty()) {
+  if (next.empty() && !isBlank) {
     ArrangementRuntimePart runtimePart;
     runtimePart.id = "part-1";
     runtimePart.name = "Part";
@@ -5270,14 +5433,14 @@ void MTControlsAudioProcessor::setSongArrangement(
       const int currentPartIndex =
           findArrangementPartIndexForArrangementTime(currentSec);
       arrangementCurrentPartIndex.store(
-          currentPartIndex >= 0 ? currentPartIndex : 0,
+          currentPartIndex >= 0 ? currentPartIndex : (isBlank ? -1 : 0),
           std::memory_order_relaxed);
-      if (preparingPartId.isNotEmpty()) setArrangementJumpCommand(findPartIndexById(preparingPartId), false);
-      else setArrangementJumpCommand(findPartIndexById(pendingPartId), true);
+      if (preparingPartId.isNotEmpty()) setArrangementJumpCommand(findPartIndexById(preparingPartId), false, loopOnArrival);
+      else setArrangementJumpCommand(findPartIndexById(pendingPartId), true, loopOnArrival);
       arrangementLoopPartIndex.store(findPartIndexById(loopPartId),
                                      std::memory_order_relaxed);
     } else {
-      arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+      arrangementCurrentPartIndex.store(isBlank ? -1 : 0, std::memory_order_relaxed);
       setArrangementJumpCommand(-1, false);
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
     }
@@ -5293,6 +5456,9 @@ void MTControlsAudioProcessor::setSongArrangement(
         !preservePlaybackState &&
         getTransportState() != TransportState::playing) {
       const double target = songStartSeconds.load(std::memory_order_relaxed);
+#if !JUCE_IOS && !JUCE_ANDROID
+      lyricsSeekSynchroniseCurrent.store(true, std::memory_order_relaxed);
+#endif
       seekTargetSeconds.store(target, std::memory_order_relaxed);
       seekRequestGeneration.fetch_add(1, std::memory_order_release);
       songCurrentPositionSeconds.store(target, std::memory_order_relaxed);
@@ -5307,15 +5473,35 @@ void MTControlsAudioProcessor::setSongArrangement(
       1, std::memory_order_release);
 }
 
-void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
-  if (!songLoaded.load()) return;
-  clearPracticeLoop();
-  transportControlRevision.fetch_add(1, std::memory_order_release);
+bool MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
+  return requestArrangementPartJumpById(getArrangementPartId(partIndex));
+}
+
+juce::String MTControlsAudioProcessor::getArrangementControlRevision() const {
+  return arrangementControlEpoch + ":" + juce::String(static_cast<juce::int64>(
+      arrangementStructurePublicationSequence.load(std::memory_order_acquire)));
+}
+
+juce::String MTControlsAudioProcessor::getArrangementPartId(const int runtimeIndex) const {
+  const juce::SpinLock::ScopedLockType lock(stemListLock);
+  if (!juce::isPositiveAndBelow(runtimeIndex, static_cast<int>(arrangementParts.size())) ||
+      runtimeIndex >= playworship::audio::SectionScheduler::maxSections) return {};
+  const auto &id = arrangementParts[static_cast<size_t>(runtimeIndex)].id;
+  return playworship::arrangement::uniquePartIndex(arrangementParts, id) == runtimeIndex ? id : juce::String{};
+}
+
+bool MTControlsAudioProcessor::requestArrangementPartJumpById(
+    const juce::String &partId, const juce::String &expectedRevision) {
   double target = 0.0;
   bool seek = false;
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
-    if (!juce::isPositiveAndBelow(partIndex, static_cast<int>(arrangementParts.size()))) return;
+    const int partIndex = playworship::arrangement::uniquePartIndex(
+        arrangementParts, partId, playworship::audio::SectionScheduler::maxSections);
+    if (!songLoaded.load() || partIndex < 0 ||
+        (expectedRevision.isNotEmpty() && expectedRevision != getArrangementControlRevision())) return false;
+    clearPracticeLoop();
+    transportControlRevision.fetch_add(1, std::memory_order_release);
     if (getTransportState() == TransportState::playing) {
       if (getPendingArrangementPartJumpIndex() == partIndex || getPreparingArrangementPartJumpIndex() == partIndex)
         setArrangementJumpCommand(-1, false);
@@ -5324,28 +5510,40 @@ void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
       } else
         setArrangementJumpCommand(partIndex, false); // Keep Loop until all stems are ready.
       arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
-      return;
+      return true;
     }
     setArrangementJumpCommand(-1, false); arrangementLoopPartIndex.store(-1);
     target = arrangementParts[static_cast<size_t>(partIndex)].startSec; seek = true;
   }
   if (seek) seekSongTo(target);
+  return true;
 }
 
-void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
-  if (!songLoaded.load(std::memory_order_relaxed))
-    return;
-  clearPracticeLoop();
-  transportControlRevision.fetch_add(1, std::memory_order_release);
+bool MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
+  return toggleArrangementPartLoopById(getArrangementPartId(partIndex));
+}
+
+bool MTControlsAudioProcessor::toggleArrangementPartLoopById(
+    const juce::String &partId, const juce::String &expectedRevision) {
 
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
-    if (!juce::isPositiveAndBelow(partIndex,
-                                  static_cast<int>(arrangementParts.size())))
-      return;
+    const int partIndex = playworship::arrangement::uniquePartIndex(
+        arrangementParts, partId, playworship::audio::SectionScheduler::maxSections);
+    if (!songLoaded.load(std::memory_order_relaxed) || partIndex < 0 ||
+        (expectedRevision.isNotEmpty() && expectedRevision != getArrangementControlRevision())) return false;
+    clearPracticeLoop();
+    transportControlRevision.fetch_add(1, std::memory_order_release);
 
     const int activeLoopIndex =
         arrangementLoopPartIndex.load(std::memory_order_relaxed);
+    const auto jumpCommand = arrangementJumpCommand.load(std::memory_order_acquire);
+    if ((jumpCommand & kArrangementLoopOnArrival) != 0 &&
+        static_cast<int>(jumpCommand & 0xffffu) - 1 == partIndex) {
+      setArrangementJumpCommand(-1, false);
+      arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
+      return true;
+    }
     if (activeLoopIndex == partIndex) {
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
       // Toggling the loop off must also drop any pending jump that was queued
@@ -5354,25 +5552,40 @@ void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
       setArrangementJumpCommand(-1, false);
       arrangementTransitionIntentGeneration.fetch_add(
           1, std::memory_order_release);
-      return;
+      return true;
     }
 
-    // Marking a section as loop must NOT auto-jump to it. The loop stays
-    // dormant until natural playback reaches the section's range; once there
-    // it wraps automatically on every section end. The previous behaviour
-    // (queueing a jump when the playhead was outside) interrupted worship
-    // flow by teleporting the user away from the section they were on.
-    arrangementLoopPartIndex.store(partIndex, std::memory_order_relaxed);
-    setArrangementJumpCommand(-1, false);
+    const int currentPartIndex = findArrangementPartIndexForArrangementTime(
+        getSongCurrentPositionSeconds());
+    if (getTransportState() == TransportState::playing &&
+        activeLoopIndex >= 0 && activeLoopIndex == currentPartIndex) {
+      // Replacing the loop that is actually sounding requests one prepared
+      // handoff. Retain it until the destination is resident and reached at
+      // the outgoing section boundary, then keep the destination repeating.
+      setArrangementJumpCommand(partIndex, false, true);
+    } else {
+      // A first/future loop remains dormant until natural playback reaches it.
+      arrangementLoopPartIndex.store(partIndex, std::memory_order_relaxed);
+      setArrangementJumpCommand(-1, false);
+    }
     arrangementTransitionIntentGeneration.fetch_add(
         1, std::memory_order_release);
   }
+  return true;
 }
 
 void MTControlsAudioProcessor::clearArrangementPartLoop() noexcept {
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
+  auto command = arrangementJumpCommand.load(std::memory_order_acquire);
+  while ((command & kArrangementLoopOnArrival) != 0) {
+    const auto cancelled = ((command >> 32) + 1) << 32;
+    if (arrangementJumpCommand.compare_exchange_weak(command, cancelled)) {
+      arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+      break;
+    }
+  }
   arrangementTransitionIntentGeneration.fetch_add(
       1, std::memory_order_release);
 }
@@ -5387,11 +5600,14 @@ int MTControlsAudioProcessor::getArrangementPartLoopIndex() const noexcept {
   return arrangementLoopPartIndex.load(std::memory_order_relaxed);
 }
 
-void MTControlsAudioProcessor::setArrangementJumpCommand(int index, bool confirmed) noexcept {
+void MTControlsAudioProcessor::setArrangementJumpCommand(int index, bool confirmed,
+                                                         bool loopOnArrival) noexcept {
   auto old = arrangementJumpCommand.load();
   uint64_t next;
   do {
-    next = (((old >> 32) + 1) << 32) | static_cast<uint64_t>(index + 1) | (confirmed && index >= 0 ? 0x10000u : 0u);
+    next = (((old >> 32) + 1) << 32) | static_cast<uint64_t>(index + 1) |
+           (confirmed && index >= 0 ? 0x10000u : 0u) |
+           (loopOnArrival && index >= 0 ? kArrangementLoopOnArrival : 0u);
   } while (!arrangementJumpCommand.compare_exchange_weak(old, next));
   arrangementPendingJumpPartIndex.store(confirmed ? index : -1);
 }
@@ -5424,7 +5640,7 @@ void MTControlsAudioProcessor::configureSectionEntryCache() {
 }
 void MTControlsAudioProcessor::setSectionEntryCacheBudget(juce::int64 bytes) {
   const juce::SpinLock::ScopedLockType lock(stemListLock);
-  sectionEntryCacheBudgetBytes = juce::jmax<juce::int64>(1, bytes);
+  sectionEntryCacheBudgetBytes = std::max<juce::int64>(1, bytes);
   configureSectionEntryCache();
 }
 juce::int64 MTControlsAudioProcessor::getSectionEntryCacheBytes() const {
@@ -6662,7 +6878,7 @@ void MTControlsAudioProcessor::triggerPadNoteInternal(const int noteIndex, const
 
   pendingPadOctave.store(octave, std::memory_order_release);
   pendingPadNote.store(noteIndex, std::memory_order_release);
-  startPadsPreloadAsync();
+  startPadsPreloadAsync(!blankSongLoaded.load(std::memory_order_relaxed));
 }
 
 void MTControlsAudioProcessor::triggerPadNoteForSongTransition(
@@ -6734,10 +6950,10 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 }
 
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
-  metronome.setEnabled(enabled);
+  if (metronome.isEnabled() == enabled)
+    return;
   metronome.requestReset();
-  if (enabled && getTransportState() == TransportState::playing)
-    metronome.triggerImmediateClick();
+  metronome.setEnabled(enabled);
 }
 
 bool MTControlsAudioProcessor::isMetronomeEnabled() const noexcept {
@@ -6985,9 +7201,17 @@ bool MTControlsAudioProcessor::isClickDivisionEnabled() const noexcept {
 }
 
 void MTControlsAudioProcessor::clearLoadedSongState() {
+#if !JUCE_IOS && !JUCE_ANDROID
+  {
+    const juce::ScopedLock lock(lyricsStateLock);
+    ++lyricsSongEpoch;
+  }
+  setSongLyrics({}); // Invalidates commands belonging to the replaced song.
+#endif
   resetSectionAutomationState();
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
+  blankSongLoaded.store(false, std::memory_order_relaxed);
   loadedSongLengthSeconds = 0.0;
   loadedSongBpm = 120.0;
   playbackTempoBpm.store(120.0, std::memory_order_relaxed);
@@ -7018,6 +7242,9 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   globalSamplePosition.store(0, std::memory_order_relaxed);
   requestedSeekPosition.store(-1, std::memory_order_relaxed);
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsSeekSynchroniseCurrent.store(true, std::memory_order_relaxed);
+#endif
   seekTargetSeconds.store(0.0, std::memory_order_relaxed);
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
   songLoaded.store(false, std::memory_order_relaxed);

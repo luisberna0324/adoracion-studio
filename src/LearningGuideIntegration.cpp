@@ -358,8 +358,11 @@ void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
     if (!ready && lesson->id == "demo-song" && step.id == "demo-section-loop" &&
         waveformBarPtr && !waveformBarPtr->isLiveMode())
       pendingMessage = waveformBarPtr->canToggleLiveMode()
-          ? L10n::tr("Abre Más y activa Vista de secciones para acceder a Loop.",
-                     "Open More and enable Sections view to access Loop.")
+          ? (!useTouchOptimisedControls() && !learningPhoneContent
+              ? L10n::tr("Selecciona Secciones en la barra superior para acceder a Loop.",
+                         "Select Sections in the top bar to access Loop.")
+              : L10n::tr("Abre Más y activa Vista de secciones para acceder a Loop.",
+                         "Open More and enable Sections view to access Loop."))
           : L10n::tr("Termina o cancela la edición antes de cambiar a Vista de secciones.",
                      "Finish or cancel editing before switching to Sections view.");
     switch (prerequisite) {

@@ -907,7 +907,15 @@ juce::String arrangementPartDisplayLabelForName(const juce::String &name) {
   return trimmed.isNotEmpty() ? trimmed : L10n::tr("Parte", "Part");
 }
 
+bool isValidBlankSong(const ImportedSongData &song) {
+  return song.blankSong && song.stems.empty() && !song.title.trim().isEmpty() &&
+      song.bpm >= 20 && song.bpm <= 300 &&
+      (song.timeSignature == "4/4" || song.timeSignature == "3/4" || song.timeSignature == "6/8");
+}
+
 double estimateSongLengthSeconds(const ImportedSongData &song) {
+  if (song.blankSong)
+    return 0.0; // Blank songs are always open-ended; historical bar counts are inert.
   double maxDuration = 0.0;
   for (const auto &stem : song.stems) {
     if (!stem.include)

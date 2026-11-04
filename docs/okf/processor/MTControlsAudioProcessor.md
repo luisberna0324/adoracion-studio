@@ -4,12 +4,18 @@ title: MTControlsAudioProcessor
 description: Procesador principal del plugin - JUCE AudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, processor, audio, plugin, main]
-timestamp: 2026-08-17T02:00:00Z
+timestamp: 2026-10-17T00:00:00Z
 ---
 
 # MTControlsAudioProcessor
 
 Clase principal que extiende `juce::AudioProcessor`. Gestiona toda la pipeline de audio incluyendo stems, mezcla, metrónomo, pads y guías dinámicas.
+
+En escritorio también posee el cliente local FreeShow y el scheduler de marcas
+independientes de letras. `setSongLyrics`, `getSongLyrics` y
+`getFreeShowClient` pertenecen a la capa de control. Audio sólo evalúa tablas
+numéricas acotadas sobre segmentos efectivos y publica eventos; el dispatcher
+y el worker realizan toda comunicación externa. Véase [FreeShow](../integrations/FreeShow.md).
 
 > **Performance**: la captura de telemetría de performance de `processBlock` (stages, gaps, decode, render) está documentada en [`AudioDiagnostics`](AudioDiagnostics.md). Toda métrica de rendimiento del plugin pasa por ese módulo.
 
@@ -509,6 +515,21 @@ script de análisis distinga ambos modos dentro del mismo escenario.
 | `setMetronomeVolume(float)` | volume (0-1) | Volumen |
 | `getMetronomeVolume()` | — | Volumen actual |
 
+La única perilla de `CLICK DYN`, rotulada `GAIN`, representa el nivel combinado
+`volume * gain` entre 0 y 4 (hasta aproximadamente +12 dB). La unidad 1 conserva
+el nivel anterior y ocupa el centro del recorrido; un doble clic recupera 1.
+El tooltip muestra dB. `ClickDivisionPanel::setVolume` y sus callbacks
+`onVolumeChanged`/`onVolumeDragEnded` usan este nivel combinado 0..4 sólo en ese
+panel: no redefinen el volumen 0..1 del processor.
+
+Al mover la perilla, `ChannelGridPanel` transforma niveles hasta 1 en
+`volume=level, gain=1`, y niveles superiores en `volume=1, gain=level`.
+La carga y los refrescos sólo muestran el producto existente, sin normalizar
+ni escribir la mezcla guardada. Al terminar el gesto se persisten el volumen
+0..1 y la ganancia independientes en `ClickDynMixSnapshot`, manteniendo su
+formato y las canciones previas. MIDI y remoto conservan sus controles y rangos
+separados; el refresco visual refleja el producto de ambos.
+
 ### Mute/Solo/Gain
 
 | Método | Parámetros | Descripción |
@@ -778,18 +799,28 @@ int getPendingArrangementPartJumpIndex() const noexcept;
 
 **Semántica de toggleArrangementPartLoop(partIndex):**
 
-- Si no hay loop activo y la playhead está **fuera** de la sección: activa
-  el loop y queuea un jump para entrar a la sección en el próximo bloque
-  que cruce la frontera de la sección actual.
-- Si no hay loop activo y la playhead está **dentro** de la sección:
-  activa el loop sin queuear jump (ya estás ahí).
-- Si el loop activo es otra sección: cambia el loop al nuevo `partIndex` y
-  queuea un jump para entrar (mismo comportamiento que el primer caso).
-- Si el loop activo es **la misma** sección: apaga el loop **y limpia
-  cualquier pending jump** que estuviera esperando para entrar. Esto
-  garantiza que un doble-click rápido en el botón loop (encender y apagar)
-  no deje un jump fantasma que teletransporte al usuario a la sección
-  cancelada.
+- Si no hay loop activo y la playhead está **fuera** de la sección: arma
+  el loop sin salto. Sólo empieza a repetir cuando la reproducción alcanza
+  naturalmente la sección.
+- Si la playhead está **dentro** de la sección elegida: activa su loop sin
+  mover la posición.
+- Si se reemplaza otra sección marcada en Loop que **no está sonando**:
+  cambia el armado al nuevo `partIndex`, sin salto automático.
+- Si está **sonando una sección en Loop** y se elige otra: prepara el destino
+  conservando el loop saliente. Sólo confirma la cola cuando todos los stems
+  tienen los buffers residentes; al siguiente final válido de la sección
+  saliente, salta al destino y deja ese nuevo destino en Loop. No adelanta el
+  salto ni libera el loop anterior durante la preparación o la espera del límite.
+- Pulsar de nuevo Loop en el destino de ese cambio cancela la preparación/cola
+  y conserva el loop saliente. `clearPendingArrangementPartJump()` hace lo
+  mismo; `clearArrangementPartLoop()` apaga el loop y cancela ese cambio.
+- Si el loop activo es **la misma** sección: apaga el loop y limpia el salto
+  pendiente. Una cancelación no puede dejar un salto fantasma.
+
+Durante el cambio entre loops, Preparando/En cola identifica el destino;
+`getArrangementPartLoopIndex()` sigue identificando la sección saliente hasta
+la transición. Las reglas de Ir permanecen independientes: Ir conserva el loop
+mientras prepara, lo libera al confirmar y no activa Loop en el destino.
 
 ### Edición de arrange
 

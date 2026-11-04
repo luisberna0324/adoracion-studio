@@ -3,6 +3,7 @@
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
 #include "ui/panels/PadsComponent.h"
+#include "network/SectionControl.h"
 
 #include <atomic>
 #include <cmath>
@@ -17,6 +18,14 @@ struct SectionAutomationTestAccess {
     juce::AudioFormatManager formats; formats.registerBasicFormats();
     const bool loaded = processor.dynamicGuideEngine.loadGuideDirectories({directory}, formats);
     if (loaded) {
+      // Reloading the bank rebuilds trigger IDs; mirror the production reload
+      // before publishing the sections that cache those IDs.
+      {
+        const juce::SpinLock::ScopedLockType lock(processor.stemListLock);
+        for (auto &part : processor.arrangementParts)
+          part.guideTriggerId =
+              processor.dynamicGuideEngine.resolveTriggerId(part.sectionKey);
+      }
       processor.rebuildSectionScheduler();
       processor.dynamicGuideResetGeneration.fetch_add(1, std::memory_order_release);
     }
@@ -24,6 +33,20 @@ struct SectionAutomationTestAccess {
   }
   static float guideSample(const MTControlsAudioProcessor &processor, int frame) {
     return processor.dynamicGuideRenderStorage.getSample(0, frame);
+  }
+  static float metronomeSample(const MTControlsAudioProcessor &processor, int frame) {
+    return processor.metronomeRenderStorage.getSample(0, frame);
+  }
+  static void publishPlayingState(MTControlsAudioProcessor &processor) {
+    // The final publication made by playSong(), without reopening an absent
+    // host device on every stress iteration. The renderer and clock are real.
+    processor.setTransportState(MTControlsAudioProcessor::TransportState::playing);
+  }
+  static void publishPlayingMirror(MTControlsAudioProcessor &processor) {
+    processor.transportState.store(static_cast<int>(MTControlsAudioProcessor::TransportState::playing), std::memory_order_relaxed);
+  }
+  static void finishPlayingPublication(MTControlsAudioProcessor &processor) {
+    processor.transportClock.play();
   }
   static int currentPart(const MTControlsAudioProcessor &processor) {
     return processor.arrangementCurrentPartIndex.load();
@@ -33,6 +56,9 @@ struct SectionAutomationTestAccess {
   }
   static double tempoRatio(const MTControlsAudioProcessor &processor) {
     return processor.getPlaybackTempoRatio();
+  }
+  static double activeTempoRatio(const MTControlsAudioProcessor &processor) {
+    return processor.playbackTempoRatioActive;
   }
   static bool seekApplied(const MTControlsAudioProcessor &processor) {
     return processor.seekRequestGeneration.load(std::memory_order_acquire) ==
@@ -214,6 +240,37 @@ struct ProcessorFixture {
   }
 };
 
+void testStableSectionControlIdentity() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  auto arrangement = p.getSongArrangementSnapshot();
+  auto longChorus = arrangement.parts[1], shortChorus = longChorus;
+  longChorus.id = "chorus-long"; longChorus.endSec = 6.0;
+  shortChorus.id = "chorus-short"; shortChorus.endSec = 4.0;
+  arrangement.parts = {arrangement.parts[0], longChorus, shortChorus};
+  p.setSongArrangement(arrangement, false);
+  expect(p.getArrangementPartId(1) == "chorus-short" && p.getArrangementPartId(2) == "chorus-long",
+         "native runtime sorts equal starts independently of UI metadata order");
+  const auto revision = p.getArrangementControlRevision();
+  expect(p.toggleArrangementPartLoopById("chorus-long", revision) && p.getArrangementPartLoopIndex() == 2,
+         "native stable ID selects the intended repeated occurrence");
+  const auto transportRevision = p.getTransportControlRevision();
+  expect(!p.requestArrangementPartJump(-1) && !p.toggleArrangementPartLoop(256) &&
+         !p.requestArrangementPartJumpById("missing", revision) &&
+         p.getArrangementPartLoopIndex() == 2 && p.getTransportControlRevision() == transportRevision,
+         "invalid native destinations reject before changing valid intents");
+  arrangement.parts[0].muteInstruments = true;
+  p.setSongArrangement(arrangement, false);
+  expect(!p.toggleArrangementPartLoopById("chorus-long", revision), "native revision rejects a superseded arrangement");
+  juce::String error;
+  auto request = juce::JSON::parse(R"({"songId":"other-song","revision":""})");
+  request.getDynamicObject()->setProperty("revision", p.getArrangementControlRevision());
+  expect(!playworship::remote::applySectionControl(p, "song", false, "arrange.jumpById", request, "verse", error),
+         "shared dispatcher rejects another song with the real processor");
+  arrangement.parts.push_back(arrangement.parts[0]);
+  p.setSongArrangement(arrangement, false);
+  expect(!p.requestArrangementPartJumpById("verse"), "native runtime rejects duplicate IDs");
+}
+
 void testDraftSaveCancelAndBaseMix() {
   ProcessorFixture fixture; auto &p = *fixture.processor;
   p.playSong();
@@ -352,8 +409,8 @@ void testJumpIntentSurvivesLoopBlocks() {
   p.setSongArrangement(arrangement, true);
   p.setStemVolume(1, 0.4f);
   fixture.seekAndWait(2.5); p.playSong(); fixture.waitForPendingSeek();
-  p.toggleArrangementPartLoop(1);
-  p.requestArrangementPartJump(0);
+  p.toggleArrangementPartLoopById("chorus");
+  p.requestArrangementPartJumpById("verse");
   expect(p.getPreparingArrangementPartJumpIndex() == 0 && p.getPendingArrangementPartJumpIndex() == -1 && p.getArrangementPartLoopIndex() == 1, "preparation preserves Loop and has no confirmed queue");
   expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "backward target prepares");
   fixture.block();
@@ -422,6 +479,222 @@ void testRepeatedLoopsStayInsideSection() {
               juce::String(p.getSongCurrentPositionSeconds(), 6) + " loop=" + juce::String(p.getArrangementPartLoopIndex()) +
               " current=" + juce::String(SectionAutomationTestAccess::currentPart(p)) + " amplitude=" + juce::String(audio.getMagnitude(0, 0, 8192), 6)).toRawUTF8());
   }
+}
+
+
+// A first out-of-range Loop is armed for natural playback. Replacing a Loop
+// which is actually sounding has different intent: reach and repeat the new
+// section at the outgoing boundary, without losing the outgoing audio first.
+void testLoopHandoffReachesAndRepeatsDestination() {
+  for (const bool backward : {false, true}) {
+    ProcessorFixture fixture; auto &p = *fixture.processor;
+    p.prepareToPlay(44100.0, 8192);
+    SongArrangementSnapshot arrangement;
+    for (int index = 0; index < 4; ++index) {
+      SongArrangementPartSnapshot part;
+      part.id = "loop-" + juce::String(index); part.name = part.id;
+      part.startSec = index; part.endSec = index + 1.0;
+      arrangement.parts.push_back(part);
+    }
+    const int outgoing = backward ? 3 : 0;
+    const int destination = backward ? 0 : 3;
+    arrangement.parts[static_cast<size_t>(destination)].muteInstruments = true;
+    // The UI publishes per-section Mute as a custom arrangement.
+    p.setSongArrangement(arrangement, true);
+    p.setStemVolume(1, 0.4f);
+    // Fixture control callbacks contain 256 frames; leave ample room even if
+    // the fixture later adopts the prepared 8192-frame maximum.
+    fixture.seekAndWait(outgoing + 0.2); p.playSong(); fixture.waitForPendingSeek();
+    expect(p.toggleArrangementPartLoop(destination), "first future Loop accepts");
+    fixture.block();
+    expect(p.getArrangementPartLoopIndex() == destination &&
+           p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+           p.getSongCurrentPositionSeconds() >= outgoing && p.getSongCurrentPositionSeconds() < outgoing + 1.0,
+           "a first Loop outside the current section remains armed without auto-jumping");
+    p.clearArrangementPartLoop();
+    expect(p.toggleArrangementPartLoop(outgoing), "outgoing Loop accepts");
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+           SectionAutomationTestAccess::waitForTransitionTarget(p, outgoing),
+           "outgoing source and loop entry are resident");
+
+    expect(p.toggleArrangementPartLoopById(arrangement.parts[static_cast<size_t>(destination)].id),
+           "nonadjacent destination Loop accepts by occurrence ID");
+    expect(p.getArrangementPartLoopIndex() == outgoing &&
+           p.getPreparingArrangementPartJumpIndex() == destination &&
+           p.getPendingArrangementPartJumpIndex() == -1,
+           "Loop replacement prepares its destination while preserving the sounding Loop");
+    expect(SectionAutomationTestAccess::waitForTransitionTarget(p, destination),
+           "loop handoff destination becomes resident");
+    fixture.block();
+    expect(p.getPreparingArrangementPartJumpIndex() == -1 &&
+           p.getPendingArrangementPartJumpIndex() == destination &&
+           p.getArrangementPartLoopIndex() == outgoing &&
+           p.getSongCurrentPositionSeconds() < outgoing + 1.0,
+           "resident handoff queues without changing the outgoing Loop before its boundary");
+    if (backward) {
+      auto updated = p.getSongArrangementSnapshot();
+      updated.parts[static_cast<size_t>(destination)].name = "Updated destination";
+      updated.parts[1].muteInstruments = true;
+      p.setSongArrangement(updated, true);
+      expect(p.getPendingArrangementPartJumpIndex() == destination &&
+             p.getPreparingArrangementPartJumpIndex() == -1 &&
+             p.getArrangementPartLoopIndex() == outgoing,
+             "same-geometry metadata and Mute publication preserve the queued Loop handoff by ID");
+    }
+
+    juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+    for (int callback = 0; callback < 8 && p.getPendingArrangementPartJumpIndex() >= 0; ++callback) {
+      expect(SectionAutomationTestAccess::waitForSource(p, 8192), "handoff source stays readable");
+      p.processBlock(audio, midi);
+    }
+    expect(p.getPendingArrangementPartJumpIndex() == -1 &&
+           p.getPreparingArrangementPartJumpIndex() == -1 &&
+           p.getArrangementPartLoopIndex() == destination &&
+           SectionAutomationTestAccess::currentPart(p) == destination &&
+           p.getSongCurrentPositionSeconds() >= destination &&
+           p.getSongCurrentPositionSeconds() < destination + 0.4,
+           "forward or backward handoff skips intermediate sections and transfers Loop only on arrival");
+    expect(p.getSongArrangementSnapshot().parts[static_cast<size_t>(destination)].muteInstruments,
+           "loop handoff preserves destination Mute");
+
+    bool repeated = false;
+    for (int callback = 0; callback < 10 && !repeated; ++callback) {
+      const auto before = p.getSongCurrentPositionSeconds();
+      expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+             SectionAutomationTestAccess::waitForTransitionTarget(p, destination),
+             "destination source and next wrap are resident");
+      p.processBlock(audio, midi);
+      const auto after = p.getSongCurrentPositionSeconds();
+      repeated = after < before;
+      expect(p.getArrangementPartLoopIndex() == destination &&
+             after >= destination && after < destination + 1.0,
+             "arrived destination continues to own its Loop");
+      near(audio.getSample(0, 7000), 0.04,
+           "destination instruments remain muted while its click stays audible");
+    }
+    expect(repeated, "the new destination actually wraps again rather than only receiving a one-shot jump");
+  }
+}
+
+void testColdLoopHandoffKeepsOutgoingLoop() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.setSectionEntryCacheBudget(2 * 32768 * 2 * sizeof(float));
+  fixture.seekAndWait(3.95); p.playSong(); fixture.waitForPendingSeek();
+  expect(SectionAutomationTestAccess::waitForSource(p, 256) &&
+         SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "cold handoff outgoing entry is resident");
+  p.toggleArrangementPartLoop(1); fixture.block();
+  SectionAutomationTestAccess::setReadThreadsRunning(p, false);
+  p.toggleArrangementPartLoop(0);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  for (int callback = 0; callback < 24; ++callback) {
+    p.processBlock(audio, midi);
+    expect(p.getPreparingArrangementPartJumpIndex() == 0 &&
+           p.getPendingArrangementPartJumpIndex() == -1 &&
+           p.getArrangementPartLoopIndex() == 1 &&
+           p.getSongCurrentPositionSeconds() >= 2.0 && p.getSongCurrentPositionSeconds() < 4.0,
+           "cold Loop replacement stays Preparing while the old Loop crosses its wrap");
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f,
+           "cold Loop replacement never introduces a silent callback");
+  }
+  SectionAutomationTestAccess::setReadThreadsRunning(p, true);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cold replacement destination recovers");
+  p.processBlock(audio, midi);
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getArrangementPartLoopIndex() == 1,
+         "readiness preserves outgoing Loop until the future boundary is actually reached");
+  for (int callback = 0; callback < 400 && p.getPendingArrangementPartJumpIndex() >= 0; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 256), "recovered handoff source remains resident");
+    p.processBlock(audio, midi);
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f, "recovered Loop handoff stays audible");
+  }
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == 0 && p.getSongCurrentPositionSeconds() < 0.1,
+         "cold replacement eventually reaches and owns the destination Loop");
+}
+
+void testLoopHandoffCancellationAndReplacement() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.prepareToPlay(44100.0, 8192);
+  SongArrangementSnapshot arrangement;
+  for (int index = 0; index < 4; ++index) {
+    SongArrangementPartSnapshot part;
+    part.id = "handoff-" + juce::String(index); part.name = part.id;
+    part.startSec = index; part.endSec = index + 1.0;
+    arrangement.parts.push_back(part);
+  }
+  p.setSongArrangement(arrangement, false);
+  fixture.seekAndWait(3.5); p.playSong(); fixture.waitForPendingSeek(); p.toggleArrangementPartLoop(3);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 3.0), "cancellation fixture outgoing Loop is resident");
+  p.toggleArrangementPartLoop(0); p.toggleArrangementPartLoop(0);
+  expect(p.getArrangementPartLoopIndex() == 3 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "pressing the preparing destination Loop again cancels only the handoff");
+  // A cancelled destination may still finish its I/O. Its old readiness must
+  // not restore either the musical command or ownership of Loop.
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cancelled destination finishes stale I/O");
+  fixture.block();
+  expect(p.getArrangementPartLoopIndex() == 3 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "stale readiness cannot revive a cancelled preparing handoff");
+
+  p.toggleArrangementPartLoop(0);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "second destination prepares");
+  fixture.block();
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getArrangementPartLoopIndex() == 3,
+         "handoff becomes queued before testing explicit cancellation");
+  p.toggleArrangementPartLoop(0);
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == 3,
+         "pressing the queued destination Loop again cancels only the handoff");
+  p.toggleArrangementPartLoop(0);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "explicitly cancelled destination prepares again");
+  fixture.block();
+  expect(p.getPendingArrangementPartJumpIndex() == 0, "explicit cancellation starts with a confirmed handoff");
+  p.clearPendingArrangementPartJump();
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == 3,
+         "clearing a queued handoff leaves the outgoing Loop active");
+
+  p.toggleArrangementPartLoop(0); p.toggleArrangementPartLoop(1);
+  expect(p.getPreparingArrangementPartJumpIndex() == 1 && p.getArrangementPartLoopIndex() == 3,
+         "a newer Loop destination replaces the older request without replacing the outgoing Loop");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "superseded target finishes stale I/O");
+  fixture.block();
+  expect(p.getPreparingArrangementPartJumpIndex() != 0 && p.getPendingArrangementPartJumpIndex() != 0 &&
+         p.getArrangementPartLoopIndex() == 3,
+         "superseded target readiness never wins against a newer Loop request");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 1.0), "newest Loop target prepares");
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+  for (int callback = 0; callback < 4 && p.getArrangementPartLoopIndex() != 1; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192), "replacement source remains readable");
+    p.processBlock(audio, midi);
+  }
+  expect(p.getArrangementPartLoopIndex() == 1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getSongCurrentPositionSeconds() >= 1.0 && p.getSongCurrentPositionSeconds() < 1.4,
+         "only the newest destination receives the handoff");
+
+  p.clearArrangementPartLoop(); fixture.seekAndWait(3.5); p.toggleArrangementPartLoop(3);
+  p.toggleArrangementPartLoop(0); p.clearArrangementPartLoop();
+  expect(p.getArrangementPartLoopIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "clear Loop removes both its handoff and the outgoing Loop");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cleared Loop target finishes stale I/O");
+  fixture.block();
+  expect(p.getArrangementPartLoopIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "cleared handoff cannot reappear after its I/O finishes");
+
+  p.toggleArrangementPartLoop(3); p.requestArrangementPartJump(0); p.clearArrangementPartLoop();
+  expect(p.getArrangementPartLoopIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == 0,
+         "clear Loop does not cancel an ordinary Ir request");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "ordinary Ir destination is resident");
+  for (int callback = 0; callback < 4 &&
+       (p.getPreparingArrangementPartJumpIndex() >= 0 || p.getPendingArrangementPartJumpIndex() >= 0); ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192), "ordinary Ir source remains readable");
+    p.processBlock(audio, midi);
+  }
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.4,
+         "ordinary Ir still executes and never inherits a cancelled Loop destination");
 }
 
 void testColdJumpKeepsCurrentLoopAudible() {
@@ -758,9 +1031,13 @@ void testPendingJumpOwnsSectionGuide() {
   }
   {
     ProcessorFixture f; setup(f, 2.99); auto &p = *f.processor;
-    const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("pending-jump-guide");
+    // A separate immutable asset path prevents a warmed 16-frame section
+    // sample from the setup fixture from standing in for this longer voice.
+    const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("pending-jump-guide-long");
     writeWav(directory.getChildFile("intro.wav"), 1024, 0.1f);
     expect(SectionAutomationTestAccess::loadGuides(p, directory), "long late-destination voice loads");
+    // Replacing the pack changes its trigger IDs; resolve section IDs again.
+    p.setSongArrangement(p.getSongArrangementSnapshot(), false);
     p.requestArrangementPartJump(0);
     expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "late jump destination is resident");
     int voicedSamples = 0;
@@ -771,6 +1048,7 @@ void testPendingJumpOwnsSectionGuide() {
     }
     expect(p.getPendingArrangementPartJumpIndex() == -1 && SectionAutomationTestAccess::currentPart(p) == 0,
            "late jump still executes at the existing section boundary");
+    if (voicedSamples != 1024) std::cerr << "Late destination voiced samples=" << voicedSamples << '\n';
     expect(voicedSamples == 1024, "late destination voice continues completely across the jump without duplication");
   }
 }
@@ -985,7 +1263,353 @@ void testSongKeyFollowUsesBaseAndNeverEchoesRemote() {
 
 }
 
-int main() {
+void testBlankSongNativeTransport() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  ImportedSongData song;
+  song.id = "blank-transport"; song.title = "Free blank"; song.blankSong = true;
+  song.bpm = 120; song.key = "C"; song.timeSignature = "4/4";
+  song.blankClickEnabled = true; song.blankPadEnabled = true; // Legacy choices must not override ordinary controls.
+  p.setMetronomeEnabled(false); p.setPadsEnabled(false);
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "native blank song loads with no stem readers");
+  expect(p.hasLoadedSong() && p.getLoadedStemCount() == 0 && p.getSongLengthSeconds() == 0.0, "free song is loaded with open-ended duration");
+  expect(!p.isMetronomeEnabled() && !p.isPadsEnabled(), "loading a blank preserves ordinary click and pad controls");
+  juce::AudioBuffer<float> output(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  const auto render = [&](int blocks) {
+    for (int i = 0; i < blocks; ++i) p.processBlock(output, midi);
+  };
+  p.playSong(); render(100);
+  near(p.getSongCurrentPositionSeconds(), 25600.0 / 44100.0, "free transport advances without audio stems");
+  expect(p.isSongPlaying() && output.getMagnitude(0, 256) == 0.0f, "free playback with click and pad off is silent and keeps running");
+  p.pauseSong(); const double paused = p.getSongCurrentPositionSeconds(); render(30);
+  near(p.getSongCurrentPositionSeconds(), paused, "pause preserves blank position");
+  p.playSong(); render(10);
+  expect(p.getSongCurrentPositionSeconds() > paused, "play resumes the same blank clock");
+  p.seekSongTo(3600.0); render(2);
+  expect(p.getSongCurrentPositionSeconds() > 3600.0 && p.isSongPlaying(), "free song can keep playing past an hour without an invented maximum");
+  p.stopSong(); render(2); near(p.getSongCurrentPositionSeconds(), 0.0, "stop resets free song to zero");
+
+  // Use the real engine's short synthetic click so this phase assertion does
+  // not depend on the duration of a locally installed click sample.
+  p.clearMetronomeClickSamples();
+  p.setMetronomeEnabled(true); p.playSong(); render(1);
+  expect(output.getMagnitude(0, 256) > 0.0f && !p.isPadsEnabled(), "click can play with pad disabled");
+  render(42);
+  if (output.getMagnitude(0, 256) != 0.0f)
+    std::cerr << "Blank click offbeat magnitude=" << output.getMagnitude(0, 256)
+              << " position=" << p.getSongCurrentPositionSeconds() << '\n';
+  expect(output.getMagnitude(0, 256) == 0.0f, "free click phase follows source time instead of retriggering every block");
+  p.pauseSong(); render(1);
+  expect(output.getMagnitude(0, 256) == 0.0f, "pause silences the click");
+  p.stopSong(); render(1);
+  p.setMetronomeEnabled(false);
+  for (int wait = 0; wait < 500 && p.isPadsPreloadRunning(); ++wait) juce::Thread::sleep(2);
+  expect(p.ensurePadsPackReady(false) && p.ensurePadsNoteReady(0, true), "test prepares a real local pad, without a stub or download");
+  p.setPadsCrossfadePreset(PadsEngine::CrossfadePreset::Fast);
+  p.setPadsEnabled(true); p.triggerPadNote(0, 0); p.playSong(); render(400);
+  expect(p.getPadsOutputLevel() > 0.01f && output.getMagnitude(0, 256) > 0.0f && !p.isMetronomeEnabled(), "pad plays independently with click disabled");
+  p.setMetronomeEnabled(true); render(10);
+  expect(p.getPadsOutputLevel() > 0.01f && p.isMetronomeEnabled(), "pad and click can both remain enabled");
+  p.setPadsEnabled(false); render(400);
+  expect(p.isMetronomeEnabled() && p.getPadsOutputLevel() < 0.0001f, "disabling pad leaves click enabled independently");
+  p.setPadsEnabled(true); render(400);
+  p.pauseSong(); render(400);
+  expect(p.getPadsOutputLevel() > 0.01f && p.isPadsBaseEnabled(), "pause preserves the ordinary independently playing pad");
+  p.playSong(); render(400); expect(p.getPadsOutputLevel() > 0.01f, "play preserves the selected global pad");
+  p.stopSong(); render(400);
+  expect(p.getPadsOutputLevel() > 0.01f, "stop preserves ordinary pad behavior rather than adding blank-specific gating");
+  p.stopPadNote(0); p.setPadsEnabled(false); p.setMetronomeEnabled(false); render(400);
+
+  // Old prototype metadata or a stale client must not turn a blank into an
+  // arrangement, install a finite stop, or expose a synthetic default section.
+  song.blankSongBars = 3;
+  SongArrangementPartSnapshot oldPart; oldPart.id = "old-blank-section";
+  oldPart.name = "Intro"; oldPart.endSec = 6.0;
+  song.arrangement.parts.push_back(oldPart);
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song),
+      "historical blank metadata still loads as an audio-free song");
+  p.setSongArrangement(song.arrangement, true);
+  expect(SectionAutomationTestAccess::scheduler(p).count == 0 &&
+      p.getSongArrangementSnapshot().parts.empty() && !p.isCustomArrangementActive() &&
+      !p.requestArrangementPartJumpById(oldPart.id) &&
+      !p.toggleArrangementPartLoopById("part-1") &&
+      !p.beginSectionAutomationEditing(oldPart.id),
+      "blank has no generated sections, Loop, Ir or automation destinations");
+  p.playSong(); render(800);
+  const double beforeWindow = p.getSongCurrentPositionSeconds();
+  p.setSongStartSeconds(1.0); p.setSongEndSeconds(2.0); p.setSongFadeOutSeconds(1.0);
+  render(800);
+  expect(p.isSongPlaying() && p.getSongCurrentPositionSeconds() > beforeWindow &&
+      p.getSongLengthSeconds() == 0.0 && p.getSongStartSeconds() == 0.0 &&
+      p.getSongEndSeconds() == 0.0 && !p.isSongEndCustomized(),
+      "blank remains open beyond historical bars and ignores finite window edits");
+  p.setPitchSemiTones(2); render(10);
+  expect(p.getPitchSemiTones() == 2 && p.isSongPlaying(),
+      "ordinary pitch control works without stems or interrupting the free clock");
+  p.stopSong(); render(1);
+  for (const auto &meter : {"3/4", "6/8"}) {
+    song.timeSignature = meter;
+    expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "blank meter change loads without a nested transport lock");
+    near(p.getSongLengthSeconds(), 0.0, "changing meter never creates a blank duration");
+    p.setPlaybackTempoBpm(180.0); p.playSong(); render(100);
+    const double before = p.getSongCurrentPositionSeconds(); render(100);
+    near(p.getSongCurrentPositionSeconds() - before, 38400.0 / 44100.0, "blank tempo change advances the existing source clock at its effective ratio");
+    p.stopSong(); render(1);
+  }
+  PlaybackSession remote(p); remote.setRemote(true); remote.setConnected(true);
+  auto *state = new juce::DynamicObject(); auto *metadata = new juce::DynamicObject();
+  metadata->setProperty("id", "free-remote"); metadata->setProperty("blankSong", true); metadata->setProperty("bpm", 120);
+  state->setProperty("song", metadata); state->setProperty("position", 42.0); state->setProperty("length", 0.0); state->setProperty("playing", true); state->setProperty("tempo", 120.0);
+  remote.applyState(juce::var(state));
+  expect(remote.getSongCurrentPositionSeconds() >= 42.0, "remote free position is not clamped to zero by open-ended duration");
+  juce::StringArray actions;
+  remote.onCommand = [&](const auto &, const juce::String &action, const auto &, const auto &) { actions.add(action); };
+  remote.setPlaybackTempoBpm(150.0); remote.setPitchSemiTones(-2);
+  remote.setMetronomeEnabled(true); remote.setPadsEnabled(true);
+  remote.toggleSongPlayPause(); remote.stopSong();
+  expect(actions.contains("tempo.set") && actions.contains("pitch.set") &&
+      actions.contains("click.metronome") && actions.contains("pads.enabled") &&
+      actions.contains("transport.toggle") && actions.contains("transport.stop"),
+      "blank remote retains ordinary tempo, pitch, click/pad and transport commands");
+}
+
+// Render the actual processor output. The one-frame probe is a loaded click
+// sample, not a replacement transport or a silent song stem. Optional captures
+// repeat the same gestures with the shipped woodblock to inspect its real tail.
+void testMetronomeTransportAttacks() {
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_CLICK_CAPTURE_DIR", {});
+  const auto probe = ApplicationDataPaths::isolatedTestRoot().getChildFile("click-probe");
+  probe.createDirectory();
+  {
+    auto stream = std::unique_ptr<juce::OutputStream>(probe.getChildFile("click-probe-quarter.wav").createOutputStream());
+    juce::WavAudioFormat format;
+    auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+        .withSampleRate(44100.0).withNumChannels(1).withBitsPerSample(24));
+    expect(writer != nullptr, "click probe WAV opens");
+    juce::AudioBuffer<float> audio(1, 128); audio.clear(); audio.setSample(0, 0, 0.5f);
+    expect(writer->writeFromAudioSampleBuffer(audio, 0, 128), "click probe WAV writes");
+  }
+  bool passed = true;
+  for (const bool blank : {false, true}) {
+    for (const bool woodblock : {false, true}) {
+      if (woodblock && capturePath.isEmpty()) continue;
+      ProcessorFixture fixture; auto &p = *fixture.processor;
+      if (blank) {
+        ImportedSongData song; song.blankSong = true; song.id = "click-blank";
+        song.title = "Click blank"; song.key = "C"; song.bpm = 120; song.timeSignature = "4/4";
+        expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "click test loads a blank");
+      }
+      auto guides = p.getDynamicGuideSettings(); guides.enabled = false;
+      p.setDynamicGuideSettings(guides); p.setPadsEnabled(false);
+      for (int stem = 0; stem < p.getLoadedStemCount(); ++stem) p.setStemMute(stem, true);
+      p.setClickDivision(1); p.setClickDivisionEnabled(true);
+      p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+      const auto samples = woodblock ? juce::File(__FILE__).getParentDirectory().getParentDirectory().getChildFile("assets/clicks/samples") : probe;
+      expect(p.loadMetronomeClickSamplesFromFolder(samples, woodblock ? "woodblock" : "probe"), "native engine loads click samples");
+      p.playSong(); fixture.block(100); p.stopSong(); fixture.block(2); // Settle stem mute ramps.
+
+      const auto capture = [&](const juce::String &gesture, const std::vector<int> &expected) {
+        juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 1536); audio.clear();
+        juce::AudioBuffer<float> block(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+        for (int offset = 0; offset < audio.getNumSamples(); offset += 256) {
+          expect(SectionAutomationTestAccess::waitForSource(p, 256), "real source reader is ready for capture");
+          p.processBlock(block, midi);
+          for (int ch = 0; ch < audio.getNumChannels(); ++ch) audio.copyFrom(ch, offset, block, ch, 0, 256);
+        }
+        const auto name = juce::String(blank ? "blank_" : "stems_") + (woodblock ? "woodblock_" : "probe_") + gesture;
+        if (capturePath.isNotEmpty()) {
+          const auto file = juce::File(capturePath).getChildFile(name + ".wav");
+          file.getParentDirectory().createDirectory(); file.deleteFile();
+          auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream());
+          juce::WavAudioFormat format;
+          auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+              .withSampleRate(44100.0).withNumChannels(audio.getNumChannels()).withBitsPerSample(24));
+          expect(writer && writer->writeFromAudioSampleBuffer(audio, 0, audio.getNumSamples()), "native output capture writes");
+        }
+        if (!woodblock) {
+          std::vector<int> attacks;
+          for (int frame = 0; frame < audio.getNumSamples(); ++frame)
+            if (std::abs(audio.getSample(0, frame)) > 0.01f) attacks.push_back(frame);
+          std::cout << name << " attack frames:";
+          for (auto frame : attacks) std::cout << ' ' << frame;
+          std::cout << '\n';
+          passed = passed && attacks == expected;
+        }
+      };
+      const auto reset = [&] { p.stopSong(); fixture.block(2); };
+      p.setMetronomeEnabled(true); p.playSong(); capture("start", {0});
+      p.pauseSong(); capture("paused", {});
+      reset(); p.playSong(); fixture.block(85); p.pauseSong(); fixture.block(2);
+      p.playSong(); capture("resume_before_beat", {290});
+      reset(); p.setMetronomeEnabled(false); p.playSong(); fixture.block(85);
+      p.setMetronomeEnabled(true); capture("enable_before_beat", {290});
+      reset(); p.playSong(); fixture.block(85); p.playSong(); capture("play_again", {290});
+      p.stopSong(); p.playSong(); capture("rapid_restart", {0});
+      p.stopSong(); capture("stopped", {});
+    }
+  }
+  for (const bool loop : {false, true}) {
+    ProcessorFixture fixture; auto &p = *fixture.processor;
+    p.prepareToPlay(44100.0, 8192);
+    auto arrangement = p.getSongArrangementSnapshot();
+    // Destination is 100 frames before a real beat. Neither a jump nor a
+    // loop should add a second attack there, or at the exclusive prefix end.
+    arrangement.parts[1].startSec = 3.0 - 100.0 / 44100.0;
+    arrangement.parts[1].endSec = 5.0;
+    p.setSongArrangement(arrangement, false);
+    p.setPadsEnabled(false); p.setClickDivision(1); p.setClickDivisionEnabled(true);
+    p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+    expect(p.loadMetronomeClickSamplesFromFolder(probe, "probe"), "split callback loads real click probe");
+    p.setMetronomeEnabled(true);
+    fixture.seekAndWait(loop ? 4.95 : 1.95);
+    p.playSong();
+    expect(loop ? p.toggleArrangementPartLoop(1) : p.requestArrangementPartJump(1), "real section command accepts");
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+        SectionAutomationTestAccess::waitForTransitionTarget(p, arrangement.parts[1].startSec), "split source and destination are resident");
+    juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+    p.processBlock(audio, midi);
+    std::vector<int> attacks;
+    for (int frame = 0; frame < 8192; ++frame)
+      if (std::abs(SectionAutomationTestAccess::metronomeSample(p, frame)) > 0.01f) attacks.push_back(frame);
+    std::cout << (loop ? "loop" : "jump") << " attack frames:";
+    for (auto frame : attacks) std::cout << ' ' << frame;
+    std::cout << '\n';
+    passed = passed && attacks == std::vector<int>({2305});
+  }
+  expect(passed, "native click emits only grid attacks across play, resume, enable and restart for stems and blank songs");
+}
+
+void testMetronomeConcurrentStart() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  ImportedSongData song; song.blankSong = true; song.id = "concurrent-click";
+  song.title = "Concurrent click"; song.key = "C"; song.bpm = 120; song.timeSignature = "4/4";
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "concurrent click blank loads");
+  const auto probe = ApplicationDataPaths::isolatedTestRoot().getChildFile("concurrent-click-probe");
+  writeWav(probe.getChildFile("click-probe-quarter.wav"), 1, 0.5f);
+  expect(p.loadMetronomeClickSamplesFromFolder(probe, "probe"), "concurrent click probe loads");
+  auto guides = p.getDynamicGuideSettings(); guides.enabled = false;
+  p.setDynamicGuideSettings(guides); p.setPadsEnabled(false);
+  p.setClickDivision(1); p.setClickDivisionEnabled(true);
+  p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+  p.setMetronomeEnabled(true);
+  int duplicateStarts = 0;
+  constexpr int trials = 500;
+  for (int trial = 0; trial < trials; ++trial) {
+    p.stopSong(); fixture.block(2);
+    std::atomic<bool> started{false};
+    std::vector<int> attacks;
+    std::thread audio([&] {
+      juce::AudioBuffer<float> buffer(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+      started.store(true, std::memory_order_release);
+      for (int block = 0; block < 10000; ++block) {
+        p.processBlock(buffer, midi);
+        for (int i = 0; i < 256; ++i)
+          if (std::abs(buffer.getSample(0, i)) > 0.01f) attacks.push_back(block * 256 + i);
+        if (p.getSongCurrentPositionSeconds() > 0.06) break;
+      }
+    });
+    while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
+    for (int i = 0; i < trial % 8; ++i) std::this_thread::yield();
+    SectionAutomationTestAccess::publishPlayingState(p); audio.join();
+    if (attacks.size() != 1) {
+      if (++duplicateStarts <= 3) {
+        std::cout << "concurrent start trial=" << trial << " attack frames:";
+        for (auto frame : attacks) std::cout << ' ' << frame;
+        std::cout << '\n';
+      }
+    }
+  }
+  std::cout << "concurrent starts=" << trials << " invalid=" << duplicateStarts << '\n';
+  expect(duplicateStarts == 0, "concurrent Play cannot render a click before that callback starts the song clock");
+
+  // Deterministically hold the real two-atomic Play publication between its
+  // mirrored state store and TransportClock::play(). No rendering substitute.
+  p.stopSong(); fixture.block(2);
+  SectionAutomationTestAccess::publishPlayingMirror(p);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  p.processBlock(audio, midi);
+  expect(audio.getMagnitude(0, 256) == 0.0f && p.getSongCurrentPositionSeconds() == 0.0,
+         "partial Play publication cannot emit a beat before its clock is ready");
+  SectionAutomationTestAccess::finishPlayingPublication(p);
+  int attacks = 0;
+  for (int block = 0; block < 3; ++block) {
+    p.processBlock(audio, midi);
+    for (int frame = 0; frame < 256; ++frame)
+      if (std::abs(audio.getSample(0, frame)) > 0.01f) ++attacks;
+  }
+  expect(attacks == 1, "completing Play publication emits the initial beat exactly once");
+}
+
+void testMetronomeLongTempoCadence() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.prepareToPlay(44100.0, 257);
+  ImportedSongData song; song.blankSong = true; song.id = "tempo-click";
+  song.title = "Tempo click"; song.key = "C"; song.bpm = 126; song.timeSignature = "4/4";
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "tempo click blank loads");
+  const auto probe = ApplicationDataPaths::isolatedTestRoot().getChildFile("tempo-click-probe");
+  writeWav(probe.getChildFile("click-probe-quarter.wav"), 1, 0.5f);
+  expect(p.loadMetronomeClickSamplesFromFolder(probe, "probe"), "tempo click probe loads");
+  p.setPadsEnabled(false); auto guides = p.getDynamicGuideSettings(); guides.enabled = false; p.setDynamicGuideSettings(guides);
+  p.setClickDivision(1); p.setClickDivisionEnabled(true); p.setMetronomeEnabled(true);
+  p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+  p.setPlaybackTempoBpm(94.5); fixture.block(2); p.playSong();
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 257); juce::MidiBuffer midi;
+  std::vector<int> attacks;
+  constexpr int frames = 44100 * 120;
+  for (int start = 0; start < frames; start += 257) {
+    p.processBlock(audio, midi);
+    for (int i = 0; i < std::min(257, frames - start); ++i)
+      if (std::abs(audio.getSample(0, i)) > 0.01f) attacks.push_back(start + i);
+  }
+  const double period = 44100.0 * 60.0 / 94.5;
+  double maxError = 0.0; int closePairs = 0;
+  for (size_t i = 0; i < attacks.size(); ++i) {
+    maxError = std::max(maxError, std::abs(attacks[i] - i * period));
+    if (i && attacks[i] - attacks[i - 1] < period / 2.0) {
+      ++closePairs; std::cout << "tempo close attacks: " << attacks[i - 1] << ' ' << attacks[i] << '\n';
+    }
+  }
+  std::cout << "tempo 126->94.5, block=257, seconds=120, attacks=" << attacks.size()
+            << " close_pairs=" << closePairs << " max_frame_error=" << maxError
+            << " source_position=" << p.getSongCurrentPositionSeconds()
+            << " original_bpm=" << p.getOriginalSongBpm() << " effective_ratio=" << SectionAutomationTestAccess::tempoRatio(p) << '\n';
+  std::cout << "first attacks:"; for (size_t i = 0; i < std::min<size_t>(attacks.size(), 22); ++i) std::cout << ' ' << attacks[i]; std::cout << '\n';
+  expect(closePairs == 0 && attacks.size() == 189 && maxError <= 2.0,
+         "long slow-tempo playback has one grid attack per beat without accumulated drift");
+  p.stopSong(); fixture.block(2);
+  fixture.seekAndWait(3737808.0 / 44100.0);
+  p.playSong(); attacks.clear();
+  for (int block = 0; block < 3; ++block) {
+    if (block == 1) p.setMetronomeEnabled(true); // A repeated UI/remote value is not a restart.
+    p.processBlock(audio, midi);
+    for (int frame = 0; frame < 257; ++frame)
+      if (std::abs(audio.getSample(0, frame)) > 0.01f) attacks.push_back(block * 257 + frame);
+  }
+  std::cout << "quantized tempo edge attacks:"; for (auto frame : attacks) std::cout << ' ' << frame; std::cout << '\n';
+  expect(attacks == std::vector<int>({256}), "fractional source consumption cannot retrigger a beat at the next callback");
+
+  p.stopSong(); fixture.block(2); p.setPlaybackTempoBpm(126.0); fixture.block(2); p.playSong();
+  int previousBeat = -1, rampAttacks = 0; double maxSourceError = 0.0;
+  for (const double target : {126.0, 252.0, 94.5}) {
+    p.setPlaybackTempoBpm(target);
+    for (int block = 0; block < 690; ++block) {
+      const double sourceStart = p.getSongCurrentPositionSeconds() * 44100.0;
+      p.processBlock(audio, midi);
+      const double ratio = SectionAutomationTestAccess::activeTempoRatio(p);
+      for (int frame = 0; frame < 257; ++frame) {
+        if (std::abs(audio.getSample(0, frame)) <= 0.01f) continue;
+        const double sourceFrame = sourceStart + frame * ratio;
+        const int beat = static_cast<int>(std::llround(sourceFrame / 21000.0));
+        expect(beat == previousBeat + 1, "live tempo ramps cannot skip or repeat a beat");
+        maxSourceError = std::max(maxSourceError, std::abs(sourceFrame - beat * 21000.0));
+        previousBeat = beat; ++rampAttacks;
+      }
+    }
+  }
+  std::cout << "live tempo 126->252->94.5 attacks=" << rampAttacks << " max_source_frame_error=" << maxSourceError << '\n';
+  expect(maxSourceError <= 2.0, "live tempo click stays within two source frames of the musical grid");
+}
+
+int main(int argc, char **argv) {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr) return 77;
 #endif
@@ -996,7 +1620,32 @@ int main() {
     try { test(); std::cout << "PASS: " << name << '\n'; }
     catch (const std::exception &error) { ++failures; std::cerr << "FAIL: " << name << ": " << error.what() << '\n'; }
   };
+  if (argc > 1 && juce::String(argv[1]) == "--loop-handoff-only") {
+    run("Loop handoff reaches and repeats its destination", testLoopHandoffReachesAndRepeatsDestination);
+    run("cold Loop handoff preserves the outgoing Loop", testColdLoopHandoffKeepsOutgoingLoop);
+    run("Loop handoff cancellation, replacement and stale readiness", testLoopHandoffCancellationAndReplacement);
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--click-only") {
+    run("native metronome transport attacks", testMetronomeTransportAttacks);
+    run("native metronome concurrent start", testMetronomeConcurrentStart);
+    run("native metronome tempo cadence and ramps", testMetronomeLongTempoCadence);
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--click-race-only") {
+    run("native metronome concurrent start", testMetronomeConcurrentStart);
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--click-timing-only") {
+    run("native metronome long tempo cadence", testMetronomeLongTempoCadence);
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--blank-only") {
+    run("blank free transport, accompaniment, pitch/tempo and no section controls", testBlankSongNativeTransport);
+    return failures == 0 ? 0 : 1;
+  }
   run("bounded coherent timeline selection", testTimelineSelectionAndPublication);
+  run("stable section identity and rejected native controls", testStableSectionControlIdentity);
   run("sparse draft save cancel base and remote-ready state", testDraftSaveCancelAndBaseMix);
   run("audio section boundary and smoothed mix targets", testAudioBoundaryAndRamp);
   run("long callbacks cross every section and annotation gap", testLongBlockMultipleSectionEdges);
@@ -1004,6 +1653,9 @@ int main() {
   run("Ir intent survives interior Loop blocks", testJumpIntentSurvivesLoopBlocks);
   run("Ir publishes backward prefetch before its boundary", testIrPublishesBackwardPrefetchBeforeBoundary);
   run("repeated loops stay inside their section", testRepeatedLoopsStayInsideSection);
+  run("Loop handoff reaches and repeats its destination", testLoopHandoffReachesAndRepeatsDestination);
+  run("cold Loop handoff preserves the outgoing Loop", testColdLoopHandoffKeepsOutgoingLoop);
+  run("Loop handoff cancellation, replacement and stale readiness", testLoopHandoffCancellationAndReplacement);
   run("late cold readiness waits for a future boundary", testLateColdReadinessWaitsForFutureBoundary);
   run("prepared jump follows changing tempo", testPreparedJumpWithChangingTempo);
   run("cold jump keeps the current Loop audible", testColdJumpKeepsCurrentLoopAudible);

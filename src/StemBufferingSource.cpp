@@ -72,26 +72,30 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
 
     backgroundThread.addTimeSliceClient(this);
 
-    // P0.3 (perf): target de prefill mucho más chico. El original pedía
-    // `min(sampleRate/4, buffer/2)` = ~250ms @ 44.1kHz. En Windows, con
-    // antivirus activo, el primer read del archivo puede tardar 200-500ms,
-    // y este loop se ejecuta en el UI thread del loadSongStems, donde
-    // 250ms × N stems se acumula y se ve como "tarda mucho en cambiar de
-    // canción". 4 blocks de headroom alcanzan para que el primer callback
-    // no haga underrun, y el waitForNextAudioBlockReady posterior en
-    // MTControlsAudioProcessor::loadSongStems sigue siendo el verdadero
-    // gate antes del swap. Si la prefill corta antes, el worker sigue
-    // llenando mientras la UI vuelve al message loop.
-    const int prefillTarget = juce::jmax(
-        samplesPerBlockExpected * 4,
-        juce::jmin(samplesPerBlockExpected * 8, buffer.getNumSamples() / 4));
-    do {
-      backgroundThread.moveToFrontOfQueue(this);
-      juce::Thread::sleep(5);
-    } while (prefillBuffer &&
-             (bufferValidEnd.load(std::memory_order_acquire) -
-                  bufferValidStart.load(std::memory_order_acquire) <
-              prefillTarget));
+    // Prefill is best-effort headroom, not the readiness gate. A stopped or
+    // delayed worker must not trap the control/message thread here before
+    // loadSongStems can perform its bounded first-block readiness check.
+    // The worker keeps filling after this budget expires. addTimeSliceClient
+    // already wakes its queue, so waiting needs no repeated queue locks.
+    const int prefillTarget = juce::jmin(
+        juce::jmax(0, buffer.getNumSamples() - 4),
+        juce::jmax(samplesPerBlockExpected * 4,
+                   juce::jmin(samplesPerBlockExpected * 8,
+                              buffer.getNumSamples() / 4)));
+    constexpr juce::uint32 prefillWaitBudgetMs = 250;
+    const auto prefillStartedAt = juce::Time::getMillisecondCounter();
+    while (prefillBuffer && backgroundThread.isThreadRunning() &&
+           !backgroundThread.threadShouldExit() &&
+           bufferValidEnd.load(std::memory_order_acquire) -
+                   bufferValidStart.load(std::memory_order_acquire) <
+               prefillTarget) {
+      const auto elapsedMs =
+          juce::Time::getMillisecondCounter() - prefillStartedAt;
+      if (elapsedMs >= prefillWaitBudgetMs)
+        break;
+      bufferReadyEvent.wait(static_cast<int>(juce::jmin(
+          juce::uint32{5}, prefillWaitBudgetMs - elapsedMs)));
+    }
   }
 }
 

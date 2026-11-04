@@ -131,6 +131,69 @@ inicio, evitando que la barra aparezca y desaparezca al esperar el snapshot.
   message thread, en orden de recepción, y distribuye `ack` con el resultado.
   Todos los clientes reciben los cambios confirmados.
 
+### Destinos de Ir y Loop
+
+El snapshot anuncia la extensión `sectionControls` con `v: 1`, `songId` y
+`revision` (cadena opaca), además de `pendingPartId`, `preparingPartId` y
+`loopPartId`. La revisión combina una época única por instancia del motor con
+su publicación de estructura, evitando colisiones tras reiniciar el servidor;
+cambiar o recargar canción/arreglo la invalida. Las intenciones de transporte
+no cambian esa revisión.
+
+El contexto del comando pertenece al arreglo instalado en la UI. Si un snapshot
+nuevo llega durante un gesto y la actualización visual queda diferida, el
+cliente conserva la canción/revisión de esa vista hasta instalar el nuevo
+arreglo. Nunca combina una tarjeta antigua con la identidad recién recibida
+de otra canción, incluso si ambas reutilizan IDs como `verse`. Mientras esos
+contextos difieren, los indicadores nuevos no se proyectan sobre las tarjetas
+antiguas.
+
+`arrange.jumpById` y `arrange.loopById` llevan `target` con el ID estable de la
+ocurrencia y `value: { songId, revision }`. Nombres repetidos o `sourcePartId`
+no identifican el destino. El servidor rechaza una carga en curso, canción o
+revisión distinta, ID ausente/duplicado y sección que el runtime no pueda
+reproducir. El procesador vuelve a resolver y validar bajo su lock de control
+antes de modificar intenciones; el ACK refleja el resultado de esa aceptación.
+Aceptar Ir no significa que ya haya sonado: conserva Preparando, confirmación
+de buffers y ejecución en la frontera válida. Loop no provoca un salto inmediato.
+
+`arrange.clearJumpById` y `arrange.clearLoopById` llevan el mismo contexto sin
+destino. Armar Loop fuera de la sección espera la llegada natural y cancela un
+Ir anterior dentro de la misma acción validada. Si está sonando otra sección
+en Loop, `arrange.loopById` prepara el nuevo destino y conserva el loop saliente
+hasta el salto en su próximo final válido; sólo confirma la cola cuando todos
+los stems tienen el destino residente. Al entrar, el destino queda en Loop.
+Preparando/En cola identifica el destino y `loopPartId` sigue identificando la
+sección saliente hasta el cruce. Repetir Loop en el destino o enviar
+`arrange.clearJumpById` cancela ese cambio conservando el loop saliente;
+`arrange.clearLoopById` apaga la repetición y cancela ese cambio pendiente.
+Reemplazar un loop armado que no está sonando no solicita salto.
+
+Un destino rechazado no cancela una intención anterior ni modifica el mute.
+Las reglas de Ir permanecen iguales: conserva Loop durante Preparando, lo
+libera al confirmar la cola y no activa Loop en su destino. La UI resuelve las
+acciones y los indicadores por ID, porque el runtime puede ordenar o filtrar
+partes de forma distinta a la metadata. La metadata y su persistencia conservan
+su orden y contenido.
+
+El cliente presenta `Solicitando` mientras espera ACK y snapshot posterior;
+un rechazo/timeout muestra `No aplicado` con el motivo en la ayuda del control.
+Cuando falta compatibilidad, la tarjeta muestra directamente `Actualiza servidor`
+en vez de `No aplicado`, con la instrucción completa en la ayuda. El cliente
+anterior recibe `Update the client app to control sections safely` en el motivo
+del ACK; su flujo existente lo muestra en Configuración → Control remoto.
+Los indicadores Loop/Preparando siguen leyendo estado confirmado del servidor.
+Desconexión, cambio de canción o una nueva solicitud descartan feedback anterior.
+
+La envoltura general sigue en protocolo v1. Las conexiones antiguas y sus otros
+controles permanecen disponibles, pero no hay fallback inseguro a índices:
+un cliente nuevo frente a un servidor sin `sectionControls.v = 1` no envía
+Ir/Loop y solicita actualizar el servidor. Un servidor nuevo rechaza
+`arrange.jump`, `arrange.loop`, `arrange.clearJump` y `arrange.clearLoop` de
+clientes anteriores con ACK negativo y petición de actualizar el cliente,
+manteniendo la conexión. Esas órdenes no contienen contexto suficiente para
+demostrar qué canción/ocurrencia vio el cliente.
+
 ### Presupuesto de interfaz y clientes lentos
 
 Cada conexión dispone de `RemoteSendQueue`, con serialización JSON y envío TCP
@@ -416,3 +479,13 @@ descubrimiento y conexión WebSocket nativo → portátil y portátil → nativo
 Las tres pruebas pasaron tras reemplazar el multicast directo en Apple.
 
 Referencia: [Apple TN3179 — privacidad de red local](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+
+## Canción en blanco libre
+
+Una canción `blankSong` se controla con transporte, click, pads, tono y tempo
+habituales. Su duración es cero/abierta y el cliente extrapola posiciones sin
+recortarlas a cero. La zona de onda permanece vacía también en Cliente; para
+este tipo no se muestra la etiqueta de conexión sobre ella (el estado sigue
+disponible en Configuración). El snapshot del motor no contiene secciones
+sintéticas. El servidor rechaza `arrange.*`, `window.*` y `tempoMap.set` para
+este tipo, sin afectar sus controles de acompañamiento ni las canciones normales.

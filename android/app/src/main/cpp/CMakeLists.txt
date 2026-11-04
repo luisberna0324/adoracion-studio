@@ -11,6 +11,7 @@ FetchContent_MakeAvailable(ixwebsocket)
 
 set(CMAKE_CXX_STANDARD 17)
 set(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../../")
+include("${PROJECT_ROOT}/cmake/ReleaseVersion.cmake")
 set(JUCE_ROOT "${PROJECT_ROOT}/third_party/JUCE")
 if(NOT EXISTS "${JUCE_ROOT}/modules/juce_core/juce_core.cpp")
     set(JUCE_ROOT "${PROJECT_ROOT}/../third_party/JUCE")
@@ -72,7 +73,9 @@ target_include_directories(playworship PRIVATE
 target_include_directories(playworship PRIVATE "${CMAKE_ANDROID_NDK}/sources/android/cpufeatures")
 
 target_compile_definitions(playworship PRIVATE
+    MTCONTROLS_APP_VERSION="${MTCONTROLS_APP_VERSION}"
     JUCE_ANDROID=1 JUCE_STANDALONE_APPLICATION=1 MTCONTROLS_NATIVE_APP=1
+    MTCONTROLS_APPLE_SIGN_IN_ENABLED=0
     JUCE_CONTENT_SHARING=1
     MTCONTROLS_USE_BUNGEE=1
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1

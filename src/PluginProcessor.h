@@ -20,6 +20,10 @@
 #include "audio/StemOutputRoutingState.h"
 #include "audio/TimeStretchProcessor.h"
 #include "audio/TransportClock.h"
+#if !JUCE_IOS && !JUCE_ANDROID
+#include "audio/LyricsCueScheduler.h"
+#include "integrations/FreeShowClient.h"
+#endif
 #include <JuceHeader.h>
 #include <thread>
 #include <array>
@@ -83,7 +87,8 @@ public:
       const juce::String &songTitle, const juce::String &songKey,
       double songBpm,
       const std::function<void(double progress01)> &onLoadProgress = {},
-      bool deferTransitionFadeInUntilConfigured = false);
+      bool deferTransitionFadeInUntilConfigured = false,
+      const ImportedSongData *blankSong = nullptr);
   /** Safely releases the active song and leaves the transport stopped. */
   bool unloadSong();
   void finishPendingSongTransition();
@@ -110,6 +115,7 @@ public:
   uint64_t getPracticeLoopRevision() const noexcept;
   double getMinimumPracticeLoopDuration() const noexcept;
   juce::String getPracticeLoopError() const;
+  bool isBlankSongLoaded() const noexcept { return blankSongLoaded.load(std::memory_order_relaxed); }
   void setSongStartSeconds(double seconds) noexcept;
   void setSongEndSeconds(double seconds) noexcept;
   void setSongFadeOutSeconds(double seconds) noexcept;
@@ -118,6 +124,12 @@ public:
   double getSongFadeOutSeconds() const noexcept;
   void setSongArrangement(const SongArrangementSnapshot &arrangement,
                           bool isCustomArrangement);
+#if !JUCE_IOS && !JUCE_ANDROID
+  // Desktop control/message-thread API. Lyrics do not own musical sections.
+  void setSongLyrics(const playworship::lyrics::SongLyrics &lyrics);
+  playworship::lyrics::SongLyrics getSongLyrics() const;
+  playworship::lyrics::FreeShowClient &getFreeShowClient() noexcept { return freeShowClient; }
+#endif
   void setSectionAutomationStemIds(const juce::StringArray &stemIds);
   bool beginSectionAutomationEditing(const juce::String &partId, bool remoteOwned = false);
   bool finishSectionAutomationEditing(bool save);
@@ -143,8 +155,14 @@ public:
   int getBasePadNoteIndex() const noexcept;
   int getBasePadOctave() const noexcept;
   int getActivePadOctave() const noexcept;
-  void requestArrangementPartJump(int partIndex);
-  void toggleArrangementPartLoop(int partIndex);
+  bool requestArrangementPartJump(int partIndex);
+  bool toggleArrangementPartLoop(int partIndex);
+  bool requestArrangementPartJumpById(const juce::String &partId,
+                                    const juce::String &expectedRevision = {});
+  bool toggleArrangementPartLoopById(const juce::String &partId,
+                                   const juce::String &expectedRevision = {});
+  juce::String getArrangementPartId(int runtimeIndex) const;
+  juce::String getArrangementControlRevision() const;
   void clearArrangementPartLoop() noexcept;
   void clearPendingArrangementPartJump() noexcept;
   int getArrangementPartLoopIndex() const noexcept;
@@ -581,6 +599,7 @@ private:
   juce::String loadedSongKey;
   juce::String loadedSongTitle;
   std::atomic<bool> songLoaded{false};
+  std::atomic<bool> blankSongLoaded{false};
   mutable juce::CriticalSection midiBindingsLock;
   std::vector<MidiBinding> midiBindings;
   static constexpr int maxRealtimeMidiBindings = 512;
@@ -662,10 +681,13 @@ private:
   std::atomic<bool> arrangementCustomActive{false};
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};
-  // Low 16 bits: index+1; bit16: confirmed; high32: request revision.
+  // Low 16 bits: index+1; bit16: confirmed; bit17: loop on arrival;
+  // high32: request revision.
   // One CAS protects replacement/cancellation against late audio confirmations.
   std::atomic<uint64_t> arrangementJumpCommand{0};
-  void setArrangementJumpCommand(int index, bool confirmed) noexcept;
+  static constexpr uint64_t kArrangementLoopOnArrival = 0x20000u;
+  void setArrangementJumpCommand(int index, bool confirmed,
+                                 bool loopOnArrival = false) noexcept;
   void configureSectionEntryCache();
   std::atomic<juce::int64> sectionEntryCacheBudgetBytes{0};
   std::atomic<int> arrangementLoopPartIndex{-1};
@@ -689,7 +711,19 @@ private:
   // during the incremental engine-v2 migration.
   playworship::audio::TransportClock transportClock;
   playworship::audio::SectionScheduler sectionScheduler;
+#if !JUCE_IOS && !JUCE_ANDROID
+  friend struct LyricsRuntimeTestAccess;
+  playworship::audio::LyricsCueScheduler lyricsCueScheduler;
+  playworship::lyrics::FreeShowClient freeShowClient;
+  mutable juce::CriticalSection lyricsStateLock;
+  playworship::lyrics::SongLyrics songLyrics;
+  uint64_t lyricsRevision = 0, lyricsSongEpoch = 1;
+  std::atomic<bool> lyricsSeekSynchroniseCurrent{true};
+  void rebuildLyricsCueScheduler();
+  void dispatchLyricsCueEvents();
+#endif
   std::atomic<uint64_t> arrangementStructurePublicationSequence{0};
+  const juce::String arrangementControlEpoch{juce::Uuid().toString()};
   playworship::audio::SectionScheduler::Snapshot audioSectionSnapshot;
   AudioArrangementRuntimeSnapshot audioArrangementRuntimeSnapshot;
   uint64_t audioArrangementStructureSequence = 0;
@@ -763,6 +797,7 @@ private:
   double lastBungeeGapUsMicros[maxStemCount]{};
   uint32_t lastBungeeCount[maxStemCount]{};
 
+  void seekSongToInternal(double positionSeconds, bool synchroniseLyrics);
   void clearLoadedSongState();
   void removeAllStemSources();
   void resetStemControls(int activeStemCount) noexcept;

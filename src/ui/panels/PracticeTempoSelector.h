@@ -2,6 +2,7 @@
 
 #include "PracticeWheelSelector.h"
 #include "../../data/Localization.h"
+#include "../../data/TempoValue.h"
 
 class PracticeTempoSelector final : public PracticeWheelSelector {
 public:
@@ -28,8 +29,13 @@ public:
 
   void setSessionTempo(double bpm) { setSessionValue(bpm); }
 
+  float getItemSpacing() const override {
+    return juce::jmax(tempoSpacing,
+        12.0f + 8.5f * static_cast<float>(TempoValue::formatBpm(getValue()).length()));
+  }
+
   juce::String getTextFromValue(double value) override {
-    return juce::String(juce::roundToInt(value)) + " BPM";
+    return TempoValue::formatBpm(value) + " BPM";
   }
 
 private:
@@ -40,7 +46,7 @@ private:
   double detentOrigin() const override { return getValue() - std::floor(getValue()); }
 
   juce::String itemText(double value) override {
-    return juce::String(juce::roundToInt(value));
+    return TempoValue::formatBpm(value);
   }
 
   double originalTempo = 120.0;

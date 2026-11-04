@@ -1,5 +1,6 @@
 #include "AppIdentity.h"
 #include "SettingsPanel.h"
+#include "../../DevelopmentFeatures.h"
 
 #include "../../audio/OutputChannelCatalog.h"
 #include "../../data/Localization.h"
@@ -13,6 +14,11 @@ namespace {
 constexpr int mobileChoiceHeight = 128;
 constexpr int mobileRemoteChoiceHeight = 128;
 constexpr int mobileCardPadding = 32;
+#if !JUCE_IOS && !JUCE_ANDROID
+constexpr bool desktopIntegrations = true;
+#else
+constexpr bool desktopIntegrations = false;
+#endif
 
 juce::Font settingsOptionLabelFont() {
   return makeAppFont(useTouchOptimisedControls() ? 15.0f : 14.0f,
@@ -37,6 +43,7 @@ public:
     if (!useTouchOptimisedControls())
       pages.push_back(Destination::Audio);
     pages.insert(pages.end(), {Destination::Routing, Destination::Remote});
+    if (desktopIntegrations) pages.push_back(Destination::Integrations);
     if (owner.teamsManagementEnabled) pages.push_back(Destination::Teams);
     pages.insert(pages.end(), {Destination::Account, Destination::Diagnostics, Destination::Learning});
     for (auto page : pages) {
@@ -66,6 +73,7 @@ public:
       pageTitles.add(L10n::tr("Dispositivo de audio", "Audio device"));
     pageTitles.addArray({L10n::tr("Ruteo de salidas", "Output routing"),
         L10n::tr("Control remoto", "Remote control")});
+    if (desktopIntegrations) pageTitles.add(L10n::tr("Integraciones", "Integrations"));
     if (owner.teamsManagementEnabled) pageTitles.add("Teams");
     pageTitles.addArray({L10n::tr("Mi cuenta", "My account"),
         L10n::tr(u8"Diagnóstico", "Diagnostics"),
@@ -81,9 +89,10 @@ public:
       pageSubtitles.add(L10n::tr("Interfaz, entradas y salidas", "Interface, inputs and outputs"));
     pageSubtitles.addArray({L10n::tr(u8"Dispositivo y salidas por categoría", "Device and outputs by category"),
         mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections")});
+    if (desktopIntegrations) pageSubtitles.add("FreeShow");
     if (owner.teamsManagementEnabled)
       pageSubtitles.add(L10n::tr("Usuarios de tu nube", "Your Cloud users"));
-    pageSubtitles.addArray({owner.session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
+    pageSubtitles.addArray({(DevelopmentFeatures::testLogin && owner.session.localDemo) ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
         L10n::tr("Informe para soporte", "Report for support"),
         L10n::tr("Guías paso a paso; continúa donde quedaste", "Step-by-step guides; pick up where you left off")});
     for (size_t i = 0; i < rows.size(); ++i) {
@@ -104,7 +113,7 @@ public:
       headings[group] = area.removeFromTop(34).reduced(12, 0);
       const int count = group == 0 ? 2 :
           group == 2 ? (owner.teamsManagementEnabled ? 4 : 3) :
-          useTouchOptimisedControls() ? 2 : 3;
+          (useTouchOptimisedControls() ? 2 : 3) + (desktopIntegrations ? 1 : 0);
       cards[group] = area.removeFromTop(count * 72);
       auto card = cards[group];
       for (int row = 0; row < count; ++row)
@@ -178,10 +187,11 @@ private:
         return;
       }
       if (page == Destination::Appearance || page == Destination::Playback ||
-          page == Destination::Audio || page == Destination::Diagnostics) {
+          page == Destination::Audio || page == Destination::Diagnostics || page == Destination::Integrations) {
         const auto glyph = page == Destination::Appearance ? IconGlyph::Settings
             : page == Destination::Playback ? IconGlyph::Metronome
-            : page == Destination::Audio ? IconGlyph::Waveform : IconGlyph::Clock;
+            : page == Destination::Audio ? IconGlyph::Waveform
+            : page == Destination::Integrations ? IconGlyph::Settings : IconGlyph::Clock;
         drawIconGlyph(g, icon, glyph, colour, 1.7f);
         return;
       }
@@ -569,6 +579,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
               false);
   tabs.addTab(L10n::tr(u8"Diagnóstico", "Diagnostics"),
               juce::Colours::transparentBlack, &diagnosticsPage, false);
+#if !JUCE_IOS && !JUCE_ANDROID
+  freeShowPage = std::make_unique<FreeShowConnectionPanel>();
+  tabs.addTab(L10n::tr("Integraciones", "Integrations"), juce::Colours::transparentBlack, freeShowPage.get(), false);
+#endif
   tabs.setTabBarDepth(useTouchOptimisedControls() ? 196 : 172);
   tabs.getTabbedButtonBar().setVisible(false);
   tabs.setTabBarDepth(0);
@@ -601,7 +615,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       if (usesGroupedNavigation()) {
         const Destination pages[]{Destination::Appearance, Destination::Account,
                                   Destination::Audio, Destination::Routing,
-                                  Destination::Diagnostics};
+                                  Destination::Diagnostics, Destination::Integrations};
         showSettingsPage(pages[tabIndex]);
       } else {
         tabs.setCurrentTabIndex(tabIndex);
@@ -614,11 +628,13 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   configureTabButton(audioTabButton, 2);
   configureTabButton(routingTabButton, 3);
   configureTabButton(diagnosticsTabButton, 4);
+  if (desktopIntegrations) configureTabButton(integrationsTabButton, 5);
   generalTabButton.setPosition(SettingsTabButton::Position::First);
   accountTabButton.setPosition(SettingsTabButton::Position::Middle);
   audioTabButton.setPosition(SettingsTabButton::Position::Middle);
   routingTabButton.setPosition(SettingsTabButton::Position::Middle);
-  diagnosticsTabButton.setPosition(SettingsTabButton::Position::Last);
+  diagnosticsTabButton.setPosition(desktopIntegrations ? SettingsTabButton::Position::Middle : SettingsTabButton::Position::Last);
+  integrationsTabButton.setPosition(SettingsTabButton::Position::Last);
 
   appearanceCard = std::make_unique<SettingsCard>();
   playbackCard = std::make_unique<SettingsCard>();
@@ -993,8 +1009,9 @@ void SettingsPanel::resized() {
   const bool grouped = usesGroupedNavigation();
   settingsViewport.setScrollBarThickness(grouped ? 4 : 8);
   for (auto *button : {&generalTabButton, &accountTabButton, &audioTabButton,
-                       &routingTabButton, &diagnosticsTabButton})
+                       &routingTabButton, &diagnosticsTabButton, &integrationsTabButton})
     button->setVisible(!grouped);
+  integrationsTabButton.setVisible(desktopIntegrations && !grouped);
   backButton.setVisible(grouped && destination != Destination::Home);
   title.setText(grouped ? pageTitle() : L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
@@ -1046,7 +1063,8 @@ void SettingsPanel::resized() {
   if (compactNavigation) {
     auto nav = area.removeFromTop(70).reduced(12, 8);
     const int tabGap = 6;
-    const int tabWidth = (nav.getWidth() - tabGap * 4) / 5;
+    const int count = desktopIntegrations ? 6 : 5;
+    const int tabWidth = (nav.getWidth() - tabGap * (count - 1)) / count;
     generalTabButton.setBounds(nav.removeFromLeft(tabWidth));
     nav.removeFromLeft(tabGap);
     accountTabButton.setBounds(nav.removeFromLeft(tabWidth));
@@ -1055,7 +1073,8 @@ void SettingsPanel::resized() {
     nav.removeFromLeft(tabGap);
     routingTabButton.setBounds(nav.removeFromLeft(tabWidth));
     nav.removeFromLeft(tabGap);
-    diagnosticsTabButton.setBounds(nav);
+    diagnosticsTabButton.setBounds(nav.removeFromLeft(tabWidth));
+    if (desktopIntegrations) { nav.removeFromLeft(tabGap); integrationsTabButton.setBounds(nav); }
   } else {
     auto rail = area.removeFromLeft(240);
     rail.reduce(16, 16);
@@ -1070,11 +1089,13 @@ void SettingsPanel::resized() {
     routingTabButton.setBounds(rail.removeFromTop(tabHeight));
     rail.removeFromTop(tabGap);
     diagnosticsTabButton.setBounds(rail.removeFromTop(tabHeight));
+    if (desktopIntegrations) integrationsTabButton.setBounds(rail.removeFromTop(tabHeight));
   }
   const auto previousViewPosition = settingsViewport.getViewPosition();
   const bool needsVerticalScroll = useTouchOptimisedControls() || getHeight() < 820;
   settingsViewport.setBounds(area);
   const auto requiredHeight = [this, needsVerticalScroll](const int width) {
+    if (tabs.getCurrentTabIndex() == 5) return 480;
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
                : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 728 : 648) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
@@ -1096,6 +1117,9 @@ void SettingsPanel::resized() {
 }
 
 void SettingsPanel::refreshThemeColours() {
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (freeShowPage) freeShowPage->refreshThemeColours();
+#endif
   settingsViewport.getVerticalScrollBar().setColour(
       juce::ScrollBar::thumbColourId, UITheme::textSecondary.withAlpha(0.35f));
   title.setColour(juce::Label::textColourId, UITheme::textPrimary);
@@ -1111,7 +1135,7 @@ void SettingsPanel::refreshThemeColours() {
   title.setFont(makeAppFont(useTouchOptimisedControls() ? 20.0f : 18.0f,
                             AppFontWeight::SemiBold));
   for (auto *button : {&generalTabButton, &accountTabButton, &audioTabButton,
-                       &routingTabButton, &diagnosticsTabButton}) {
+                       &routingTabButton, &diagnosticsTabButton, &integrationsTabButton}) {
     button->setColour(juce::TextButton::textColourOffId,
                       UITheme::textSecondary);
     button->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
@@ -1230,6 +1254,19 @@ bool SettingsPanel::usesGroupedNavigation() const {
   return useTouchOptimisedControls() || getWidth() < 760;
 }
 
+void SettingsPanel::setFreeShowClient(playworship::lyrics::FreeShowClient *client) {
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (freeShowPage) freeShowPage->setClient(client);
+#else
+  juce::ignoreUnused(client);
+#endif
+}
+void SettingsPanel::showFreeShowSettings() {
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (freeShowPage) showSettingsPage(Destination::Integrations);
+#endif
+}
+
 bool SettingsPanel::isLearningRemotePageOpen() const {
   return usesGroupedNavigation() ? destination == Destination::Remote
                                 : tabs.getCurrentTabIndex() == 0;
@@ -1295,6 +1332,7 @@ juce::String SettingsPanel::pageTitle() const {
     case Destination::Remote: return L10n::tr("Control remoto", "Remote control");
     case Destination::Account: return L10n::tr("Mi cuenta", "My account");
     case Destination::Diagnostics: return L10n::tr(u8"Diagnóstico", "Diagnostics");
+    case Destination::Integrations: return L10n::tr("Integraciones", "Integrations");
   }
   return {};
 }
@@ -1317,7 +1355,7 @@ void SettingsPanel::showSettingsPage(Destination next) {
     grabKeyboardFocus();
   destination = next;
   const int tab = next == Destination::Account ? 1 : next == Destination::Audio ? 2
-      : next == Destination::Routing ? 3 : next == Destination::Diagnostics ? 4 : 0;
+      : next == Destination::Routing ? 3 : next == Destination::Diagnostics ? 4 : next == Destination::Integrations ? 5 : 0;
   tabs.setCurrentTabIndex(tab);
   resized();
   settingsViewport.setViewPosition(0, next == Destination::Home ? homeScrollY : 0);
@@ -1343,6 +1381,7 @@ int SettingsPanel::mobileGeneralCardHeight() const {
     case Destination::Routing:
     case Destination::Account:
     case Destination::Diagnostics:
+    case Destination::Integrations:
       return 0;
     case Destination::Appearance:
       return mobileCardPadding + 2 * mobileChoiceHeight;
@@ -1362,6 +1401,7 @@ int SettingsPanel::mobilePageContentHeight(int width) const {
     case Destination::Account: return width < 520 ? 1240 : 990;
     case Destination::Audio: return 900;
     case Destination::Diagnostics: return width < 520 ? 456 : 320;
+    case Destination::Integrations: return 480;
     case Destination::Appearance:
     case Destination::Playback:
     case Destination::Remote:
@@ -1449,9 +1489,11 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
   setState(audioTabButton, 2);
   setState(routingTabButton, 3);
   setState(diagnosticsTabButton, 4);
+  setState(integrationsTabButton, 5);
 }
 
 void SettingsPanel::applyLanguageTexts() {
+  const bool localDemo = DevelopmentFeatures::testLogin && session.localDemo;
   teamsLabel.setText("Teams", juce::dontSendNotification);
   teamsHelp.setText(L10n::tr("Consulta tu Team o administra el acceso a tu nube compartida.", "View your Team or manage access to your shared cloud."), juce::dontSendNotification);
   teamsButton.setButtonText(L10n::tr("Abrir Teams", "Open Teams"));
@@ -1466,6 +1508,7 @@ void SettingsPanel::applyLanguageTexts() {
   routingTabButton.setButtonText(L10n::tr("Ruteo", "Routing"));
   diagnosticsTabButton.setButtonText(
       L10n::tr(u8"Diagnóstico", "Diagnostics"));
+  integrationsTabButton.setButtonText(L10n::tr("Integraciones", "Integrations"));
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
   themeHelp.setText(L10n::tr("Elige los colores de la aplicación.",
                               "Choose the app's colours."),
@@ -1501,7 +1544,7 @@ void SettingsPanel::applyLanguageTexts() {
   sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
-  sessionEmailLabel.setText(session.localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
+  sessionEmailLabel.setText(localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
   sessionPlanLabel.setText(L10n::tr("Plan", "Plan"), juce::dontSendNotification);
   sessionStatusLabel.setText(L10n::tr("Estado", "Status"),
                              juce::dontSendNotification);
@@ -1513,11 +1556,11 @@ void SettingsPanel::applyLanguageTexts() {
                               juce::dontSendNotification);
   sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
                           juce::dontSendNotification);
-  sessionEmailValue.setText(session.localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
+  sessionEmailValue.setText(localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
                             juce::dontSendNotification);
   sessionPlanValue.setText(session.plan.isNotEmpty() ? session.plan : "-",
                            juce::dontSendNotification);
-  sessionStatusValue.setText(session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
+  sessionStatusValue.setText(localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
                                  ? session.subscriptionStatus
                                  : "-",
                              juce::dontSendNotification);
@@ -1553,7 +1596,7 @@ void SettingsPanel::applyLanguageTexts() {
         formatBytes(session.maxStorageBytes), juce::dontSendNotification);
   } else {
     sessionQuotaValue.setText(
-        session.localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
+        localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
             ? L10n::tr("No se pudieron actualizar las cuotas.",
                        "Couldn't refresh quotas.")
             : L10n::tr("Consultando cuotas…", "Loading quotas…"),
@@ -1589,7 +1632,7 @@ void SettingsPanel::applyLanguageTexts() {
   actionDeleteLabel.setText(L10n::tr("Eliminar cuenta y Cloud", "Delete account and Cloud"), juce::dontSendNotification);
   actionDeleteHelp.setText(L10n::tr("Revisa el impacto. Los archivos locales se conservarán.", "Review the impact. Local files will be preserved."), juce::dontSendNotification);
   deleteAccountButton.setButtonText(L10n::tr("Revisar", "Review"));
-  deleteAccountButton.setEnabled(!session.localDemo && session.uid.isNotEmpty());
+  deleteAccountButton.setEnabled(!localDemo && session.uid.isNotEmpty());
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));

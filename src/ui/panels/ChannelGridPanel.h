@@ -78,6 +78,17 @@ private:
   void syncDivisionSlotFromProcessor();
   void syncDynamicGuideVirtualSlotFromProcessor();
   void syncStemSlotsFromProcessor();
+  bool isLinkableStemSlot(size_t slotIndex) const;
+  bool canLinkInstrumentFaders() const;
+  void setInstrumentFadersLinked(bool linked);
+  void updateLinkedFaderState();
+  juce::String linkedFaderContextKey();
+  bool linkedFaderLevelsMatchSession() const;
+  void captureLinkedFaderLevels(const juce::String &context);
+  void beginStemVolumeGesture(size_t slotIndex);
+  void changeStemVolume(size_t slotIndex, float value);
+  void finishStemVolumeGesture(size_t slotIndex);
+  void queueLinkedFaderPersistence();
   void queueStemVolumePersistence(const juce::String &stemId, float volume);
   void queueMasterVolumePersistence(float volume);
   void queueDynamicGuideVolumePersistence(float volume);
@@ -117,6 +128,16 @@ private:
   std::function<juce::String(int)> midiLearnBindingLabelProvider;
   std::function<void(GuideSourceMode)> onGuideSourceModeChanged;
   juce::String currentSongId;
+  // UI-local link mode. Each gesture sets all instruments to the source level;
+  // expected levels detect external mix/context changes during a gesture.
+  bool instrumentFadersLinked = false;
+  std::vector<float> linkedFaderExpectedVolumes;
+  juce::String linkedFaderContext;
+  juce::String linkedFaderArrangementRevision;
+  std::vector<SongArrangementPartSnapshot> linkedFaderArrangementParts;
+  int linkedFaderGestureSlot = -1;
+  bool linkedFaderGestureWasLinked = false;
+  bool linkedFaderGestureCancelled = false;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
 

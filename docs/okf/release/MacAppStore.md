@@ -8,6 +8,10 @@ timestamp: 2026-10-05
 
 # Mac App Store — perfil opcional de PlayWorship
 
+La siguiente entrega comun se prepara como **2.4.0**. La variante Store usa la
+misma version visible que iOS/iPadOS y los instaladores, con build macOS
+independiente. Ver [Version unificada](UnifiedVersioning.md).
+
 `MTCONTROLS_MAC_APP_STORE=ON` crea una variante para macOS con Xcode. Por
 defecto esta desactivada. El perfil de escritorio habitual conserva su
 empaquetado, helpers y firma local; iOS y Android mantienen sus configuraciones.
@@ -127,3 +131,63 @@ dSYM del SDK Bungee (UUIDs `3FEC9BF1-4271-30BD-A29B-D8F616757FD3` y
 El login con Apple permanece desactivado. El log de entrega se conserva en
 `/tmp/playworship-mac-store-upload.log` y el inventario de artefactos en
 `output/app-store-preparation/preparation.json`.
+
+## Entrega 1.1.5 (3) — 2026-10-23
+
+Se archivó y exportó la fuente `main` en
+`8c449a06f07db585876ef5176b806b8cf2357679`, con perfil Store, backend Cloud,
+Sentry y FFmpeg desactivados, mínimo global macOS 12.0 y ambas arquitecturas
+arm64/x86_64. La app y Bungee se firmaron con Apple Distribution del equipo
+`V9T23PX769`; Xcode firmó el PKG con Mac Developer Installer del mismo equipo.
+
+La app extraída del PKG pasó el validador de firma, sandbox, privacidad y
+los dos Mach-O. `mac_app_store_safety` pasó. Los dSYM de la app coinciden
+con ambas arquitecturas y quedaron dentro del Archive. Persistió únicamente
+el aviso de dSYM de Bungee ya documentado; no bloqueó la carga. Estos controles
+no equivalen a QA completa de todos los flujos sandbox ni de hardware externo.
+
+El validador se reconcilió con los ocho tipos del manifiesto ya existentes
+(desde `13534ba1`), incorporando nombre y portadas sin relajar los demás
+controles. También se corrigió y publicó la ficha de privacidad común con
+autorización del responsable; ver [App Privacy](../distribution/AppPrivacyPreparation.md).
+
+Apple confirmó la carga el 2026-10-23 22:54:53 UTC y terminó su procesamiento:
+build `2781ba91-3a49-4694-a234-9958fd05c667`. La ficha conserva cinco capturas,
+cuenta revisora validada y publicación manual. El recibo confirmó un artículo
+Mac 1.1.5 (3), enviado por Luis Berna el 23 de octubre a las 19:58 GMT-3,
+estado **Pendiente de revisión**. ID de envío:
+`5f9626f5-e054-408d-b0de-89e97447d982`. No acredita aprobación ni publicación.
+
+Artefactos y evidencias locales:
+`output/appleconnect/mac-1.1.5-3/` (PKG, Archive, manifest, logs,
+`privacy-publication.json` y `app-review-submission.json`).
+
+## Próximos candidatos con Apple — 2026-10-24
+
+La entrega 1.1.5 (3) se compiló con
+`MTCONTROLS_APPLE_SIGN_IN_ENABLED=OFF`: por eso no ofrece el acceso Apple,
+aunque el código nativo ya estaba integrado. Esta aclaración no cambia el
+binario ni la evidencia del envío anterior.
+
+El 24 de octubre se comprobó que
+`GET https://api.playworship.app/api/auth/apple/config` devuelve
+`enabled=true` y `nativeClientId=com.multitracks.playworship`. Esa consulta
+solo acredita la configuración pública; no demuestra un ingreso Apple real.
+
+La política de proveedores habilita Apple automáticamente al configurar un
+destino macOS/iOS y normaliza caches anteriores; Android, Windows y Linux
+conservan solo Google y correo. No hace falta activar un opt-in manual para
+los próximos candidatos Store. Comprobar la app firmada, especialmente la
+extraída del PKG final, con:
+
+```bash
+python3 scripts/validate_mac_app_store.py <PlayWorship.app> --require-apple-sign-in
+```
+
+Este modo exige `com.apple.developer.applesignin=["Default"]` en la firma de
+la app y en su perfil macOS embebido, con equipo e identificador coincidentes;
+conserva los controles de firma, sandbox y privacidad. El preflight no inicia
+sesión ni contacta al backend. La firma sigue siendo un requisito
+independiente: el escritorio habitual con firma ad hoc no acredita autenticación Apple real. Un candidato
+local para probar el ingreso debe usar firma y perfil de desarrollo adecuados,
+o probar la entrega Store mediante TestFlight.

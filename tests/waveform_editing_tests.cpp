@@ -4,7 +4,9 @@
 #include "PluginProcessor.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
+#include "data/Localization.h"
 #include "ui/components/ChannelStripCard.h"
+#include "ui/components/MetronomePanel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -69,7 +71,26 @@ struct WaveformEditingTestAccess {
   static auto &guideAnticipation(WaveformBar &wave) { return wave.guideAnticipationBox; }
   static auto &guideRename(WaveformBar &wave) { return wave.guideNameEditor; }
   static auto &suggestSections(WaveformBar &wave) { return wave.suggestSectionsButton; }
+  static juce::String bpmText(TopBar &bar) {
+    bar.updateBpmDisplay();
+    return bar.bpmSegmentButton.getButtonText();
+  }
+  static juce::TextEditor &tempoEditor(WaveformBar &bar) { return bar.tempoBpmEditor; }
+  static const SongTempoMapSnapshot &tempoMap(const WaveformBar &bar) { return bar.tempoMap; }
+  static void selectTempoRegion(WaveformBar &bar, int index) { bar.selectTempoRegion(index); }
+  static bool hasNoWaveform(const WaveformBar &bar) { return bar.waveformBins.empty(); }
+  static bool blankEditEnabled(const WaveformBar &bar) { return bar.editButton.isEnabled(); }
+
+  static bool isEditing(const WaveformBar &waveform) {
+    return waveform.isEditingArrangement();
+  }
   static void clickLiveToggle(TopBar &bar) {
+    if (bar.sectionsViewButton.isVisible()) {
+      auto &button = bar.liveModeState && bar.liveModeState() ? bar.waveformViewButton : bar.sectionsViewButton;
+      expect(button.isEnabled(), "desktop view selector is enabled");
+      button.onClick();
+      return;
+    }
     auto menu = bar.createMorePopoverContent();
     auto *toggle = dynamic_cast<juce::Button *>(menu->findChildWithID("timeline-sections"));
     expect(toggle && toggle->isEnabled(), "section menu toggle is enabled");
@@ -77,13 +98,30 @@ struct WaveformEditingTestAccess {
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
   }
   static void expectTopbarLiveLayout(TopBar &bar) {
-    expect(bar.tabletMoreButton.isVisible(), "More remains visible on every layout");
+    const bool desktop = !useTouchOptimisedControls() && !bar.minimalPhoneMode;
+    expect(bar.tabletMoreButton.isVisible() != desktop, "only touch layouts retain More");
+    expect(bar.sectionsViewButton.isVisible() == desktop && bar.helpButton.isVisible() == desktop,
+           "desktop exposes view selection and help directly");
     for (int i = 0; i < bar.getNumChildComponents(); ++i) {
       const auto *child = bar.getChildComponent(i);
-      if (!child->isVisible() || child == &bar.tabletMoreButton) continue;
-      expect(!child->getBounds().intersects(bar.tabletMoreButton.getBounds()), "More does not overlap other topbar controls");
+      if (!child->isVisible() || child->getBounds().isEmpty()) continue;
+      expect(bar.getLocalBounds().contains(child->getBounds()), "visible controls fit topbar");
+      if (child != &bar.songPickerButton)
+        expect(!child->getBounds().intersects(bar.songInfoBounds), "controls never overlap the song title");
+      for (int j = i + 1; j < bar.getNumChildComponents(); ++j) {
+        const auto *other = bar.getChildComponent(j);
+        if (other->isVisible()) expect(!child->getBounds().intersects(other->getBounds()), "topbar controls do not overlap");
+      }
     }
-    expect(bar.songInfoBounds.getWidth() >= 80, "song title retains usable width");
+    expect(bar.songInfoBounds.getWidth() >= 80,
+           "song title retains usable width (bar=" + std::to_string(bar.getWidth()) +
+               ", title=" + std::to_string(bar.songInfoBounds.getWidth()) + ")");
+    if (desktop) {
+      expect(bar.waveformViewButton.getToggleState() != bar.sectionsViewButton.getToggleState(), "exactly one view is selected");
+      expect(bar.sectionsViewButton.getToggleState() == (bar.liveModeState && bar.liveModeState()), "desktop state follows the real view");
+      expect(bar.getLearningTargetBounds(playworship::learning::Anchor::More) == bar.sectionsViewButton.getBounds(), "demo guidance targets Sections directly");
+      return;
+    }
     expect(bar.getLocalBounds().contains(bar.tabletMoreButton.getBounds()), "More fits topbar");
     auto panel = bar.createMorePopoverContent();
     auto *toggle = dynamic_cast<juce::Button *>(panel->findChildWithID("timeline-sections"));
@@ -93,6 +131,14 @@ struct WaveformEditingTestAccess {
   }
   static auto moreBounds(TopBar &bar) { return bar.tabletMoreButton.getBounds(); }
   static auto songBounds(TopBar &bar) { return bar.songInfoBounds; }
+  static juce::Button &waveformChoice(TopBar &bar) { return bar.waveformViewButton; }
+  static juce::Button &sectionsChoice(TopBar &bar) { return bar.sectionsViewButton; }
+  static juce::Button &help(TopBar &bar) { return bar.helpButton; }
+  static juce::Button &settings(TopBar &bar) { return bar.settingsButton; }
+  static juce::Button &midi(TopBar &bar) { return bar.midiLearnButton; }
+  static bool timeVisible(TopBar &bar) { return bar.timeDisplay.isVisible(); }
+  static bool midiActive(TopBar &bar) { return bar.midiLearnActive; }
+  static void refreshTimeline(TopBar &bar) { bar.refreshTimelineMenu(); }
   static auto morePanel(TopBar &bar) { return bar.createMorePopoverContent(); }
   static bool directMidi(const TopBar &bar) { return bar.midiLearnButton.isVisible(); }
   static bool directSettings(const TopBar &bar) { return bar.settingsButton.isVisible(); }
@@ -240,8 +286,8 @@ struct WaveformEditingTestAccess {
 
   static void addCue(WaveformBar &waveform, const char *name, double seconds,
                      int countEnd = 0) {
-    waveform.sectionInsertionAnchorValid = true;
-    waveform.sectionInsertionAnchorSec = seconds;
+    waveform.sectionInsertionAnchor.valid = true;
+    waveform.sectionInsertionAnchor.seconds = seconds;
     waveform.snapMode = WaveformBar::SnapMode::Free;
     waveform.addGuideCue(name, countEnd, countEnd > 0 ? 0.5 : 0.0);
   }
@@ -314,7 +360,7 @@ struct WaveformEditingTestAccess {
     waveform.createDuplicatedSection(waveform.findPartIndexById(id));
   }
   static void split(WaveformBar &waveform, double seconds) {
-    waveform.sectionInsertionAnchorValid = true; waveform.sectionInsertionAnchorSec = seconds;
+    waveform.sectionInsertionAnchor.valid = true; waveform.sectionInsertionAnchor.seconds = seconds;
     waveform.snapMode = WaveformBar::SnapMode::Free;
     waveform.addArrangementPart("Verse 2");
   }
@@ -342,8 +388,11 @@ struct WaveformEditingTestAccess {
   static void expectInsertionPointerStarted(const WaveformBar &waveform) {
     expect(waveform.dragMode == WaveformBar::DragMode::seek,
            "dragging the ruler uses the real insertion-pointer seek handler");
-    expect(waveform.sectionInsertionAnchorValid,
-           "the ruler gesture establishes a section insertion anchor");
+    expect(waveform.sectionInsertionAnchor.valid,
+           "the ruler gesture establishes a section insertion anchor (editing=" +
+               std::to_string(waveform.isEditingArrangement()) + ", map=" +
+               std::to_string(static_cast<int>(waveform.timelineViewMode)) +
+               ", length=" + std::to_string(waveform.getSongLengthSeconds()) + ")");
   }
 
   static void publishArrangement(WaveformBar &waveform,
@@ -574,6 +623,14 @@ struct Fixture {
         });
     waveform.triggerEditToggleFromMidi();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    // MIDI posts the real button click to JUCE's message queue. Processor
+    // startup can keep that queue busy beyond the initial dispatch interval.
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + 1000.0;
+    while (!WaveformEditingTestAccess::isEditing(waveform) &&
+           juce::Time::getMillisecondCounterHiRes() < deadline)
+      juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    expect(WaveformEditingTestAccess::isEditing(waveform),
+           "the real Edit action completes before arrange gestures begin");
   }
 
   SongArrangementPartSnapshot part(const juce::String &id) const {
@@ -1214,7 +1271,7 @@ void testSectionAutomationToolbarTracksViewport() {
   WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
   WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
   const auto magnifiedAnchor = WaveformEditingTestAccess::automationAnchorX(f.waveform);
-  juce::MouseWheelDetails wheel;
+  juce::MouseWheelDetails wheel{};
   wheel.deltaX = -0.06f;
   const auto panPoint = WaveformEditingTestAccess::waveBody(f.waveform).getCentre();
   f.waveform.mouseWheelMove(pointerEvent(f.waveform, panPoint, panPoint), wheel);
@@ -1445,55 +1502,211 @@ void testLoopBorderPhaseAndCorners() {
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
 }
 
-void testDesktopMoreDeduplicatesVisibleActions() {
-  ProcessorFixture f; TopBar bar(f.processor); bar.setMinimalPhoneMode(false); bar.setSize(1280, 64);
-  auto panel = WaveformEditingTestAccess::morePanel(bar);
-  const auto visibleButtons = [](juce::Component &content) {
-    int count = 0;
-    for (int i = 0; i < content.getNumChildComponents(); ++i)
-      if (auto *button = dynamic_cast<juce::Button *>(content.getChildComponent(i)); button && button->isVisible()) {
-        expect(!button->getBounds().isEmpty(), "every visible menu action has an accessible target"); ++count;
-      }
-    return count;
-  };
-  const auto verify = [&] {
-    WaveformEditingTestAccess::moreRefresh(bar);
-    int expected = 2 + (WaveformEditingTestAccess::directMidi(bar) ? 0 : 1) + (WaveformEditingTestAccess::directSettings(bar) ? 0 : 1);
-    expect(visibleButtons(*panel) >= expected && visibleButtons(*panel) <= expected + 1, "desktop overflow omits direct actions and keeps learning/window actions");
-    expect(visibleButtons(*panel) > 0, "learning keeps the menu nonempty");
-    const auto image = panel->createComponentSnapshot(panel->getLocalBounds(), true, 2.0f);
-    expect(image.isValid(), "deduplicated menu renders from the production component");
-  };
-  expect(WaveformEditingTestAccess::directMidi(bar) && WaveformEditingTestAccess::directSettings(bar), "wide desktop exposes primary toolbar actions"); verify();
-  for (int width : {768, 1200, 956, 1280, 600, 1280}) { bar.setSize(width, 64); verify(); }
-  bar.setSize(768, 64); bar.setMidiLearnActive(true); WaveformEditingTestAccess::moreRefresh(bar);
-  auto *midiRow = dynamic_cast<juce::Button *>(panel->findChildWithID("midi-learn"));
-  expect(midiRow && midiRow->isVisible() && midiRow->getToggleState(), "responsive MIDI menu preserves active state");
-  bar.setMidiLearnActive(false); WaveformEditingTestAccess::moreRefresh(bar);
-  expect(!midiRow->getToggleState(), "open menu reflects MIDI changes without reopening");
-  bar.setSize(1280, 64); verify();
-
-  WaveformEditingTestAccess::midiEnabled(bar, false);
-  expect(visibleButtons(*panel) >= 2, "an inaccessible direct control returns to overflow");
-  WaveformEditingTestAccess::midiEnabled(bar, true); verify();
-  for (int iteration = 0; iteration < 4; ++iteration) { panel.reset(); WaveformEditingTestAccess::moreRefresh(bar); panel = WaveformEditingTestAccess::morePanel(bar); verify(); }
-  const auto capture = juce::SystemStats::getEnvironmentVariable("PW_DESKTOP_MENU_CAPTURE", {});
-  if (capture.isNotEmpty()) {
-    juce::Image evidence(juce::Image::RGB, 640, 420, true); juce::Graphics g(evidence); g.fillAll(UITheme::appBg);
-    int x = 0;
-    for (int width : {1280, 768}) {
-      bar.setSize(width, 64); verify();
-      g.setColour(juce::Colours::white); g.setFont(makeAppFont(16.0f));
-      g.drawText(juce::String(width) + " px", x + 10, 8, 280, 24, juce::Justification::centredLeft);
-      g.drawImageAt(panel->createComponentSnapshot(panel->getLocalBounds(), true, 1.0f), x + 10, 38); x += 320;
-    }
-    const juce::File file(capture); auto output = file.createOutputStream();
-    expect(output && output->setPosition(0) && output->truncate().wasOk() && juce::PNGImageFormat().writeImageToStream(evidence, *output),
-           "desktop overflow evidence saves from real production menu content");
+juce::TextEditor *findTempoEditor(juce::Component &parent) {
+  for (auto *child : parent.getChildren()) {
+    if (auto *editor = dynamic_cast<juce::TextEditor *>(child))
+      return editor;
+    if (auto *editor = findTempoEditor(*child))
+      return editor;
   }
-  bar.setMinimalPhoneMode(true); bar.setSize(390, 64);
-  panel.reset(); panel = WaveformEditingTestAccess::morePanel(bar); verify();
-  expect(visibleButtons(*panel) >= 3, "phone retains its existing menu actions");
+  return nullptr;
+}
+
+void typeTempo(juce::TextEditor &editor, const juce::String &value) {
+  editor.selectAll();
+  editor.insertTextAtCaret(value);
+  expect(editor.getText() == value,
+         "the actual tempo field accepts every digit and decimal separator");
+}
+
+void testTopbarDecimalTempoEditing() {
+  ProcessorFixture fixture;
+  struct TempoHostEditor final : juce::AudioProcessorEditor {
+    explicit TempoHostEditor(MTControlsAudioProcessor &processor)
+        : juce::AudioProcessorEditor(processor) {}
+  };
+  TempoHostEditor host(fixture.processor);
+  TopBar bar(fixture.processor);
+  host.setSize(1200, 700);
+  host.addAndMakeVisible(bar);
+  bar.setBounds(0, 0, 1200, 80);
+  fixture.processor.setPlaybackTempoBpm(120.125);
+  expect(WaveformEditingTestAccess::bpmText(bar) == "120.125",
+         "the main tempo button displays the fractional engine value");
+
+  const auto open = [&]() -> juce::TextEditor & {
+    bar.triggerMetronomePopoverFromMidi();
+    auto *editor = findTempoEditor(host);
+    expect(editor != nullptr, "opening the real BPM popover exposes its text field");
+    expect(editor->getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+           "the player requests the platform decimal keyboard");
+    return *editor;
+  };
+  auto &editor = open();
+  expect(editor.getText() == "120.125",
+         "opening the BPM field preserves the displayed fractional value");
+  typeTempo(editor, "120.5");
+  editor.onReturnKey();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 120.5,
+             "Return submits a point-separated decimal to the real audio processor");
+  expect(WaveformEditingTestAccess::bpmText(bar) == "120.5" && editor.getText() == "120.5",
+         "the button and field agree after decimal submission");
+  typeTempo(editor, "121,375");
+  editor.onFocusLost();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 121.375,
+             "focus loss submits a comma-separated decimal without truncation");
+  editor.onFocusLost();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 121.375,
+             "repeated focus loss cannot round the current tempo");
+  for (const auto *invalid : {"121..5", "121,5.2", "", "."}) {
+    typeTempo(editor, invalid);
+    editor.onReturnKey();
+    expectNear(fixture.processor.getPlaybackTempoBpm(), 121.375,
+               "an invalid decimal cannot partially replace the playback tempo");
+    expect(editor.getText() == "121.375", "invalid playback input restores the current value");
+  }
+  typeTempo(editor, "1.5");
+  editor.onReturnKey();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 90.0,
+             "decimal input retains the engine minimum of 0.75 times the original BPM");
+  typeTempo(editor, "999.5");
+  editor.onReturnKey();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 240.0,
+             "decimal input retains the engine maximum of twice the original BPM");
+  typeTempo(editor, "120.123456");
+  editor.onReturnKey();
+  expect(std::abs(fixture.processor.getPlaybackTempoBpm() - 120.123456) < 1.0e-9,
+         "the player accepts a full six-place fractional BPM");
+  dismissActiveActionPopover();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  auto &reopened = open();
+  expect(reopened.getText() == "120.123456",
+         "closing and reopening the BPM editor retains all displayed decimal places");
+  reopened.onFocusLost();
+  expectNear(fixture.processor.getPlaybackTempoBpm(), 120.123456,
+             "opening and leaving the field keeps the engine tempo unchanged");
+  dismissActiveActionPopover();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+}
+
+void testMetronomePopoverDecimalTempoEditing() {
+  double bpm = 120.125;
+  int changes = 0;
+  MetronomePanel::MetronomePopover panel("4/4", [] {}, [](const auto &) {},
+      [&](double value) { bpm = value; ++changes; },
+      [&](double delta) { bpm += delta; }, [&] { return bpm; });
+  auto *editor = findTempoEditor(panel);
+  expect(editor != nullptr && editor->getText() == "120.125",
+         "the metronome popover opens with its exact fractional BPM");
+  expect(editor->getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+         "the metronome field requests the decimal keyboard");
+  typeTempo(*editor, "120,75");
+  editor->onReturnKey();
+  expectNear(bpm, 120.75, "metronome Return accepts comma-separated decimals");
+  typeTempo(*editor, "121.625");
+  editor->onFocusLost();
+  expectNear(bpm, 121.625, "metronome focus loss keeps point-separated decimals");
+  const int validChanges = changes;
+  for (const auto *invalid : {"121..5", "121,5.2", "", "."}) {
+    typeTempo(*editor, invalid);
+    editor->onReturnKey();
+    expectNear(bpm, 121.625, "invalid metronome input leaves the previous tempo intact");
+    expect(changes == validChanges && editor->getText() == "121.625",
+           "invalid metronome input neither submits a prefix nor clears the display");
+  }
+}
+
+void testRegionalDecimalTempoEditing() {
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  SongTempoMapSnapshot map;
+  SongTempoRegionSnapshot first;
+  first.id = "fractional-first";
+  first.startSec = 0.0;
+  first.endSec = 15.0;
+  first.bpm = 120.125;
+  first.timeSignature = "4/4";
+  auto second = first;
+  second.id = "fractional-second";
+  second.startSec = 15.0;
+  second.endSec = 30.0;
+  second.bpm = 96.75;
+  map.regions = {first, second};
+  wave.setTempoMap(map);
+  SongTempoMapSnapshot published;
+  wave.setOnTempoMapChanged([&](const auto &updated) { published = updated; });
+  auto &editor = WaveformEditingTestAccess::tempoEditor(wave);
+  expect(editor.getText() == "120.125", "regional tempo selection shows its fractional BPM");
+  expect(editor.getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+         "the regional tempo field requests the platform decimal keyboard");
+  typeTempo(editor, "123,625");
+  editor.onReturnKey();
+  expect(published.regions.size() == 2, "regional Return publishes the existing tempo map");
+  expectNear(published.regions[0].bpm, 123.625,
+             "regional tempo submission preserves a comma-separated decimal");
+  expectNear(published.regions[1].bpm, 96.75,
+             "editing one regional tempo preserves the other region");
+  WaveformEditingTestAccess::selectTempoRegion(wave, 1);
+  expect(editor.getText() == "96.75", "switching regions retains each exact fractional value");
+  WaveformEditingTestAccess::selectTempoRegion(wave, 0);
+  expect(editor.getText() == "123.625", "returning to an edited region retains its decimal tempo");
+  editor.onFocusLost();
+  expectNear(WaveformEditingTestAccess::tempoMap(wave).regions[0].bpm, 123.625,
+             "regional focus loss cannot round an unchanged fractional value");
+  for (const auto *invalid : {"123..5", "123,5.2", "", "."}) {
+    typeTempo(editor, invalid);
+    editor.onReturnKey();
+    expectNear(WaveformEditingTestAccess::tempoMap(wave).regions[0].bpm, 123.625,
+               "invalid regional decimal input cannot replace a valid tempo with a prefix");
+  }
+}
+
+void testDesktopToolbarPreservesActionsAndTitle() {
+  ProcessorFixture f; TopBar bar(f.processor);
+  bool sections = false, enabled = true;
+  int changes = 0, helpRequests = 0, settingsRequests = 0, midiRequests = 0;
+  bar.setLiveModeControls([&] { sections = !sections; ++changes; }, [&] { return sections; }, [&] { return enabled; });
+  bar.setOnLearningRequested([&] { ++helpRequests; });
+  bar.setOnSettings([&] { ++settingsRequests; });
+  bar.setOnMidiLearnModeChanged([&](bool) { ++midiRequests; });
+  ImportedSongData song; song.id = "desktop-toolbar";
+  song.title = juce::String::fromUTF8("Una canción con un título especialmente largo");
+  song.artist = "Datos aislados";
+  bar.setTransportProviders([] { return false; }, [] { return 15.0; }, [] { return 30.0; },
+      [] { return juce::String("C"); }, [&] { return song.id; }, [&] { return &song; });
+  for (auto profile : {ResponsiveLayoutProfile::Compact, ResponsiveLayoutProfile::Standard, ResponsiveLayoutProfile::Large}) {
+    bar.setResponsiveProfile(profile);
+    for (int width : {940, 956, 1024, 1100, 1120, 1280, 1600}) {
+      bar.setSize(width, 64);
+      WaveformEditingTestAccess::expectTopbarLiveLayout(bar);
+      expect(WaveformEditingTestAccess::midi(bar).isVisible() && WaveformEditingTestAccess::settings(bar).isVisible() && WaveformEditingTestAccess::timeVisible(bar), "MIDI, Settings and Song window remain directly available");
+      const auto title = WaveformEditingTestAccess::songBounds(bar);
+      WaveformEditingTestAccess::sectionsChoice(bar).onClick();
+      expect(sections && WaveformEditingTestAccess::sectionsChoice(bar).getToggleState(), "Sections button selects the real view");
+      const int before = changes; WaveformEditingTestAccess::sectionsChoice(bar).onClick();
+      expect(changes == before, "selected view is idempotent");
+      WaveformEditingTestAccess::waveformChoice(bar).onClick();
+      expect(!sections && WaveformEditingTestAccess::waveformChoice(bar).getToggleState(), "Waveform button restores the real view");
+      expect(title == WaveformEditingTestAccess::songBounds(bar), "view changes keep the title in place");
+      enabled = false; WaveformEditingTestAccess::refreshTimeline(bar); WaveformEditingTestAccess::sectionsChoice(bar).onClick();
+      expect(!sections && !WaveformEditingTestAccess::sectionsChoice(bar).isEnabled() && !WaveformEditingTestAccess::waveformChoice(bar).isEnabled(), "editing lock disables both direct choices without changing view");
+      enabled = true; sections = true; WaveformEditingTestAccess::refreshTimeline(bar);
+      expect(WaveformEditingTestAccess::sectionsChoice(bar).getToggleState(), "external view updates reconcile the selection");
+      WaveformEditingTestAccess::waveformChoice(bar).onClick();
+    }
+  }
+  WaveformEditingTestAccess::help(bar).onClick(); expect(helpRequests == 1, "question mark opens the existing learning catalog once");
+  WaveformEditingTestAccess::settings(bar).onClick(); expect(settingsRequests == 1, "direct Settings keeps its callback");
+  WaveformEditingTestAccess::midi(bar).triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  expect(midiRequests == 1 && WaveformEditingTestAccess::midiActive(bar), "direct MIDI Learn preserves toggle behavior");
+  WaveformEditingTestAccess::midi(bar).triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  expect(midiRequests == 2 && !WaveformEditingTestAccess::midiActive(bar), "MIDI Learn can leave learn mode");
+  for (auto *button : {&WaveformEditingTestAccess::waveformChoice(bar), &WaveformEditingTestAccess::sectionsChoice(bar), &WaveformEditingTestAccess::help(bar)})
+    expect(button->getTitle().isNotEmpty() && button->getTooltip().isNotEmpty(), "direct controls have accessible names and help");
+  bar.setMinimalPhoneMode(true); bar.setSize(700, 64);
+  WaveformEditingTestAccess::expectTopbarLiveLayout(bar);
+  auto panel = WaveformEditingTestAccess::morePanel(bar);
+  expect(panel->findChildWithID("timeline-sections") && panel->findChildWithID("midi-learn")->isVisible(), "phone preserves its original menu actions");
 }
 
 void testSectionViewStatesAccessibilityAndKeyboard() {
@@ -2034,6 +2247,43 @@ void testLiveActionsSurviveLayoutRefresh() {
   }
 }
 
+void testStableSectionIndicatorMapping() {
+  WaveformBar wave;
+  wave.setSize(768, 250);
+  wave.setTransportProviders([] { return 0.0; }, [] { return 30.0; }, [] { return false; });
+  SongArrangementPartSnapshot longChorus, shortChorus;
+  longChorus.id = "long"; longChorus.name = "Coro"; longChorus.startSec = 10; longChorus.endSec = 30;
+  shortChorus = longChorus; shortChorus.id = "short"; shortChorus.endSec = 20;
+  wave.setArrangement({{longChorus, shortChorus}}, true);
+  expect(wave.getArrangementPartId(0) == "long" && wave.getArrangementPartIndex("short") == 1,
+         "real UI retains same-start order while resolving occurrences by ID");
+  wave.setActiveArrangementLoopPartProvider([&] { return wave.getArrangementPartIndex("long"); });
+  wave.setArrangementControlFeedbackProviders(
+      [](const juce::String &id) { return id == "short" ? juce::String("Rejected") : juce::String{}; },
+      [](const juce::String &) { return false; });
+  wave.setLiveMode(true);
+  expect(WaveformEditingTestAccess::sectionState(wave, 0).contains("Loop") &&
+         WaveformEditingTestAccess::sectionState(wave, 1).contains(L10n::tr("No aplicado", "Not applied")),
+         "confirmed Loop and rejection feedback belong to their own cards");
+  wave.setArrangementControlFeedbackProviders(
+      [](const juce::String &id) { return id == "short" ? juce::String("Update the server app to control sections safely") : juce::String{}; },
+      [](const juce::String &) { return false; },
+      [](const juce::String &) { return L10n::tr("Actualiza servidor", "Update server"); });
+  expect(WaveformEditingTestAccess::sectionState(wave, 1).contains(L10n::tr("Actualiza servidor", "Update server")),
+         "update requirement is visible in the real card, not only in a tooltip");
+  const auto capture = juce::SystemStats::getEnvironmentVariable("PW_LIVE_CAPTURE_DIR", {});
+  if (capture.isNotEmpty()) {
+    const juce::File directory(capture); expect(directory.createDirectory().wasOk(), "section feedback capture directory");
+    auto stream = directory.getChildFile("remote-section-update-required.png").createOutputStream();
+    expect(stream != nullptr && juce::PNGImageFormat().writeImageToStream(
+        wave.createComponentSnapshot(wave.getLocalBounds(), true, 2.0f), *stream), "section update feedback capture");
+  }
+  shortChorus.id = longChorus.id;
+  wave.setArrangement({{longChorus, shortChorus}}, true);
+  expect(wave.getArrangementPartId(0).isEmpty() && wave.getArrangementPartIndex("long") == -1,
+         "real UI rejects ambiguous IDs rather than selecting the first occurrence");
+}
+
 void testLiveActionsReachRealTransport() {
   ProcessorFixture fixture;
   auto &wave = fixture.edit.waveform;
@@ -2042,10 +2292,9 @@ void testLiveActionsReachRealTransport() {
   wave.setMinimalPhoneMode(true);
   wave.setSize(390, 250);
   wave.setLiveMode(true);
-  wave.setOnArrangementPartJumpRequest([&](int index) { processor.requestArrangementPartJump(index); });
+  wave.setOnArrangementPartJumpRequest([&](int index) { processor.requestArrangementPartJumpById(wave.getArrangementPartId(index)); });
   wave.setOnArrangementPartLoopToggleRequest([&](int index) {
-    processor.clearPendingArrangementPartJump();
-    processor.toggleArrangementPartLoop(index);
+    processor.toggleArrangementPartLoopById(wave.getArrangementPartId(index));
   });
   const auto block = WaveformEditingTestAccess::liveBounds(wave)[1];
   const auto press = [&](juce::Point<float> point) {
@@ -2176,7 +2425,7 @@ void testDesktopNormalAndLiveFollow() {
     const double afterButton = WaveformEditingTestAccess::resumeAt(f.waveform);
     WaveformEditingTestAccess::followAt(f.waveform, afterButton);
     WaveformEditingTestAccess::followAt(f.waveform, afterButton + 100.0);
-    juce::MouseWheelDetails wheel;
+    juce::MouseWheelDetails wheel{};
     wheel.deltaY = -1.0f;
     f.waveform.mouseWheelMove(pointerEvent(f.waveform, start, start), wheel);
     const float wheelOffset = WaveformEditingTestAccess::liveScroll(f.waveform);
@@ -3424,6 +3673,68 @@ void testCueVisualPreview() {
 
 } // namespace
 
+void testBlankTimelineWithoutWaveform() {
+  WaveformBar bar;
+  double position = 3600.0;
+  bar.setTransportProviders([&] { return position; }, [] { return 0.0; }, [] { return true; });
+  bar.setGuideAlignmentPreview(guideDraftFixture());
+  expect(bar.hasGuideAlignmentPreview(), "normal timeline accepts a transient guide review");
+  bar.setBlankSong(true); bar.setWaveformBins({0.1f, 0.8f, 0.2f});
+  expect(!bar.hasGuideAlignmentPreview(), "loading a blank song discards a transient guide review");
+  bar.setGuideAlignmentPreview(guideDraftFixture());
+  expect(!bar.hasGuideAlignmentPreview(), "stale guide results cannot reopen review for a blank song");
+  SongArrangementSnapshot stale;
+  stale.parts = {original("old-blank-intro", 0.0, 8.0)};
+  bar.setArrangement(stale, true);
+  for (int width : {320, 390, 768, 1200}) {
+    bar.setSize(width, 180);
+    bar.setLiveMode(true);
+    expect(!bar.isVisible() && !bar.canToggleLiveMode() &&
+        WaveformEditingTestAccess::hasNoWaveform(bar) &&
+        WaveformEditingTestAccess::liveBounds(bar).empty(),
+        "blank exposes no waveform, sections, ruler or section-view action at any width");
+    for (auto *child : bar.getChildren())
+      expect(!child->isVisible(), "blank hides every waveform and section action");
+    // Paint directly as well: no empty-state text, free/bar label, progress
+    // needle or remote badge may leak into this deliberately empty area.
+    const auto image = bar.createComponentSnapshot(bar.getLocalBounds());
+    expect(image.isValid(), "blank area snapshot is valid");
+    for (int y = 0; y < image.getHeight(); y += 3)
+      for (int x = 0; x < image.getWidth(); x += 3)
+        expect(image.getPixelAt(x, y) == UITheme::panelDark,
+               "blank area contains only its background");
+  }
+  bar.setBlankSong(false); bar.setWaveformBins({0.1f, 0.8f, 0.2f});
+  bar.setArrangement(stale, true); bar.setLiveMode(true);
+  expect(bar.isVisible() && bar.canToggleLiveMode() &&
+      WaveformEditingTestAccess::liveBounds(bar).size() == 1,
+      "loading a normal song restores waveform visibility and existing section controls");
+
+  ProcessorFixture fixture; TopBar top(fixture.processor);
+  ImportedSongData song; song.id = "blank-menu"; song.title = "Blank";
+  song.blankSong = true; song.bpm = 120; song.key = "C";
+  top.setTransportProviders([] { return true; }, [] { return 3600.0; },
+      [] { return 0.0; }, [] { return juce::String("C"); },
+      [&] { return song.id; }, [&] { return &song; });
+  int toggles = 0;
+  top.setLiveModeControls([&] { ++toggles; }, [] { return false; }, [] { return true; });
+  for (bool phone : {false, true}) {
+    top.setMinimalPhoneMode(phone); top.setSize(phone ? 390 : 1200, 80);
+    expect(!WaveformEditingTestAccess::sectionsChoice(top).isVisible() &&
+        !WaveformEditingTestAccess::waveformChoice(top).isVisible(),
+        "blank hides desktop Waveform/Sections choices");
+    auto panel = WaveformEditingTestAccess::morePanel(top);
+    expect(!panel->findChildWithID("timeline-sections")->isVisible(),
+        "blank hides the section action in the phone/tablet More menu");
+    WaveformEditingTestAccess::chooseTimeline(top, true);
+    expect(toggles == 0, "blank cannot enter section view through stale callbacks");
+  }
+  song.blankSong = false;
+  top.setMinimalPhoneMode(false); top.setSize(1280, 80);
+  expect(WaveformEditingTestAccess::sectionsChoice(top).isVisible(),
+      "normal song restores the standard desktop section selector");
+}
+
 int main() {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr)
@@ -3441,10 +3752,14 @@ int main() {
       std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
     }
   };
+  run("topbar decimal tempo entry and reopening", testTopbarDecimalTempoEditing);
+  run("metronome decimal tempo entry", testMetronomePopoverDecimalTempoEditing);
+  run("regional decimal tempo entry", testRegionalDecimalTempoEditing);
   run("playback dirty regions match complete waveform paint", testPlaybackDirtyRegionsMatchFullPaint);
   run("playback cache reuse and source invalidation", testPlaybackCacheReuseAndInvalidation);
   run("playback limits reuse cache without baked shading", testPlaybackLimitsReuseCacheWithoutBakingShading);
   run("cue counts follow regional tempo grid", testCueSequenceUsesRegionalPulseGrid);
+  run("blank area stays empty and hides section actions", testBlankTimelineWithoutWaveform);
   run("cue capacity rejects copy and paste atomically", testCueCapacityRejectsCopyWithoutChangingTimeline);
   run("cue component previews", testCueVisualPreview);
   run("section detection preview, safe confirmation and undo", testDetectedSectionsReviewAndHistory);
@@ -3465,7 +3780,7 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
-  run("desktop overflow deduplicates visible actions", testDesktopMoreDeduplicatesVisibleActions);
+  run("desktop toolbar preserves actions and title", testDesktopToolbarPreservesActionsAndTitle);
   run("Live titles remain invariant through scroll and inertia", testLiveTitleLayoutInvariantDuringScroll);
   run("section view states, accessibility tree and keyboard", testSectionViewStatesAccessibilityAndKeyboard);
   run("section view readable states and responsive previews", testSectionViewReadableStatesPreview);
@@ -3477,6 +3792,7 @@ int main() {
   run("pending Live priority and combined state visuals", testPendingLivePriorityAndCombinedStates);
   run("Loop border phase and corner continuity", testLoopBorderPhaseAndCorners);
   run("live actions reach real transport", testLiveActionsReachRealTransport);
+  run("stable section indicator mapping and rejected feedback", testStableSectionIndicatorMapping);
   run("Master leading boundary", testMasterLeadingBoundary);
   run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);
   run("live responsive complete cards and settled navigation", testLiveResponsiveCompleteCardsAndNavigation);

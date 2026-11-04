@@ -8,6 +8,7 @@
 #include "ui/panels/SettingsPanel.h"
 #include "network/RemoteStateCodec.h"
 #include "network/RemoteDeviceName.h"
+#include "network/SectionControl.h"
 #include <cstring>
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/WaveformBar.h"
@@ -90,6 +91,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
     wasSongPlaying = false; remoteVisualStatePending = false;
     if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) grid->setSong(currentLoadedSong);
     if (waveformBarPtr) {
+      refreshWaveformPresentationForSong();
       waveformBarPtr->setWaveformBins(std::move(remoteSavedLocalWaveform));
       waveformBarPtr->resetPlaybackViewForSong();
       waveformBarPtr->setSongRhythm(currentLoadedSong.bpm, currentLoadedSong.timeSignature);
@@ -119,6 +121,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
     deferredStartupSongLoadPending = false;
     ++waveformGeneration;
     playbackSession.setRemote(true);
+    playbackSession.setArrangementControlView({}, {});
     playbackSession.onCommand = [this](const juce::String &id, const juce::String &action, const juce::var &value, const juce::String &target) {
       learningRemoteAction.sent(id, action, currentLoadedSong.id,
                                 juce::Time::getMillisecondCounterHiRes(),
@@ -127,6 +130,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
     };
     remoteLibrarySignature.clear(); remoteSettingsSignature.clear(); remoteChannelSignature.clear(); remoteExpectedWaveformHash.clear();
     currentLoadedSong = {}; hasCurrentLoadedSong = false;
+    refreshWaveformPresentationForSong();
     remoteDisplayedLibrary = std::make_shared<LibraryState>();
     if (songListPanelRaw) {
       songListPanelRaw->onRemoteAction = [this](const juce::String &action, const juce::var &value, const juce::String &target) { playbackSession.send(action, value, target); };
@@ -213,6 +217,7 @@ void MTControlsAudioProcessorEditor::applyRemoteSnapshot(const juce::var &snapsh
     currentLoadedSong = playworship::remote::decodeSong(song);
   }
   hasCurrentLoadedSong = songId.isNotEmpty();
+  refreshWaveformPresentationForSong();
   const auto hash = stringProperty(snapshot, "waveformHash");
   if (oldId != songId || hash != remoteExpectedWaveformHash) {
     if (waveformBarPtr) {
@@ -237,11 +242,17 @@ void MTControlsAudioProcessorEditor::applyRemoteSnapshot(const juce::var &snapsh
     const auto signature = songId + juce::JSON::toString(ProjectStore::serializeSettings(visual)) + juce::JSON::toString(playworship::remote::encodeTempoMap(currentLoadedSong.tempoMap));
     if (waveformBarPtr) {
       waveformBarPtr->setSongRhythm(currentLoadedSong.bpm, currentLoadedSong.timeSignature);
-      remoteVisualStatePending = signature != remoteSettingsSignature;
+      const auto controlRevision = stringProperty(property(snapshot, "sectionControls"), "revision");
+      remoteVisualStatePending = signature != remoteSettingsSignature ||
+          !playbackSession.isArrangementControlView(songId, controlRevision);
       if (remoteVisualStatePending && !waveformBarPtr->isMouseButtonDown(true)) {
-        remoteSettingsSignature = signature; remoteVisualStatePending = false;
-        waveformBarPtr->setTempoMap(currentLoadedSong.tempoMap);
-        waveformBarPtr->setArrangement(decoded.arrangement, decoded.arrangementCustomized);
+        if (signature != remoteSettingsSignature) {
+          remoteSettingsSignature = signature;
+          waveformBarPtr->setTempoMap(currentLoadedSong.tempoMap);
+          waveformBarPtr->setArrangement(decoded.arrangement, decoded.arrangementCustomized);
+        }
+        playbackSession.setArrangementControlView(songId, controlRevision);
+        remoteVisualStatePending = false;
       }
     }
     if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
@@ -647,7 +658,7 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
     remoteWaveformBins.clear();
     remoteWaveformHash.clear();
   }
-  if (songId.isNotEmpty() && remoteWaveformBins.empty()) {
+  if (songId.isNotEmpty() && !currentLoadedSong.blankSong && remoteWaveformBins.empty()) {
     if (waveformBarPtr != nullptr)
       remoteWaveformBins = waveformBarPtr->getWaveformBinsCopy();
     if (remoteWaveformBins.empty())
@@ -798,6 +809,7 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
   ui.getDynamicObject()->setProperty("getBasePadNoteIndex", p.getBasePadNoteIndex());
   ui.getDynamicObject()->setProperty("getBasePadOctave", p.getBasePadOctave());
   fields->setProperty("ui", ui);
+  fields->setProperty("sectionControls", playworship::remote::encodeSectionControls(p, songId));
 
   const auto signature = juce::JSON::toString(snapshot, true);
   if (signature == remoteStateSignature) return;
@@ -931,6 +943,7 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
     p.setClickDivision(static_cast<int>(value)); return true;
   }
   if (action.startsWith("window.")) {
+    if (p.isBlankSongLoaded()) { error = "Blank songs have no playback window"; return false; }
     if (!hasCurrentLoadedSong || !isNumber(value) || !std::isfinite(static_cast<double>(value)) || static_cast<double>(value) < 0) { error = "Invalid window"; return false; }
     const double seconds = static_cast<double>(value);
     if (action == "window.start") p.setSongStartSeconds(seconds);
@@ -940,14 +953,13 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
     maybePersistSongWindowForActiveSong(); return true;
   }
   if (action.startsWith("arrange.")) {
+    if (p.isBlankSongLoaded()) { error = "Blank songs have no sections"; return false; }
+    if (playworship::remote::isSectionControlAction(action))
+      return playworship::remote::applySectionControl(p,
+          hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{},
+          songLoadBusy, action, value, property(command, "target"), error);
     if (!hasCurrentLoadedSong) { error = "No active song"; return false; }
-    if (action == "arrange.jump" || action == "arrange.loop") {
-      if (!value.isInt() || static_cast<int>(value) < 0) { error = "Invalid section"; return false; }
-      if (action == "arrange.jump") p.requestArrangementPartJump(static_cast<int>(value));
-      else p.toggleArrangementPartLoop(static_cast<int>(value));
-    } else if (action == "arrange.clearJump") p.clearPendingArrangementPartJump();
-    else if (action == "arrange.clearLoop") p.clearArrangementPartLoop();
-    else if (action == "arrange.set" || action == "arrange.reset") {
+    if (action == "arrange.set" || action == "arrange.reset") {
       ProjectSongSettings settings;
       if (action == "arrange.set") {
         if (!playworship::remote::validateArrangementAutomation(property(value, "arrangement"))) {
@@ -978,6 +990,7 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
     return true;
   }
   if (action == "tempoMap.set") {
+    if (p.isBlankSongLoaded()) { error = "Blank songs use the tempo control"; return false; }
     if (!hasCurrentLoadedSong || !value.isArray() || value.size() > 1024) { error = "Invalid tempo map"; return false; }
     const auto map = playworship::remote::decodeTempoMap(value);
     for (const auto &r : map.regions) if (!std::isfinite(r.startSec) || !std::isfinite(r.endSec) || !std::isfinite(r.bpm) || r.startSec < 0 || r.endSec < r.startSec || r.bpm < 20 || r.bpm > 300) { error = "Invalid tempo region"; return false; }

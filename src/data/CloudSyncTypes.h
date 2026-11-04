@@ -2,6 +2,8 @@
 
 #include <JuceHeader.h>
 
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -29,7 +31,7 @@ struct CloudProjectDescriptor {
   int revision = 0;
   juce::String title;
   juce::String artist;
-  int bpm = 0;
+  double bpm = 0.0;
   juce::String key;
   double durationSeconds = 0.0;
   CloudObjectRef settings;
@@ -96,7 +98,15 @@ inline juce::var toVar(const CloudProjectDescriptor& descriptor) {
   dynamicObject->setProperty("revision", descriptor.revision);
   dynamicObject->setProperty("title", descriptor.title);
   dynamicObject->setProperty("artist", descriptor.artist);
-  dynamicObject->setProperty("bpm", descriptor.bpm);
+  // Preserve the canonical JSON of legacy integer BPM descriptors so their
+  // stored content fingerprints do not change just because the model is double.
+  if (std::isfinite(descriptor.bpm) &&
+      descriptor.bpm >= std::numeric_limits<int>::min() &&
+      descriptor.bpm <= std::numeric_limits<int>::max() &&
+      std::floor(descriptor.bpm) == descriptor.bpm)
+    dynamicObject->setProperty("bpm", static_cast<int>(descriptor.bpm));
+  else
+    dynamicObject->setProperty("bpm", descriptor.bpm);
   dynamicObject->setProperty("key", descriptor.key);
   dynamicObject->setProperty("durationSeconds", descriptor.durationSeconds);
   dynamicObject->setProperty("settings", toVar(descriptor.settings));
@@ -121,7 +131,8 @@ inline bool fromVar(const juce::var& value, CloudProjectDescriptor& descriptor) 
   descriptor.revision = static_cast<int>(dynamicObject->getProperty("revision"));
   descriptor.title = dynamicObject->getProperty("title").toString().trim();
   descriptor.artist = dynamicObject->getProperty("artist").toString().trim();
-  descriptor.bpm = static_cast<int>(dynamicObject->getProperty("bpm"));
+  descriptor.bpm = static_cast<double>(dynamicObject->getProperty("bpm"));
+  if (!std::isfinite(descriptor.bpm)) return false;
   descriptor.key = dynamicObject->getProperty("key").toString().trim();
   descriptor.durationSeconds =
       dynamicObject->getProperty("durationSeconds").toString().getDoubleValue();

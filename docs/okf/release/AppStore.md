@@ -8,6 +8,11 @@ timestamp: 2026-10-05
 
 # App Store — preflight de PlayWorship para iOS y macOS
 
+La siguiente entrega se prepara como **2.4.0**, con version visible comun para
+desktop, Android, iPhone e iPad. La fuente y los pasos de configuracion estan
+en [Version unificada](UnifiedVersioning.md). Es preparacion local; los estados
+de entregas que aparecen a continuacion son historicos.
+
 ## Ultima evidencia local de pruebas (2026-10-05)
 
 Esta actualizacion usa `output/app-store-preparation/preparation.json` y

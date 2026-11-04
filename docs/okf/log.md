@@ -2,10 +2,26 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-10-05T00:00:00-03:00
+timestamp: 2026-10-25T00:00:00-03:00
 ---
 
 # Changelog
+
+## 2026-10-25 — Editor de canción y teclado en iPhone
+
+- `Editar canción` mantiene su overlay delante de Biblioteca al aparecer el teclado o recalcular el área segura; conserva la instancia, el foco y el borrador.
+- El orden se restaura después del drawer y antes de los modales prioritarios, sin usar always-on-top ni solicitar foco de nuevo.
+- Gate enfocado en drawer/editor real: prioridad, recepción de toques, texto, selección, caret y cierre explícito.
+- Contratos: [SongCreation](importing/SongCreation.md) y [MobileLayout](ui/MobileLayout.md).
+
+## 2026-10-25 — Letra nativa inicial en iOS
+
+- Editor UIKit desde Biblioteca/setlist local, letra opcional y selección de fragmentos musicales.
+- Tarjetas musicales con encabezados pastel, código y nombre; navegación circular fija y metadata de canción. Las nuevas marcas abarcan los párrafos seleccionados sin modificar la letra ni sus rangos históricos.
+- Escala compacta: círculos visibles de 36 pt con target mínimo de 44 pt, encabezados de 32 pt y menos sangría y separación vertical; mantiene tipografía dinámica y letra legible.
+- Modelo UTF-16 portable con etiquetas independientes del arreglo y de FreeShow.
+- Guardado asíncrono sólo de letra, borrador conservado ante error y ciclo de vida cancelable.
+- Contrato: [NativeLyrics](ui/NativeLyrics.md).
 
 ## 2026-10-05
 
@@ -1491,3 +1507,11 @@ Backend: alta, retirada y salida generan correo transaccional con cola durable,
 reintentos e idempotencia. 60 pruebas aprobadas. Vistas previas en
 output/teams-email-preview; prueba de proveedor dirigida solo al buzón técnico
 de Resend, sin notificar a miembros existentes.
+
+## 2026-10-17 · Letras independientes / FreeShow desktop
+
+- Contrato actualizado para marcas independientes de secciones, catálogo real
+  por show/arreglo y selección absoluta por IDs y aparición.
+- REST verificado contra FreeShow v1.6.6; clave sólo en memoria y destinos LAN.
+- Persistencia portable, despacho desde segmentos efectivos del transporte y
+  estado separado de enviado/confirmado por la API.

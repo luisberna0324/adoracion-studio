@@ -43,10 +43,12 @@ docs/okf/
 | [importing/LibraryPersistence](importing/LibraryPersistence.md) | Persistencia y reubicacion de canciones locales en iOS |
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI configurables |
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
+| [ui/NativeLyrics](ui/NativeLyrics.md) | Editor nativo iOS de letra y fragmentos musicales |
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
 | [ui/InputControls](ui/InputControls.md) | Campos de texto y selectores adaptativos multiplataforma |
 | [ui/SectionAutomation](ui/SectionAutomation.md) | Edición de mezcla por sección con los controles existentes |
 | [ui/SectionDetection](ui/SectionDetection.md) | Detección offline asistida, propuestas transitorias y confirmación segura |
+| [ui/LinkedFaders](ui/LinkedFaders.md) | Vinculación de instrumentos al mismo nivel desde cualquier fader |
 | [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
 | [ui/LearningGuide](ui/LearningGuide.md) | Guías interactivas sobre controles reales y progreso local por curso |
 | [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |

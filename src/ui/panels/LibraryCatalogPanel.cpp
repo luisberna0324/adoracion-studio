@@ -1,9 +1,11 @@
 #include "LibraryCatalogPanel.h"
+#include "../../platform/NativeSongLyricsEditor.h"
 
 #include "../../data/CloudSyncIndexStore.h"
 #include "../../data/Localization.h"
 #include "../../data/SessionPersistence.h"
 #include "../../data/SongLibraryStore.h"
+#include "../../data/TempoValue.h"
 #include "../../data/TeamsLocalStore.h"
 #include "../../data/TeamsPreparationService.h"
 
@@ -771,8 +773,9 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
 
     const auto metadataText =
         (item.key.isNotEmpty() ? item.key : "-") + u8" • " +
-        (item.bpm > 0 ? juce::String(item.bpm) : "--") + " BPM" + u8" • " +
-        juce::String(item.stemCount) + " stems" + u8" • " + formatDurationMMSS(item.durationSeconds);
+        (item.bpm > 0 ? TempoValue::formatBpm(item.bpm) : "--") + " BPM" + u8" • " +
+        (item.blankSong ? L10n::tr("En blanco", "Blank") : juce::String(item.stemCount) + " stems") + u8" • " +
+        (item.blankSong && item.durationSeconds == 0.0 ? L10n::tr("Libre", "Free") : formatDurationMMSS(item.durationSeconds));
     g.setColour(UITheme::textSecondary.withAlpha(0.76f * rowAlpha));
     g.setFont(makeAppFont(10.8f, AppFontWeight::Regular));
     g.drawFittedText(metadataText, metaArea, juce::Justification::centredLeft, 1);
@@ -1064,8 +1067,16 @@ void LibraryCatalogPanel::setOnSongEditRequested(SongEditRequested cb) {
   onSongEditRequested = std::move(cb);
 }
 
+void LibraryCatalogPanel::setOnSongLyricsRequested(SongEditRequested cb) {
+  onSongLyricsRequested = std::move(cb);
+}
+
 void LibraryCatalogPanel::setOnSongConvertRequested(SongConvertRequested cb) {
   onSongConvertRequested = std::move(cb);
+}
+
+void LibraryCatalogPanel::setOnProjectExportRequested(SongEditRequested cb) {
+  onProjectExportRequested = std::move(cb);
 }
 
 void LibraryCatalogPanel::setOnProjectUploadRequested(
@@ -1415,6 +1426,7 @@ void LibraryCatalogPanel::rebuildRows() {
     item.key = song.key;
     item.dominantCategory = dominantCategoryForSong(song);
     item.artworkPath = song.artworkPath.trim();
+    item.blankSong = song.blankSong;
     item.durationSeconds = estimateSongLengthSeconds(song);
     item.createdMs = song.createdMs;
     item.bpm = song.bpm;
@@ -1690,6 +1702,34 @@ std::unique_ptr<juce::Component> LibraryCatalogPanel::createRowMenu(
                songId.isNotEmpty())
              safeThis->onSongEditRequested(songId);
          }, SvgIconName::Pencil});
+    if (!remoteLibrary && NativeSongLyricsEditor::isAvailable() && onSongLyricsRequested) {
+      actions.push_back(
+          {L10n::tr("Letra", "Lyrics"), true, false, false,
+           [safeThis, songId = selectedItem.songId] {
+             // The callout closes when this callback returns; UIKit opens on
+             // the next message, using the captured song identity after resorts.
+             juce::MessageManager::callAsync([safeThis, songId] {
+               if (safeThis != nullptr && !safeThis->remoteLibrary &&
+                   NativeSongLyricsEditor::isAvailable() && safeThis->onSongLyricsRequested && songId.isNotEmpty()) {
+                 dismissActiveActionPopover();
+                 safeThis->onSongLyricsRequested(songId);
+               }
+             });
+           }, SvgIconName::Pencil});
+    }
+#if !JUCE_IOS && !JUCE_ANDROID
+    if (!remoteLibrary && selectedItem.isProjectBacked && selectedItem.isProjectAvailable &&
+        !selectedItem.isSharedCloud && onProjectExportRequested) {
+      actions.push_back(
+          {L10n::tr("Exportar copia del proyecto...", "Export project copy..."), true, false, false,
+           [safeThis, songId = selectedItem.songId] {
+             juce::MessageManager::callAsync([safeThis, songId] {
+               if (safeThis != nullptr && !safeThis->remoteLibrary && safeThis->onProjectExportRequested)
+                 safeThis->onProjectExportRequested(songId);
+             });
+           }, SvgIconName::FileAudio});
+    }
+#endif
     if (!selectedItem.isProjectBacked) {
       actions.push_back(
           {L10n::tr("Convertir a proyecto...", "Convert to project..."), true, false, false,

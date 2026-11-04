@@ -61,6 +61,14 @@ public:
   void setLayoutScale(float scale);
   void setBottomContentInset(int inset);
   void setVolume(float volume);
+  // Group updates may clamp the actively dragged fader as well as its peers.
+  void setLinkedVolume(float volume);
+  void setFaderLinkButtonVisible(bool visible);
+  void setFaderLinkButtonState(bool linked);
+  void setFaderLinkButtonEnabled(bool enabled);
+  void setFaderLinkButtonTooltip(const juce::String &tooltip);
+  void setOnFaderLinkToggled(std::function<void(bool)> cb);
+  void setFaderLinked(bool linked);
   void setGain(float gain);
   void setMuteState(bool muted);
   void setSoloState(bool soloed);
@@ -78,6 +86,7 @@ public:
   void setSectionAutomationState(bool automated, bool editing);
   void refreshThemeColours();
   void setOnVolumeChanged(std::function<void(float)> cb);
+  void setOnVolumeDragStarted(std::function<void()> cb);
   void setOnVolumeDragEnded(std::function<void(float)> cb);
   void setOnGainChanged(std::function<void(float)> cb);
   void setOnGainDragEnded(std::function<void(float)> cb);
@@ -95,6 +104,11 @@ public:
   bool hasAnyMidiLearnTarget() const;
 
 private:
+  class FaderLinkButton final : public juce::TextButton {
+  public:
+    void paintButton(juce::Graphics &, bool mouseOver, bool buttonDown) override;
+  };
+
   class LearnAwareSlider final : public juce::Slider {
   public:
     std::function<void()> onPointerDown;
@@ -136,11 +150,14 @@ private:
   StereoVUMeter meter;
   juce::TextButton soloButton;
   juce::TextButton muteButton;
+  FaderLinkButton faderLinkButton;
   bool leadingBoundaryVisible = false;
   juce::Colour cardBgColour;
   juce::Colour channelBandColour;
   juce::Colour channelBandTextColour;
   std::function<void(float)> onVolumeChanged;
+  std::function<void()> onVolumeDragStarted;
+  std::function<void(bool)> onFaderLinkToggled;
   std::function<void(float)> onVolumeDragEnded;
   std::function<void(float)> onGainChanged;
   std::function<void(float)> onGainDragEnded;
@@ -152,6 +169,8 @@ private:
   bool gainVisible = true;
   bool powerVisible = false;
   bool muteAlignedToFader = false;
+  bool faderLinkButtonVisible = false;
+  bool faderLinked = false;
   bool midiLearnSelectable = false;
   bool gainValueTooltipVisible = false;
   bool sectionAutomated = false;

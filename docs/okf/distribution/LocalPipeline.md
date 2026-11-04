@@ -28,8 +28,11 @@ Configuración JSON local (ignorada por Git): `juce_dir`, `bungee_dir`, `backend
 Para device: `ios_team`, `ios_profile`, `ios_identity` son identificadores públicos
 de firma existente; no usar perfiles antiguos del preset ni provisioning automático.
 `ios_development_api` puede seleccionar el preview autorizado; device es desarrollo,
-no distribución. macOS Release usa el preset universal, URL productiva y Apple opt-in
-apagado hasta rollout. Simulador usa el fallback de audio existente porque el framework
+no distribución. macOS Release usa el preset universal y URL productiva; el acceso
+Apple se compila en iOS/macOS por política de plataforma. La firma ad hoc del
+pipeline macOS no acredita un ingreso Apple real: requiere firma y perfil adecuados
+o una entrega mediante TestFlight. Android, Windows y Linux ofrecen Google y correo,
+sin acceso Apple. Simulador usa el fallback de audio existente porque el framework
 Bungee device no es compatible con simulador.
 
 No guardar secretos, contraseñas, keystores o tokens en config. El proceso elimina

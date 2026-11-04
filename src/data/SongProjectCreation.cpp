@@ -104,6 +104,10 @@ bool save(ImportedSongData song, juce::String &errorMessage,
   document.song = std::move(song);
   document.settings.tempoBpm = document.song.bpm > 0 ? document.song.bpm : 120.0;
   document.settings.window.endSec = estimateSongLengthSeconds(document.song);
+  if (document.song.blankSong) {
+    document.settings.arrangement = document.song.arrangement;
+    document.settings.arrangementCustomized = !document.song.arrangement.parts.empty();
+  }
   document.settings.window.fadeOutSec = juce::jmin(1.0, document.settings.window.endSec);
   for (const auto &stem : document.song.stems) {
     if (!stem.include)
@@ -112,18 +116,20 @@ bool save(ImportedSongData song, juce::String &errorMessage,
     mix.stemId = stem.stemId;
     document.settings.mix.stems.push_back(mix);
   }
-  if (progress) {
-    progress(0.05, L10n::tr(u8"Generando forma de onda...",
-                            "Generating waveform preview..."));
+  if (!document.song.blankSong) {
+    if (progress) {
+      progress(0.05, L10n::tr(u8"Generando forma de onda...",
+                              "Generating waveform preview..."));
+    }
+    document.waveformBins = buildMixedWaveformBins(
+        document.song, kWaveformPreviewBinCount,
+        [&progress](const double waveformProgress) {
+          if (progress)
+            progress(0.05 + 0.15 * juce::jlimit(0.0, 1.0, waveformProgress),
+                     L10n::tr(u8"Generando forma de onda...",
+                              "Generating waveform preview..."));
+        });
   }
-  document.waveformBins = buildMixedWaveformBins(
-      document.song, kWaveformPreviewBinCount,
-      [&progress](const double waveformProgress) {
-        if (progress)
-          progress(0.05 + 0.15 * juce::jlimit(0.0, 1.0, waveformProgress),
-                   L10n::tr(u8"Generando forma de onda...",
-                            "Generating waveform preview..."));
-      });
   juce::String importError;
   const bool packaged = ProjectStore::save(
       document, selectedDestination, &importError, nullptr,

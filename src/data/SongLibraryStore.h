@@ -152,9 +152,15 @@ public:
       const juce::String &legacySongId, ImportedSongData projectSong,
       juce::String *errorMessage = nullptr);
   static bool updateSong(ImportedSongData song, juce::String *errorMessage = nullptr,
-                         const SongImportProgressFn &onProgress = {});
+                         const SongImportProgressFn &onProgress = {},
+                         bool recoverMissingProject = false);
   static bool updateSongMetadata(ImportedSongData song,
                                  juce::String *errorMessage = nullptr);
+  /** Background content-only save; final library RMW is on the message thread. */
+  static bool updateSongLyrics(const juce::String &songId,
+                               std::optional<SongLyricsDocument> lyrics,
+                               juce::String *errorMessage = nullptr,
+                               const SongImportProgressFn &onProgress = {});
   static bool getActiveSetlistMix(const juce::String &songId,
                                   SongMixSnapshot &outMix);
   static bool updateMixForActiveSetlist(const juce::String &songId,
@@ -205,6 +211,12 @@ public:
                                     const SongArrangementSnapshot &arrangement,
                                     bool isCustomArrangement);
   static bool resetSongArrangement(const juce::String &songId);
+  static bool getSongFreeShowCues(const juce::String &songId,
+                            playworship::lyrics::SongLyrics &outLyrics);
+  static bool updateSongFreeShowCues(
+      const juce::String &songId,
+      const playworship::lyrics::SongLyrics &lyrics,
+      juce::String *errorMessage = nullptr);
   static bool getActiveSetlistArrangement(const juce::String &songId,
                                           SongArrangementSnapshot &outArrangement,
                                           bool &outIsCustomArrangement);

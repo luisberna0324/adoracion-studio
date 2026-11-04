@@ -96,6 +96,21 @@ public class JuceActivity   extends Activity
         }
     }
 
+    public void showNativeLyricsEditor (long sessionId, String config, String document)
+    {
+        runOnUiThread (() -> NativeSongLyricsEditor.show (this, sessionId, config, document));
+    }
+
+    public void dismissNativeLyricsEditor (long sessionId)
+    {
+        runOnUiThread (() -> NativeSongLyricsEditor.dismiss (sessionId));
+    }
+
+    public void completeNativeLyricsSave (long sessionId, boolean success, String error)
+    {
+        runOnUiThread (() -> NativeSongLyricsEditor.completeSave (sessionId, success, error));
+    }
+
     private native void startJUCEApplication();
     private native void onAuthCallback (String callbackUrl);
 
@@ -155,6 +170,13 @@ public class JuceActivity   extends Activity
         if (remoteMulticastRequested)
             setRemoteMulticastEnabled (true);
         // Notification resume handling is disabled for this standalone target.
+    }
+
+    @Override
+    protected void onDestroy()
+    {
+        NativeSongLyricsEditor.dismissForActivity (this);
+        super.onDestroy();
     }
 
     @Override

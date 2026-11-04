@@ -3,7 +3,7 @@
 #include "../UiCommon.h"
 #include "PracticeTimelineRuler.h"
 
-// Shared visual reference for Practice and the desktop/tablet waveform. The
+// Shared visual reference for Practice, Lyrics and the desktop/tablet waveform. The
 // caller owns musical marks, viewport and interaction; painting never seeks.
 inline void drawMusicalTimelineRuler(
     juce::Graphics &g, const juce::Rectangle<float> &bounds,

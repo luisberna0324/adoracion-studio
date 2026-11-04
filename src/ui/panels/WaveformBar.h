@@ -5,6 +5,7 @@
 #include "../UiCommon.h"
 #include "../components/AppModal.h"
 #include "PracticeTimelineRuler.h"
+#include "TimelineInsertionAnchor.h"
 #include <JuceHeader.h>
 
 #include <array>
@@ -61,16 +62,25 @@ public:
   void setLiveMode(bool enabled);
   bool isLiveMode() const { return liveMode; }
   bool canToggleLiveMode() const {
-    return liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty() && !guideAlignmentActive);
+    return !blankSongTimeline && (liveMode || (!isEditingArrangement() &&
+        sectionAutomationEditingPartId.isEmpty() && !guideAlignmentActive));
   }
 
   void setWaveformBins(std::vector<float> bins);
+  void setBlankSong(bool enabled);
+  bool isBlankSong() const noexcept { return blankSongTimeline; }
   std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
   void resetPlaybackViewForSong();
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,
                       bool isCustomArrangement);
   void setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot);
   juce::Range<double> getArrangementPartTimeRange(int index) const;
+  juce::String getArrangementPartId(int index) const;
+  int getArrangementPartIndex(const juce::String &id) const;
+  void setArrangementControlFeedbackProviders(
+      std::function<juce::String(const juce::String &)> error,
+      std::function<bool(const juce::String &)> pending,
+      std::function<juce::String(const juce::String &)> status = {});
   std::vector<PracticeTimelineMark> getPracticeTimelineMarks(
       juce::Range<double> visibleRange, float width) const;
   double getPracticeSnappedPosition(double position,
@@ -352,6 +362,7 @@ private:
 
   std::vector<float> waveformBins;
   PlayingProvider playingProvider;
+  bool blankSongTimeline = false;
   PositionProvider positionProvider;
   LengthProvider lengthProvider;
   LengthProvider sourceLengthProvider;
@@ -415,6 +426,9 @@ private:
   PendingArrangementPartProvider pendingArrangementPartProvider;
   PendingArrangementPartProvider preparingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
+  std::function<juce::String(const juce::String &)> arrangementControlErrorProvider;
+  std::function<bool(const juce::String &)> arrangementControlPendingProvider;
+  std::function<juce::String(const juce::String &)> arrangementControlStatusProvider;
   std::function<bool(const juce::String &)> onSectionAutomationBegin;
   std::function<void(bool)> onSectionAutomationFinish;
   std::function<void(const juce::String &)> onSectionAutomationClear;
@@ -492,8 +506,7 @@ private:
   bool dragAnchorActive = false;
   bool dragAnchorEdgeIsStart = true;
   double dragAnchoredBoundarySec = 0.0;
-  bool sectionInsertionAnchorValid = false;
-  double sectionInsertionAnchorSec = 0.0;
+  TimelineInsertionAnchor sectionInsertionAnchor;
   float dragViewportStart = 0.0f;
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;

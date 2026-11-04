@@ -1,5 +1,5 @@
-# Local-only guide recognition. The model is provisioned separately and never
-# downloaded by the application. Disable this option for a dependency-free
+# Local-only guide recognition. Model setup requires an explicit user download;
+# inference never downloads a model. Disable this option for a dependency-free
 # portable fallback (in particular, mobile builds are opt-in until validated).
 include_guard(GLOBAL)
 set(_pw_whisper_default ON)

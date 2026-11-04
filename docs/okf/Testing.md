@@ -93,6 +93,52 @@ No sustituye pruebas físicas de audio/MIDI ni comprobaciones móviles de UI.
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |
 | [Control remoto LAN](integrations/RemoteControl.md) | `remote_session`, `remote_session_portable_transport` en CI; `remote_session_portable` y `remote_discovery_interop` en una LAN |
 
+`remote_section_control` usa WebSocket real en loopback y el helper de dispatch
+de producción: aceptación/ACK/snapshot, nombres de coro repetidos, IDs de
+ocurrencia, canción/arreglo atrasados, destinos filtrados o ambiguos, carga en
+curso, contexto visual diferido, época de servidor, compatibilidad v1 explícita
+y feedback de rechazo. Usa un doble de estado
+del procesador; la prueba de frontera usa el scheduler real, sin acreditar
+prefetch ni render de audio. `section_automation` prueba además el procesador
+real por ID, validación sin efectos y Loop→Ir con audio; `waveform_editing`
+comprueba mapeo de las tarjetas reales y feedback en una sección distinta.
+
+En la revisión de nube del 13/10/2026, el target nuevo y `remote_session`
+pasaron mediante un build aislado con JUCE 8.0.12 e IXWebSocket fijado al SHA
+del proyecto. `audio_engine_core` también pasó. La configuración completa de
+la app inicialmente quedó bloqueada por FreeType y Bungee ausentes. Se resolvió
+con dependencias Debian verificadas, extraídas en una raíz temporal sin ejecutar
+scripts de instalación, y `scripts/bootstrap_bungee.sh` con un destino temporal
+nuevo: Bungee público 2.4.24, archivo y licencia verificados contra los hashes
+fijados por el repo. No se compró ni se aceptó una licencia adicional.
+
+El build nativo usó el JUCE del workflow (`501c07674e1ad693085a7e7c398f205c2677f5da`)
+y Bungee real. El build por defecto con GCC 14 falla en la expresión preexistente
+`juce::jmax<juce::int64>(1, bytes)` por instanciar SIMDNativeOps de `long long`.
+Con `JUCE_USE_SIMD=0`, sin cambiar el código ni sustituir Bungee, compilaron
+`MTControls_Standalone` y los cinco targets relevantes de test. La app abrió
+durante ocho segundos en Xvfb/Openbox y fue detenida de forma controlada. Es un
+smoke de arranque: las variables XDG temporales no aíslan por completo este
+JUCE en Linux; su consulta de sesión estándar no encontró un snapshot. Los
+tests de archivos sí usaron sus wrappers de almacenamiento temporal aislado.
+
+En el gate nativo pasaron `remote_session`, `remote_section_control` y
+`audio_engine_core`. `waveform_editing` y `section_automation` no quedaron
+verdes: comparación de repintado (delta de un canal), desplazamiento del toolbar
+de automatización, silueta de onda fuente desplazada y duración de la voz de
+guía pendiente. Los cuatro fallos se reprodujeron con `main` limpio `5a425c0`
+en un worktree separado, mismo SDK/configuración/escritorio, por lo que no son
+regresiones de este cambio. No se corrigieron esos contratos ajenos al alcance.
+
+Los casos nuevos nativos de identidad/validación y de indicador por tarjeta
+pasaron, al igual que los casos principales de Loop→Ir, preparación fría y
+mezcla en callbacks divididos. `PW_LIVE_CAPTURE_DIR` genera
+`remote-section-update-required.png` con la tarjeta real mostrando directamente
+`Actualiza servidor`; fue revisada visualmente en Linux. Esto acredita render
+de componentes y ejecución nativa Linux escalar, no compilación con SIMD,
+dispositivo iPad/Mac ni la causa del reporte del tester. La validación física
+Apple y la atribución a una versión concreta siguen pendientes.
+
 Las pruebas de red comprueban descubrimiento, conexión, comandos, confirmaciones,
 estado y reconexión entre procesos locales. Las de creación generan un `.pwproj`,
 lo registran en Biblioteca y lo reabren desde esa ruta. El test de exportación
@@ -144,6 +190,11 @@ que usa `Editar rango`, incluidos recorte, ampliación al final y traslado de am
 extremos; no requiere abrir el diálogo nativo del sistema para esa comprobación.
 `song_mix_export_timeline` verifica además
 los límites de fuente de copias movidas, recortadas y sin su sección original.
+
+El fixture de edición activa el botón mediante el handler MIDI real y espera,
+con un límite de un segundo, que JUCE procese su clic asíncrono antes de iniciar
+los gestos. Si no entra en edición, falla explícitamente; no fuerza el estado
+del botón ni omite las comprobaciones del punto de inserción y Fin.
 
 ## Validación en dispositivos físicos antes de publicar
 
@@ -508,3 +559,514 @@ c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_toggle_reque
 ```
 
 La regresión waveform_editing pasa explícitamente la preferencia de reducir movimiento al seguimiento de Secciones: prueba transición de 280 ms y centrado inmediato por separado, independientemente del ajuste de accesibilidad del runner. El runtime sigue consultando la preferencia del sistema.
+
+## Canción en blanco — nube Linux, 15/10/2026
+
+Base `origin/main` y `v2.3.3^{}`:
+`f31df144c84f4bd8f225f6c563495844531d9be8`. Trabajo en `feat/blank-song`,
+sin incorporar ramas Android experimentales ni utilizar el Mac.
+
+- Linux x86_64 / GCC 14, Debug, JUCE 8.0.12 (checkout de CI
+  `501c07674e1ad693085a7e7c398f205c2677f5da`) y Bungee 2.4.24 real.
+  El bootstrap verificó el archivo y la licencia por SHA-256. Se configuró
+  `JUCE_USE_SIMD=0`, por compatibilidad con GCC 14; no se usaron stubs.
+- `MTControls_Standalone` y los targets del gate compilaron. La app arrancó
+  en Xvfb. El entorno no tiene dispositivos físicos de audio/MIDI; los
+  asserts/avisos de ALSA y las capturas no acreditan escucha ni latencia real.
+- Gate de 13 suites: **12 aprobadas, 1 fallida**, en 50,92 s. Pasaron
+  `blank_song_transport`, `song_project_creation`, `song_import_wizard`,
+  `section_automation`, `remote_session`, `remote_section_control`,
+  `audio_engine_core`, `metronome_engine`, `pads_engine`,
+  `song_mix_export_timeline`, `song_mix_exporter` y `stem_mix_engine`.
+- `blank_song_transport` procesa bloques con el procesador, metrónomo,
+  PadsEngine y scheduler reales y cero lectores de stems. Cubre libre después
+  de una hora, pausa/reanudación/stop, cuatro combinaciones click/pad, parada
+  natural, loop, Ir por ID, rechazo de ID inválido, 3/4 y 6/8, ratio de tempo y
+  posición remota con duración abierta. El test de fase usa el click sintético
+  existente del motor, con su duración conocida, independiente del sample que
+  pueda estar instalado.
+- Persistencia prueba `.pwproj`, Biblioteca, setlist, codec anterior sin flag,
+  duración inválida y conservación independiente del pad al guardar click.
+  Reabre paquetes sin `audio/` ni `waveform.bin`. El wizard recorre la creación
+  real y verifica cambios de BPM con compases e IDs conservados.
+- La nueva comprobación de timeline sin bins pasó dentro de `waveform_editing`.
+  La suite sigue fallando en dos asserts anteriores: diferencia de un nivel
+  RGB en el repaint parcial de waveform y desplazamiento del ancla de la barra
+  de automatización al hacer scroll horizontal. Ambos se reprodujeron con el
+  `WaveformBar.cpp` original de `origin/main`, compilado contra el mismo harness
+  y headers en nube; no se relajaron esos asserts. Esto compara el renderer
+  original, no acredita una compilación completa de `main` en otras plataformas.
+- Se corrigió el aislamiento de `song_mix_exporter`: su AssetBootstrapManager
+  ahora se compila con la raíz temporal, igual que los otros tests de I/O.
+  El fixture de guía larga usa una ruta distinta al sample corto ya calentado.
+  No se cambiaron los motores de exportación ni de guía para hacer pasar tests.
+
+Logs locales: `build/blank-song-final-tests.log`,
+`build/blank-waveform-baseline-tests.log`, `build/blank-song-build6.log` y
+`build/blank-song-build7.log`. Quedan pendientes audio/MIDI físicos y
+compilación/QA de macOS, iOS, Android y Windows. No se ejecutaron Actions,
+push, PR, publicación ni despliegue.
+
+### Alcance simplificado posterior
+
+El diseño anterior queda recuperable en el commit `11f804d`. Se retiraron sus
+formularios especiales y sus herramientas de capturas; la entrega de capturas
+se canceló. La creación actual se prueba desde el botón `Crear canción en blanco`
+en Detalles, con transacción real `.pwproj`, bloqueo de reentrancia, valores
+vacíos por defecto, cancelación del destino y retorno al flujo de importación.
+El test verifica el botón sin solapamientos a 320, 390, 768 y 1200 puntos.
+
+El transporte mantiene el pad global habitual al pausar/detener y carga sin
+sobrescribir click/pad. Los tests de compases estructurados siguen comprobando
+compatibilidad con paquetes del prototipo; ya no describen una opción del wizard.
+La regla en segundos y el crecimiento están sólo analizados, no implementados.
+Verificación posterior: Standalone Linux y los 13 targets del gate compilaron
+con el mismo JUCE/Bungee real. Gate: **12/13 suites aprobadas**, 51,23 s. Pasaron
+la nueva creación directa, persistencia, transporte sin stems, automatización,
+remote, motores de audio/click/pads y exportadores. `waveform_editing` conserva
+los dos fallos de renderer ya contrastados con `main`; la nueva prueba sin bins
+sigue pasando. No se modificó `WaveformBar.cpp` en esta simplificación.
+
+Logs: `build/blank-song-simplified-build.log`,
+`build/blank-song-simplified-build2.log`,
+`build/blank-song-simplified-tests.log`. Esta verificación no prueba el crecimiento
+propuesto ni sustituye audio/MIDI físico y QA en dispositivos/plataformas reales.
+
+### Alcance final: libre, sin secciones ni contenido de onda
+
+La decisión final sustituye el prototipo estructurado: el botón de Detalles
+sigue guardando y cerrando el asistente, pero toda canción en blanco se reproduce
+libre hasta Detener. Se retiraron el cómputo de duración por compases, las
+secciones de respaldo y el contenido visual de la zona de onda. Los campos y
+arreglos históricos del prototipo siguen siendo legibles, pero no se ejecutan
+ni fijan duración. El análisis de timeline ampliable quedó fuera de esta versión
+y está recuperable en `a25bcd9`; no hay una fase de crecimiento pendiente.
+
+Verificación final en nube Linux, GCC 14 / JUCE 8.0.12 / Bungee 2.4.24 real,
+`JUCE_USE_SIMD=0`:
+
+- Standalone y todos los targets del gate compilaron; una segunda comprobación
+  de Ninja confirmó que los binarios correspondían al código actual.
+- Gate de 13 suites: **12 aprobadas, 1 fallida**, 50,66 s. Pasan
+  `song_project_creation`, `song_import_wizard`, `blank_song_transport`,
+  `section_automation`, `remote_session`, `remote_section_control`,
+  `audio_engine_core`, `metronome_engine`, `pads_engine`, `stem_mix_engine`,
+  `song_mix_export_timeline` y `song_mix_exporter`.
+- El test nuevo de UI pasa dentro de `waveform_editing`: área de onda uniforme,
+  sin hijos visibles, bins, regla, cursor, texto de compases ni acciones de
+  sección, a 320/390/768/1200 puntos; menú táctil y selector de escritorio
+  ocultos, callbacks antiguos bloqueados y restauración de la vista/secciones
+  normales al salir de la vacía. Usa componentes JUCE reales en Xvfb; no acredita
+  interacción táctil en dispositivos físicos ni compara la imagen de referencia.
+- El transporte real procesa sin stems ni secciones en el scheduler, mantiene
+  reproducción después de Seek a una hora, pausa/reanuda y Stop vuelve a cero.
+  Se verifican click/pad independientes, pad global durante pausa/stop, cambios
+  de pitch/tempo, métricas 3/4 y 6/8 sin duración, metadata histórica que no
+  activa partes ni Fin, y órdenes remotas ordinarias de tempo/tono/click/pads/
+  play-pause/stop. Estas últimas comprueban el adaptador y sus comandos; las
+  suites remotas existentes además ejercitan loopback y controles normales.
+- Persistencia reabre `.pwproj` sin `audio/` ni `waveform.bin`, registra en
+  Biblioteca/setlist y conserva la lectura de metadata histórica sin convertir
+  las referencias antiguas sin audio en canciones reproducibles.
+- `waveform_editing` sigue fallando sólo en los dos asserts conocidos: repaint
+  parcial con diferencia de un nivel RGB y ancla de automatización tras scroll.
+  Son los mismos fallos reproducidos antes con el renderer de `origin/main`;
+  la nueva prueba de canción vacía pasa. No se relajaron esos asserts.
+
+Logs: `build/blank-song-free-build3.log`,
+`build/blank-song-free-build-final.log`, `build/blank-song-free-tests.log`.
+No se usaron stubs para compilar o validar audio. No hay dispositivos físicos
+de audio/MIDI; quedan sin verificar escucha, latencia, tacto y builds de macOS,
+iOS, Android y Windows. Todo se ejecutó en nube: sin Mac, push, PR, Actions,
+publicación, despliegue ni incorporación de los experimentos Android excluidos.
+
+### Crear canción en blanco desde la tarjeta de Detalles
+
+Sobre `fb65c0c`, la tarjeta de información de metadatos pasa a ser la única
+acción `Crear canción en blanco`, con la descripción aprobada
+`Empieza sin pistas de audio y usa el clic y los pads.`. Se retira el botón
+separado y su reserva de espacio al pie. La tarjeta es un botón JUCE con nombre,
+descripción accesible y foco de teclado; se desplaza dentro del formulario.
+Se conserva la transacción de creación, los campos y Siguiente para importar
+audio. No cambian modelo, motores, canvas del reproductor ni control remoto.
+
+Verificación en nube Linux, Debug, JUCE 8.0.12 y Bungee 2.4.24 real con
+`JUCE_USE_SIMD=0`:
+
+- Compilaron `MTControls_Standalone` y los targets preparados para la
+  verificación. Arranque real del Standalone en Xvfb; crear desde la tarjeta
+  vuelve a Biblioteca y genera un `.pwproj` con sólo `manifest.json`, cero
+  stems, nombre y BPM introducidos. Se comprobó también su carga.
+- **3/3 suites aprobadas**, 11,24 s: `song_import_wizard`,
+  `song_project_creation` y `blank_song_transport`. El asistente cubre importación
+  normal y edición, WAV/FLAC/M4A según disponibilidad local, persistencia real,
+  cancelación, reentrancia y cierre después del guardado.
+- El test de creación en blanco comprueba una sola acción, el texto y la
+  descripción aprobados, tamaños 320/390/768/1200, posiciones separadas de los
+  campos y acceso por scroll con viewport corto en geometría móvil/escritorio.
+  Mantiene las comprobaciones de guardado/reapertura, valores vacíos por
+  defecto, cancelación de destino, navegación normal e invisibilidad al editar
+  o salir de Detalles.
+- Se revisaron renders nativos de la tarjeta/formulario a esos cuatro anchos
+  y la vista de Detalles del Standalone. Son verificaciones Linux de componentes
+  reales; no acreditan teclado, safe-area ni interacción táctil en dispositivos.
+
+Logs locales: `build/blank-song-metadata-card-build.log`,
+`build/blank-song-metadata-card-tests.log` y
+`build/metadata-card-app-smoke.log`. Renders de QA en
+`build/metadata-card-preview/`. No se repitió el gate completo de audio/UI de
+la etapa anterior: sus dos fallos conocidos de `waveform_editing` no se reparan
+ni se vuelven a acreditar con este cambio de formulario. No hubo audio/MIDI
+físico ni builds de macOS/iOS/Android/Windows. Sin Mac, push, PR, Actions,
+publicación ni despliegue.
+
+## Clic único al iniciar y reanudar (2026-10-15)
+
+Investigación sobre `d1a0881` de `feat/blank-song`, sólo en nube Linux. El
+`MetronomeEngine.cpp` previo era idéntico al de `origin/main` (`f31df144`);
+main también publicaba triggers manuales desde Play y al activar el clic.
+El defecto no dependía de crear una canción en blanco.
+
+Se confirmaron tres mecanismos con el motor/procesador reales:
+
+- Un trigger manual publicado tras el primer callback agregaba otro ataque
+  256 frames después (5,33 ms a 48 kHz). Reanudar/activar/repetir Play justo antes
+  del beat produjo dos ataques a 0 y 289 frames, separados 6,55 ms a 44,1 kHz,
+  tanto con stems como sin ellos. El ajuste de la captura woodblock a dos copias
+  de su propio sample tuvo residuo relativo menor que `7e-7`; no era sólo la cola.
+- Al coincidir un beat con el borde del callback se disparaba en el último
+  frame del bloque anterior y de nuevo en el primero del siguiente. En la
+  captura a 48 kHz ocurrió en los frames 23999/24000.
+- Con Play y el callback concurrentes se reprodujo un arranque doble 0/256 en
+  una de 500 iteraciones, incluso tras retirar los triggers manuales. El clic
+  podía consultar playing después de que ese callback ya hubiera tomado un
+  snapshot detenido, sin avanzar el reloj. También se cubre de forma
+  determinista la publicación parcial de Play entre el espejo y TransportClock.
+
+El clic usa ahora la grilla y el snapshot de playback del reloj. Renderiza el
+frame actual antes de avanzar, incluyendo subdivisiones exactamente en el
+inicio de un callback. La API de preview manual se conserva. No cambian samples,
+acentos, mezcla, ruteo, pad, persistencia ni interfaz.
+
+`metronome_engine` compara muestras entre render continuo y callbacks de
+64/256/257/1024 frames, a 1024/44100/48000 Hz, con negras, corcheas y
+semicorcheas independientes/combinadas. Comprueba un ataque por beat y mantiene
+las pruebas previas de publicación/reset/rangos. `metronome_transport` usa un
+WAV de un frame como click de medida cargado por el motor real; no es un stem
+silencioso ni reemplaza el motor. Comprueba arranque, pausa, reanudación,
+activación, Play repetido, Stop y reinicio rápido en canciones con/sin stems;
+Loop e Ir con destino a 100 frames del beat; 500 publicaciones concurrentes
+con cero arranques dobles; y publicación parcial determinista. El stress publica
+el mismo estado final que Play mediante el acceso de test para evitar reabrir
+un dispositivo host ausente en cada iteración. Los demás casos llaman a Play.
+
+Para capturar también la salida real con el woodblock incluido, ejecutar el
+binario `MTControlsSectionAutomationTests --click-only` mediante
+`tests/run_isolated_test.py`, con `DISPLAY` y
+`PLAYWORSHIP_CLICK_CAPTURE_DIR` apuntando a un directorio de salida. El binario
+`MTControlsMetronomeTests --capture <directorio>` conserva escenarios de
+caracterización del motor; sus peticiones manuales deliberadas son previews,
+no el comportamiento corregido de Play. Las capturas son PCM de la salida del
+procesador/motor, sin grabador de pantalla ni dispositivo físico.
+
+Resultado final: `MTControls_Standalone` compilado en Linux Debug con JUCE
+8.0.12, Bungee 2.4.24 real y `JUCE_USE_SIMD=0`. Gate dirigido **12/12**, 57,06 s:
+`remote_session`, `remote_section_control`, `song_project_creation`,
+`song_import_wizard`, `section_automation`, `blank_song_transport`,
+`metronome_transport`, `audio_engine_core`, `metronome_engine`, `pads_engine`,
+`bungee_processor` y `stem_mix_engine`. Se recompilaron los targets antes de
+la pasada final; una pasada preliminar no había encontrado el ejecutable de
+`bungee_processor`, que se compiló y pasó en el gate final.
+
+Después de corregir, las capturas con/sin stems tienen sólo el ataque esperado
+en el frame 290, y la captura de borde sólo en el 24000. El ajuste a una copia
+del woodblock tiene residuo relativo menor que `6e-7`. Arranque y reinicio desde
+Stop producen un ataque inicial; pausa y Stop producen silencio del clic.
+Capturas, análisis y logs locales en `/workspace/scratch/click-investigation/`.
+No se ejecutó la suite completa de UI ni se atribuyen a este cambio los fallos
+previos de `waveform_editing`. No se usó un dispositivo de audio/MIDI físico,
+ni se verificaron macOS, iOS, Android o Windows. Sin Mac, push, PR, Actions,
+publicación ni despliegue; se conserva la tarjeta aprobada de `d1a0881`.
+
+### Estabilidad de tempo y coste del clic
+
+Revisión ampliada autorizada por el usuario después del checkpoint `0a79567`:
+
+- En una canción en blanco a 126 BPM llevada a 94,5 BPM se estaba renderizando
+  el bus vacío de stems con Bungee y compensando esa latencia inexistente.
+  La captura de medida empezó en el frame 146230 (3,32 s tarde) y en 12 s
+  registró 20 ataques con seis pares próximos. Omitir sólo el render sin stems
+  produjo 19 ataques desde cero, sin pares próximos y con error máximo de un
+  frame. El cálculo de consumo fuente y el procesamiento de canciones con
+  stems se mantienen.
+- El consumo de tempo fraccionario puede volver a sincronizar sobre un beat
+  ya renderizado: se reprodujo con 44,1 kHz, bloques de 257, ratio 0,75,
+  source frame inicial 3737808, como ataques 256/257. La identidad del último
+  pulso musical deja sólo el ataque 256. Se limpia en resets/seeks/Loop/Ir.
+- La prueba nativa añade dos minutos a tempo reducido, el borde determinista
+  anterior y cambios en vivo 126 -> 252 -> 94,5 BPM con la rampa existente de
+  100 ms. Exige un ataque por beat, ausencia de deriva acumulada y continuidad
+  de la identidad musical. La prueba de rampas midió 32 ataques y error máximo
+  de 0,5 frames fuente.
+- Los samples woodblock guardan un segundo de PCM, pero el último frame no
+  cero de la negra está a 54,94 ms. La carga elimina sólo ceros finales,
+  conservando un cero para la interpolación. El renderer abandona el recorrido
+  de voces vacías al terminar la última, también con click sintético. Se prueba
+  equivalencia de PCM estéreo remuestreado 44,1 -> 48 kHz y samples totalmente
+  cero. Las cuatro capturas woodblock de referencia fueron **PCM bit a bit
+  idéntico** antes/después de optimizar colas y voces.
+
+Microbenchmark del motor, Linux x86_64, GCC 14, JUCE 8.0.12, Release,
+`JUCE_USE_SIMD=0`: tres pasadas por versión, cada una de 20.000 callbacks de
+256 frames a 44,1 kHz. Medianas de las medias por pasada:
+
+| Caso | Antes (us/bloque) | Después (us/bloque) | Reducción |
+| --- | ---: | ---: | ---: |
+| Woodblock, negras, 120 BPM | 4,287 | 1,235 | 71,2 % |
+| Woodblock, todas las subdivisiones, 300 BPM | 21,791 | 5,095 | 76,6 % |
+| Sintético, todas las subdivisiones, 300 BPM | 3,115 | 3,012 | 3,3 % |
+
+El p99 mediano del caso woodblock denso pasó de 74,923 a 14,112 us. Es una
+medida del componente en esta máquina, no del callback completo, un dispositivo
+móvil ni una garantía de deadline: el host compartido puede introducir pausas.
+
+El benchmark `MTControlsMetronomeTests --benchmark` admite una auditoría Linux/
+glibc mediante `tests/metronome_rt_audit.c`, que se compila como biblioteca de
+prueba con `cc -O2 -shared -fPIC ... -ldl -pthread` y se carga con `LD_PRELOAD`.
+Su autoprueba exige detectar malloc/free y mutex deliberados antes de medir.
+Observó **cero malloc/calloc/realloc, free y pthread_mutex_lock** en el hilo de
+render durante las pasadas. Sin ese preload el JSON indica `rt_audit:false`;
+los ceros no acreditan auditoría. El probe no se enlaza ni distribuye con la app.
+La inspección del hot path del clic no encontró I/O, creación de buffers,
+publicación de generaciones ni locks; la carga/recorte sigue fuera del callback.
+
+La orden repetida `setMetronomeEnabled(true)` también reprodujo ataques 256/257
+en el borde de tempo: borraba innecesariamente la identidad del beat. Ahora el
+setter es idempotente y el test repite el valor entre ambos callbacks. Un cambio
+real publica reset antes de enabled mediante release/acquire.
+
+Evidencia local adicional: `benchmark-summary-final.json`,
+`benchmark-release-{before,after}-*.log`, `tempo-*-tests.log` y
+`engine-optimized/` bajo `/workspace/scratch/click-investigation/`.
+
+Gate final ampliado tras todas las correcciones: **12/12**, 67,40 s, con los
+mismos targets anteriores recompilados y Bungee real. La cadencia de 120 s
+midió 189 ataques, cero pares próximos y error máximo de un frame; la orden
+repetida dejó sólo el ataque 256. También pasó `metronome_engine` en Release.
+La auditoría es del motor del clic, no del callback completo: el harness nativo
+renderiza PCM sin dispositivo host y conserva avisos/asserts Debug de dispositivo
+no configurado y FileLogger presentes en sus logs. No acredita audio físico,
+latencia de un driver ni todas las plataformas. Se mantiene la UI de `d1a0881`.
+
+## Colapso de onda en canción en blanco (2026-10-15)
+
+Base `9150e054` en `feat/blank-song`, trabajo sólo en nube. El editor reservaba
+la altura de WaveformBar aunque el componente estuviera oculto. Ahora la canción
+cargada con `blankSong` y sin stems reserva **cero** altura, incluyendo toolbar
+extra y altura expandida. Mixer/setlist empiezan debajo de TopBar; Pads conserva
+su drawer/popover y al salir del perfil teléfono recupera su visibilidad según
+el estado abierto/cerrado, sin recrear sus componentes.
+
+La transición actualiza inmediatamente el layout en carga local, snapshots
+remotos (también el mismo ID al recibir stems), retorno de Cliente y descarga
+local. No infiere el tipo por silencio, duración, bins vacíos ni errores de
+lectura. La altura expandida anterior se conserva para la próxima canción con
+audio. Agregar stems en la edición habitual retira el flag de blanco; la
+transacción real guarda/reabre el mismo `.pwproj` e ID con audio incluido.
+La tarjeta de creación aprobada y los motores de clic/pads/transporte de
+`9150e054` no se modifican.
+
+Verificación Linux Debug, JUCE 8.0.12, GCC 14, Bungee 2.4.24 real,
+`JUCE_USE_SIMD=0`:
+
+- `MTControls_Standalone` y targets de integración compilados. La nueva suite
+  `blank_song_layout` ejecuta el Editor completo y su loader real, con sólo los
+  transportes externos de autenticación sustituidos por las fixtures offline
+  existentes; no sustituye audio ni Bungee.
+- Se revisaron 18 snapshots nativos (audio/blanco/audio restaurado), con sus
+  bounds en `build/blank-waveform-collapse-qa/geometry.json`. Perfil teléfono
+  667x375: mixer 209 -> 317 puntos de alto; 844x390: 202 -> 326. Geometrías
+  tablet 1024x768 y 768x1024: +166 puntos; escritorio 1280x900 y 1440x900:
+  +192. Al volver a audio se recuperaron exactamente los bounds anteriores.
+- La pasada con capturas pasó 153 comprobaciones; sin exportar imágenes, 134.
+  Comprueba ocultación de selectores de onda/secciones, conservación de los
+  controles disponibles en cada perfil, Pads al volver de teléfono, reloj en
+  reproducción y revisión del transporte intactos durante resize, clic/pad/
+  volumen/tono/tempo conservados, audio normal sin autoplay, onda todavía sin
+  bins/en carga, referencia normal sin stems y cambio remoto con stems aun si
+  llega un flag de blanco atrasado.
+- `song_import_wizard` verifica la tarjeta original, convertir el borrador al
+  agregar un WAV real, persistencia/reapertura con un stem y el mismo ID. La
+  fixture usa FLAC real si no hay encoder instalado, para no descargar nada ni
+  inventar un conversor. Esa ruta pasó; además se probó con FFmpeg 7.1.5 real
+  del host, disponible sólo junto al ejecutable de test. Pasaron WAV -> FLAC
+  y AAC/ALAC M4A -> FLAC -> proyecto -> Biblioteca.
+- Gate principal **13/13**, 53,91 s: `local_demo_access`, `blank_song_layout`,
+  `remote_session`, `remote_section_control`, `song_project_creation`,
+  `song_import_wizard`, `blank_song_transport`, `metronome_transport`,
+  `metronome_engine`, `audio_engine_core`, `pads_engine`, `bungee_processor`
+  y `stem_mix_engine`. `section_automation` pasó aparte en 27,07 s: 14 suites
+  dirigidas aprobadas en total. El clic mantiene 500 inicios concurrentes sin
+  duplicados, 189 pulsos en 120 s sin pares próximos y sus rampas de tempo.
+- `waveform_editing` se ejecutó aparte: conserva sus **dos fallos previos**,
+  repaint con diferencia RGB de 1 y ancla flotante tras scroll horizontal;
+  no aparecieron fallos nuevos. No se afirma una suite global completamente
+  verde. Los avisos/asserts Debug de fonts/dispositivo/singletons del harness
+  permanecen visibles en los logs.
+
+El harness Linux invoca el mismo `layoutMainUi()` con perfil teléfono para
+comprobar esa rama y renderiza componentes JUCE reales; las otras capturas son
+geometrías de tablet/escritorio bajo Linux. No acredita safe-area, teclado,
+giros, touch ni GPU de iOS/Android reales. No hubo audio/MIDI físico, builds
+macOS/iOS/Android/Windows ni instalación en Mac. La nueva distribución no toca
+el DSP; cargar/editar audio conserva sus transacciones existentes, no promete
+mantener una reproducción activa durante el reemplazo de stems.
+
+Logs locales: `/workspace/scratch/blank-collapsed-final-build.log`,
+`blank-collapsed-layout-final.log`, `blank-collapse-final-tests.log`,
+`blank-collapse-gate-output.log`, `blank-conversion-offline-test.log` y
+`blank-collapse-waveform-regressions.log`. Capturas en
+`build/blank-waveform-collapse-qa/`. Sin push, PR, Actions, publicación o deploy.
+
+
+### BPM decimal en edicion y persistencia (2026-10-28)
+
+Compilacion macOS Release arm64 y cinco suites CTest verificadas:
+
+- `song_import_wizard`: teclado decimal, filtro real al escribir punto/coma,
+  validacion de texto completo y guardado/reapertura de BPM base fraccional.
+- `waveform_editing`: popover real de TopBar, Return/perdida de foco,
+  reapertura, hasta seis decimales, limites del motor, entradas mal formadas,
+  popover de metronomo y seleccion de regiones de tempo.
+- `song_project_creation`: proyecto real, biblioteca legacy, remoto, metadatos
+  de letras, descriptor Cloud, compatibilidad JSON/fingerprints enteros,
+  reparacion/rechazo de valores no finitos y overrides fraccionales cercanos.
+- `practice_panel_gestures`: texto/valor accesible decimal, espacio para la
+  etiqueta, pasos de un BPM conservando la fraccion y restauracion del original.
+- `metronome_engine`: regresion del clic y tempo fraccional existente.
+
+Resultado local: 5/5 suites correctas. Las pruebas de I/O usan raices temporales
+privadas; el handler de accesibilidad usa un peer nativo oculto. Esto no acredita
+el teclado del iPhone/Android fisico ni un despliegue Cloud. El backend necesita
+aceptar/persistir BPM sin `Math.floor` antes de subir canciones de BPM decimal.
+
+
+### Acordes contextuales nativos en iOS (2026-10-28)
+
+Cobertura de la implementación integrada:
+
+- `song_lyrics`: esquema 1 histórico, esquema 2 con acordes, anclas UTF-16,
+  límites, edición transaccional y conservación de documentos futuros opacos.
+- `chordpro`: importación/exportación de acordes dentro de palabras, secciones
+  y metadatos; rechazos explícitos sin modificar el documento de entrada.
+- `MTControlsNativeSongLyricsUITests`: caso final sobre el bridge UIKit real,
+  después de los casos históricos de tarjetas. Un cursor colapsado ofrece
+  Acorde sin Sección; una selección mantiene ambos y las acciones nativas
+  Copy/Paste. Coloca Am7 sobre la r de «esperanza» después de un emoji, conserva
+  texto/cursor/teclado, verifica dos símbolos cercanos sin solape, Undo/Redo de
+  metadata y texto, revisión obsoleta, composición IME y guardado/reapertura
+  con JSON canónico idéntico. El reporte se escribe en
+  `Documents/native-lyrics-ui-report.json` y stdout `NATIVE_LYRICS_UI_RESULT`.
+
+El harness usa los selectores de producción que ejecuta el menú contextual;
+comprueba la jerarquía de `UIMenu` y sus acciones, sin simular que ha pulsado el
+menú del sistema. Su guardado/reapertura valida el bridge y el documento; las
+pruebas de proyecto deben acreditar por separado el I/O de `.pwproj`. Un build,
+un reporte de simulador, una instalación y la revisión manual del iPhone físico
+son evidencias distintas.
+
+Resultados locales confirmados:
+
+- `song_lyrics`: 131 comprobaciones correctas; `chordpro`: 65 correctas.
+- `song_project_creation`: 1/1 correcta (2,77 s), con `.pwproj` y `songs.json`
+  reales; conserva IDs, símbolos y posiciones. Log de persistencia:
+  `/tmp/playworship-chords-persistence-test.log`.
+- Compilación Debug arm64 de `MTControlsNativeSongLyricsUITests`: correcta.
+  Pasada final en el simulador iPhone 16 dedicado «PlayWorship Native Chords QA», iOS
+  26.5: **176 comprobaciones correctas**, `success: true` y salida 0.
+  Logs: `/tmp/playworship-ios-chords-ui-build.log`,
+  `/tmp/playworship-ios-chords-ui-settled-build.log` y
+  `/tmp/playworship-ios-chords-ui-settled-run.log`. Reporte copiado:
+  `/tmp/playworship-ios-chords-ui-report.json`.
+- La captura `/tmp/playworship-ios-chords-settled-preview.png` procede del window UIKit
+  real del harness con ambos acordes; no es un diseño simulado. La pasada
+  incluye la creación correcta del PNG en Documents, tras 0,3 s de runloop
+  normal sin cambiar la selección. La revisión visual confirmó el cursor sobre
+  la letra, ambas anclas sin solape y la tarjeta limitada a su párrafo marcado.
+- Compilación firmada de la app para iPhone físico: correcta. Instalación y
+  arranque por Wi-Fi en iPhone 16 «Luchoelquesabemucho»: confirmados, con firma
+  y ausencia del dispositivo en el registro USB verificadas por el helper.
+  Logs: `/tmp/playworship-ios-chords-device-final-build.log` y
+  `/tmp/playworship-ios-chords-iphone-install.log`.
+
+El runtime del simulador emitió avisos de accesibilidad/lexicón; la primera
+pasada también mostró el assert Debug de `SharedResourcePointer` al cerrar,
+después del reporte correcto. No se ocultaron ni se cuentan como fallos de las
+comprobaciones. Queda pendiente la revisión táctil manual del menú, lupa,
+selección, edición y acordes en el iPhone físico instalado.
+
+
+### Menú automático y reordenación de tarjetas en iOS (2026-10-28)
+
+Las fixtures históricas de texto, tarjetas, selección y acordes se conservan.
+Los casos finales cambian para verificar el flujo vigente:
+
+- El menú al soltar la pulsación mantiene Acorde/Sección y sus acciones nativas;
+  no ofrece Crear sección, Intro/Solo/Instrumental vacíos ni cuadrícula de puntos.
+  Se conservan las guardas de revisión, escritura, IME, scroll y cancelación.
+- Un documento v3 heredado muestra C/Am7 de sólo lectura, sin círculos vacíos ni
+  controles para añadir filas o eliminar secciones. El fondo de letra no encierra
+  su tarjeta. Un verso que contiene ese bloque no puede moverse como unidad;
+  el rechazo y el Save dejan idéntico el JSON.
+- Cada tarjeta completa tiene su propia asa con `UIDragInteraction` habilitado.
+  Nuestra interacción no se instala sobre el `UITextView` ni sustituye el drag
+  de texto que pueda proporcionar UIKit. El contenedor raíz tiene un drop nativo.
+- El payload contiene sourceId/revision/editorToken y el tipo propio
+  `com.playworship.lyrics-card`. La sesión permite Move dentro de la app y se
+  restringe a ella. Otro token y una revisión obsoleta no se aceptan como drop.
+- Tres tarjetas con Unicode y acordes se mueven antes de otra y a EOF. Se comprueba
+  texto real, rangos UTF-16, símbolos/IDs/anclas, no-op sin Undo, Undo/Redo y
+  guardar/reabrir con el mismo JSON canónico.
+
+La fixture conduce los callbacks de producción con una sesión local de prueba y
+el selector real del movimiento. Comprueba interacciones UIKit instaladas y sus
+payloads, pero no sintetiza una secuencia táctil nativa de drag-and-drop. Esa
+convivencia con la lupa y la experiencia física deben verificarse por separado.
+
+Para inspección manual, `MTCONTROLS_NATIVE_LYRICS_MANUAL=1` deja el editor abierto
+sin checks, timeout ni quit. `MTCONTROLS_NATIVE_LYRICS_MANUAL_FIXTURE=reorder`
+abre tres tarjetas normales con letra/acordes; `mixed` carga una muestra v3 de
+compatibilidad. `simctl launch` recibe esas variables con prefijo `SIMCTL_CHILD_`.
+El log usa `NATIVE_LYRICS_MANUAL_READY` y no genera un reporte de éxito. Guardar
+sólo confirma el bridge de esa fixture, sin I/O de proyectos.
+
+Modelo portable: 201 comprobaciones correctas y persistencia real 2/2 correcta,
+con evidencia en `/tmp/playworship-card-reorder-tests.log`. Esto cubre también
+IDs con texto idéntico, acordes en el separador final, rechazos de destinos
+anidados y conservación de filas/celdas heredadas.
+
+Compilación Debug arm64 y ejecución UIKit de esta reordenación: **247
+comprobaciones correctas**, `success: true` y salida 0, en el simulador iPhone 16
+dedicado con iOS 26.5. Logs: `/tmp/playworship-lyrics-reorder-ui-final-build.log`
+y `/tmp/playworship-lyrics-reorder-ui-run.log`. Reporte copiado:
+`/tmp/playworship-lyrics-reorder-ui-report.json`.
+
+Las capturas reales `/tmp/playworship-lyrics-reorder-readonly-preview.png` y
+`/tmp/playworship-lyrics-reordered-preview.png` se guardaron después de 0,3 s de
+runloop normal. La inspección confirmó símbolos legacy sin puntos/controles,
+fondos separados, asas y orden final Verso/Puente/Coro con C/G/Am7 conservados.
+El runtime emitió avisos de accesibilidad/lexicón y el assert Debug de
+`SharedResourcePointer` al cerrar después del reporte, sin fallos en los checks.
+
+El modo manual `reorder` permitió intentar con CUA el arrastre del asa de Coro
+hacia arriba. No se observó un cambio de orden: la herramienta no mantuvo la
+pulsación de lift durante el arrastre. Ese intento no valida el gesto táctil real.
+
+La app firmada compiló, se instaló y arrancó correctamente por Wi-Fi en el
+iPhone 16 físico «Luchoelquesabemucho», con firma y ausencia de USB verificadas.
+Los objetos compilados son posteriores a las fuentes finales. Logs:
+`/tmp/playworship-lyrics-reorder-device-build.log` y
+`/tmp/playworship-lyrics-reorder-iphone-install.log`.
+La QA táctil del arrastre en el iPhone físico queda pendiente de la prueba del
+usuario. Los resultados anteriores de creación/celdas instrumentales no acreditan
+este flujo, cuya UI ya no ofrece esas operaciones.

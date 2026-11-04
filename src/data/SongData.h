@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "SongLyrics.h"
+#include "integrations/FreeShowModel.h"
 
 #include <array>
 #include <functional>
@@ -159,7 +161,7 @@ struct ImportedSongData {
   juce::String projectId;
   juce::String title;
   juce::String artist;
-  int bpm = 0;
+  double bpm = 0.0;
   juce::String key;
   juce::String timeSignature;
   juce::String fileType;
@@ -169,11 +171,61 @@ struct ImportedSongData {
   // almacenamiento legacy de la aplicación. No forma parte del manifiesto
   // interno del proyecto: es una referencia local de la biblioteca reciente.
   juce::String projectPath;
+  // Explicit opt-in: legacy metadata-only/missing-audio songs are never inferred
+  // to be playable blank songs. Blank playback is always open-ended.
+  bool blankSong = false;
+  int blankSongBars = 0; // Historical prototype metadata, ignored by playback.
+  bool blankClickEnabled = true;
+  bool blankPadEnabled = false;
   int64_t createdMs = 0;
   std::vector<ImportedStemData> stems;
   SongArrangementSnapshot arrangement;
   SongTempoMapSnapshot tempoMap;
+  // Optional lyric text and native UTF-16 section ranges, not playback sections.
+  std::optional<SongLyricsDocument> lyrics;
+  // Independent musical-time marks. Connection details are session-only.
+  playworship::lyrics::SongLyrics freeShowCues;
 };
+
+// The early desktop integration used "lyrics" before the native text editor
+// owned that key. Only its unambiguous version/marks shape is a cue payload;
+// a native document (including a future schema) must never be reinterpreted.
+inline bool isLegacyFreeShowCuesPayload(const juce::var &value) {
+  const auto *object = value.getDynamicObject();
+  return object != nullptr && !object->hasProperty("schemaVersion") &&
+         object->hasProperty("version") && object->hasProperty("marks");
+}
+
+inline bool hasSongFreeShowCuesPayload(const juce::var &container) {
+  const auto *object = container.getDynamicObject();
+  return object != nullptr &&
+         (object->hasProperty("freeShowCues") ||
+          isLegacyFreeShowCuesPayload(object->getProperty("lyrics")));
+}
+
+inline bool songFreeShowCuesFromContainer(
+    const juce::var &container, playworship::lyrics::SongLyrics &outCues,
+    juce::String *errorMessage = nullptr) {
+  const auto *object = container.getDynamicObject();
+  // Explicit canonical data always wins, including a validation failure.
+  if (object != nullptr && object->hasProperty("freeShowCues"))
+    return playworship::lyrics::fromVar(object->getProperty("freeShowCues"),
+                                       outCues, errorMessage);
+  if (object != nullptr && isLegacyFreeShowCuesPayload(object->getProperty("lyrics")))
+    return playworship::lyrics::fromVar(object->getProperty("lyrics"),
+                                       outCues, errorMessage);
+  if (object != nullptr && object->hasProperty("lyrics")) {
+    const auto value = object->getProperty("lyrics");
+    const auto *native = value.getDynamicObject();
+    if (!value.isVoid() && !value.isUndefined() &&
+        (native == nullptr || !native->hasProperty("schemaVersion"))) {
+      if (errorMessage != nullptr)
+        *errorMessage = "Unrecognized legacy lyric payload; previous data kept unchanged.";
+      return false;
+    }
+  }
+  return playworship::lyrics::fromVar({}, outCues, errorMessage);
+}
 
 extern const std::array<const char *, 19> kTrackCategories;
 extern const std::array<const char *, 14> kSongSectionSuggestions;
@@ -192,6 +244,7 @@ bool isKnownArrangementSectionName(const juce::String &name);
 juce::String standardArrangementPartColorForName(const juce::String &name);
 juce::String fallbackArrangementPartColorForName(const juce::String &name);
 juce::String arrangementPartDisplayLabelForName(const juce::String &name);
+bool isValidBlankSong(const ImportedSongData &song);
 double estimateSongLengthSeconds(const ImportedSongData &song);
 bool isProjectBackedSong(const ImportedSongData &song);
 juce::String projectIdentityForSong(const ImportedSongData &song);

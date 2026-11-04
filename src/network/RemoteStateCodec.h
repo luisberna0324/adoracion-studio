@@ -1,6 +1,7 @@
 #pragma once
 #include "../data/SongData.h"
 #include "../data/SongLibraryStore.h"
+#include <cmath>
 #include <map>
 
 namespace playworship::remote {
@@ -87,6 +88,8 @@ inline juce::var encodeSong(const ImportedSongData &song, bool includeArtwork = 
   o->setProperty("title", song.title); o->setProperty("artist", song.artist);
   o->setProperty("bpm", song.bpm); o->setProperty("key", song.key);
   o->setProperty("timeSignature", song.timeSignature);
+  o->setProperty("blankSong", song.blankSong);
+  o->setProperty("blankSongBars", song.blankSongBars);
   o->setProperty("createdMs", static_cast<juce::int64>(song.createdMs));
   juce::Array<juce::var> stems;
   for (const auto &stem : song.stems) {
@@ -114,8 +117,12 @@ inline ImportedSongData decodeSong(const juce::var &v) {
   ImportedSongData song;
   song.id = v.getProperty("id", {}).toString(); song.projectId = v.getProperty("projectId", {}).toString();
   song.title = v.getProperty("title", {}).toString(); song.artist = v.getProperty("artist", {}).toString();
-  song.bpm = static_cast<int>(v.getProperty("bpm", 120)); song.key = v.getProperty("key", {}).toString();
+  song.bpm = static_cast<double>(v.getProperty("bpm", 120.0));
+  if (!std::isfinite(song.bpm)) song.bpm = 120.0;
+  song.key = v.getProperty("key", {}).toString();
   song.timeSignature = v.getProperty("timeSignature", {}).toString();
+  song.blankSong = static_cast<bool>(v.getProperty("blankSong", false));
+  song.blankSongBars = static_cast<int>(v.getProperty("blankSongBars", 0));
   song.createdMs = static_cast<juce::int64>(v.getProperty("createdMs", juce::var(0)));
   const auto stems = v.getProperty("stems", {});
   if (const auto *array = stems.getArray()) for (const auto &s : *array) {
@@ -132,6 +139,7 @@ inline ImportedSongData decodeSong(const juce::var &v) {
   if (v.getProperty("arrangement", {}).isObject()) {
     auto *carrier = new juce::DynamicObject();
     carrier->setProperty("arrangement", v.getProperty("arrangement", {}));
+    if (song.blankSong) carrier->setProperty("blankSong", new juce::DynamicObject());
     bool changed = false;
     song.arrangement = SongLibraryStore::songDataFromVar(juce::var(carrier), changed).arrangement;
   }

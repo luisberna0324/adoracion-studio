@@ -4,10 +4,16 @@ title: Transport
 description: Control de transporte y arrange en MTControlsAudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, audio, transport, playback, arrange]
-timestamp: 2026-10-03T00:00:00Z
+timestamp: 2026-10-17T00:00:00Z
 ---
 
 # Transport API
+
+En escritorio, las marcas de [Letras / FreeShow](../integrations/FreeShow.md)
+se evalúan sobre los segmentos realmente renderizados y los seeks confirmados,
+con un scheduler independiente de las secciones. Ir/seek recuperan sólo el
+cue vigente en el destino y Loop abre otra pasada. Las órdenes vencidas se
+descartan fuera del audio thread; ninguna llamada de red entra al callback.
 
 La app standalone puede exponer este transporte mediante el
 [control remoto LAN](../integrations/RemoteControl.md). El servidor sigue
@@ -59,6 +65,15 @@ void stopSong();           // Detener y resetear
 bool unloadSong();         // Liberar stems y dejar el transporte vacío
 void toggleSongPlayPause(); // Toggle
 ```
+
+El metrónomo sigue la posición fuente del callback al iniciar o reanudar.
+Play no añade un golpe manual: desde cero suena el beat inicial; desde una
+pausa entre beats continúa la misma grilla. Activar el clic durante reproducción
+y los saltos/loops siguen la misma regla, sin agregar un ataque junto al beat.
+En una canción sin stems, el cambio de tempo conserva el cálculo existente de
+frames fuente, pero omite el render de un bus de stems vacío y su compensación
+de latencia. El clic vivo no espera a un time-stretcher que no tiene audio.
+Las canciones con stems conservan su procesamiento y alineación de latencia.
 
 `unloadSong()` suspende el callback, espera a que termine cualquier bloque en
 curso, libera las fuentes bajo `stemListLock` y reinicia transporte, arrange,
@@ -121,6 +136,13 @@ double getOriginalSongBpm() const noexcept;
 ```
 
 Cambia el tempo de reproducción sin alterar el pitch (time stretch).
+Los editores de BPM del reproductor y del mapa de tempo admiten punto o coma
+decimal y solicitan teclado decimal en movil. Los valores se validan completos:
+una entrada mal formada no aplica un prefijo numerico. La visualizacion elimina
+ceros finales y muestra hasta seis decimales; abrir el control no redondea a
+BPM enteros. Ensayo conserva y muestra tambien la fraccion al avanzar sus pasos
+de un BPM. Los limites del motor y su rampa de tempo no cambian.
+
 El BPM base del formulario de edicion corresponde al BPM original de la cancion.
 Al guardarlo, si el tempo de reproduccion persistido aun coincide con el BPM
 base anterior, se actualiza al nuevo BPM base. Un tempo personalizado se
@@ -342,6 +364,17 @@ El loop y `muteInstruments` de una sección son independientes: se puede
 silenciar la instrumentación y repetir esa misma sección al mismo tiempo. La
 guía y el click conservan su tratamiento normal de mute. Activar o desactivar
 Loop no modifica Mute; pulsar Mute conserva el loop activo y el salto pendiente.
+Armar un loop fuera de la sección no mueve el transporte: espera la llegada
+natural. Si ya está sonando otra sección en Loop, elegir Loop en un nuevo
+destino conserva el loop saliente, prepara los buffers y confirma la cola sólo
+cuando todos los stems están listos. Al próximo final válido de la sección
+saliente salta al destino, que queda en Loop. Preparando/En cola señala el
+destino; el indicador Loop permanece en la sección saliente hasta el cruce.
+Pulsar otra vez Loop en ese destino o limpiar el salto cancela el cambio y
+mantiene el loop saliente. Limpiar Loop apaga la repetición y cancela también
+ese cambio pendiente. Reemplazar un loop armado que aún no está sonando sigue
+sin solicitar salto.
+
 Ir conserva Loop mientras muestra Preparando. Cuando todos los destinos están
 residentes, confirma la cola, cancela Loop y salta al siguiente final válido
 sin desmutear el destino. Mute sólo cambia por una acción explícita de mute/desmute. Un cambio de Mute, Skip o metadatos que mantenga los mismos
@@ -560,14 +593,16 @@ una caja independiente alrededor. `PracticeTimelineRuler` calcula las marcas
 desde el mapa de tempo vigente, incluido el denominador de la métrica y cambios
 sin guardar. Los números mantienen al menos 72 puntos entre etiquetas y los
 pulsos aparecen cuando tienen al menos 10 puntos de separación. Al alejar el
-zoom se reduce la densidad automáticamente. Las subdivisiones de snap siguen
+zoom se reduce la densidad automáticamente; las marcas de compás visibles
+mantienen al menos 8 puntos también durante la revisión de sugerencias.
+Las subdivisiones de snap siguen
 disponibles para seek y edición sin llenar la regla de marcas adicionales.
 Los cursores de reproducción, salto pendiente y marca de inserción conservan
 su dibujo e interacción sobre esta referencia. Las indicaciones se superponen
 a la onda y no reservan altura adicional en la regla. En teléfono la regla
 está disponible en edición y permanece oculta en performance.
 
-En escritorio, `TimelineRulerStyle::drawTimelinePlayhead` dibuja el cursor con
+En escritorio, `drawTimelinePlayhead` de `TimelineRulerStyle.h` dibuja el cursor con
 una línea fina de `UITheme::textPrimary`, también en la onda y el minimapa. En
 la regla añade una pequeña punta y usa opacidad de 0.65 en reproducción y 0.25
 en pausa. Las sugerencias transitorias conservan sus marcas discontinuas de
@@ -576,6 +611,19 @@ cuadrícula, sin superponer las marcas de la regla habitual. Esta apariencia
 recupera el estilo existente de escritorio sin cambiar posición, seguimiento,
 seek ni comandos de transporte.
 El dibujo de iOS y Android conserva su implementación vigente.
+
+Letras de escritorio usa esa misma regla y solicita las marcas al mapa de tempo
+de `WaveformBar`. Ambas vistas comparten la línea fina y bandera del playhead
+mediante `TimelineRulerStyle`; el cambio es de dibujo, sin alterar posición ni
+comandos de transporte. El zoom/desplazamiento de Letras transforma píxeles a
+segundos absolutos antes de crear o arrastrar marcas. Ampliar la referencia de
+secciones no cambia sus límites ni duraciones musicales.
+La navegación con rueda comparte `TimelineNavigationGestures` con la onda:
+componente horizontal dominante desplaza, vertical amplía/aleja bajo el cursor.
+El pellizco conserva la transformación existente de Onda (`1 + amount`, entrada
+cero sin efecto). El intervalo visible mínimo compartido es 1/18 de la canción.
+Los modificadores no cambian el gesto y no se vuelve a invertir `isReversed`.
+Estos gestos no publican ediciones y se ignoran durante un arrastre temporal en Letras.
 
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la
@@ -740,7 +788,7 @@ processor.setSongArrangement(arrangement, true);
 processor.playSong();
 
 // Saltar a chorus
-processor.requestArrangementPartJump(2);
+processor.requestArrangementPartJumpById("chorus-2");
 ```
 
 ## Archivos relacionados
@@ -756,6 +804,14 @@ procesador local o al estado autoritativo del servidor. El cliente extrapola
 como máximo 250 ms entre mensajes de posición y congela al desconectar. Los
 comandos solo se aceptan tras recibir el snapshot inicial; no hay una segunda
 vista de transporte. Ver [Control remoto](../integrations/RemoteControl.md).
+
+Las acciones e indicadores de sección se resuelven por ID de ocurrencia, no
+por el índice de la metadata. El procesador conserva índices internos para el
+scheduler, devuelve aceptación booleana y rechaza antes de cambiar intenciones
+un ID ausente/duplicado, fuera del límite reproducible o de una revisión vieja.
+La UI traduce el ID confirmado a su propio orden; la compilación del runtime
+puede ordenar o filtrar partes sin dirigir Ir/Loop a otra tarjeta. Los métodos
+por índice del procesador conservan su uso interno y también devuelven aceptación.
 
 ### Transporte de indicaciones independientes
 
@@ -774,3 +830,41 @@ Un recibo de baja confirmado se procesa solo sin reproducción, carga, edición
 o sesión remota. Si la canción retirada está cargada, se usa
 `unloadActiveSongForLocalPurge` antes de borrar su entrada/archivos. No se fuerza
 Stop durante una actuación; el trabajo permanece pendiente por dispositivo.
+
+### Canciones en blanco
+
+`loadSongStems` acepta un `ImportedSongData*` opcional para una canción en
+blanco explícita y válida. Sólo ese caso permite una lista de rutas vacía;
+las importaciones normales siguen rechazando audio ausente. Reutiliza el mismo
+reemplazo, transición, `TransportClock`, mixer, metrónomo, PadsEngine y
+SectionScheduler. No hay transportes ni lectores de silencio adicionales.
+
+Las canciones en blanco siempre tienen duración/Fin cero (abierto). El reloj y
+el click avanzan normalmente, y Seek no se limita a cero. Play continúa, Pause
+conserva la posición y Stop vuelve a cero. No tienen un máximo artificial de
+compases/tiempo. Los valores `blankSongBars` de prototipos antiguos son metadata
+inerte, no duración. No se crean secciones de respaldo, ni se publican partes
+o cues en el scheduler; restaurar un arreglo histórico no lo activa. Ir, Loop
+y automatización de sección no encuentran destinos para una canción en blanco.
+Los setters de Inicio/Fin/Salida se ignoran para este tipo. Las canciones con
+audio conservan su duración, secciones, ventanas y scheduler habituales.
+
+Click y pad se manejan desde sus controles existentes. Cargar desde el motor
+no fuerza sus estados; el editor restaura los ajustes habituales de click y
+sigue la tonalidad con `PadsComponent::followSongKey`. El pad global conserva
+el mismo comportamiento ante Play/Pause/Stop que en canciones con audio; no hay
+un apagado especial para canciones en blanco. Usa packs locales o importados,
+sin solicitar un catálogo externo. El tono y el ratio de tempo existentes
+siguen disponibles sin añadir otro motor.
+
+La zona de WaveformBar queda vacía y sin controles; no se dibuja waveform,
+regla, cursor, progreso de compás ni tarjetas. El selector Onda/Secciones y las
+opciones de sección/ventana se ocultan en escritorio y en el menú táctil. Volver
+a una canción con audio restaura sus vistas habituales. Cargar una canción en
+blanco descarta la revisión transitoria de sugerencias e ignora sus resultados
+tardíos para que no puedan volver a abrir esa vista. El cliente remoto usa
+el mismo tipo explícito y extrapola posición abierta sin limitarla a cero.
+El servidor rechaza acciones de arreglo, ventana y mapa regional para la vacía;
+transport, tempo, tono y controles independientes de click/pad siguen siendo
+los ordinarios y autoritativos. La regla ampliable, secciones y Fin manual o
+automático para canciones en blanco están fuera del alcance de esta versión.

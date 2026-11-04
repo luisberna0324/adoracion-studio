@@ -12,6 +12,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -402,11 +403,14 @@ juce::var settingsToVar(const ProjectSongSettings &settings) {
   window->setProperty("fadeOutSec", settings.window.fadeOutSec);
   o->setProperty("window", window);
   o->setProperty("windowCustomized", settings.windowCustomized);
+  if (settings.blankPadEnabled.has_value())
+    o->setProperty("blankPadEnabled", *settings.blankPadEnabled);
   ImportedSongData arrangementCarrier;
   arrangementCarrier.arrangement = settings.arrangement;
   o->setProperty("arrangement", SongLibraryStore::songDataToVar(arrangementCarrier)
                                     .getDynamicObject()->getProperty("arrangement"));
   o->setProperty("arrangementCustomized", settings.arrangementCustomized);
+  o->setProperty("freeShowCues", playworship::lyrics::toVar(settings.freeShowCues));
   auto *guide = new juce::DynamicObject();
   guide->setProperty("enabled", settings.dynamicGuide.enabled);
   guide->setProperty("timing", static_cast<int>(settings.dynamicGuide.timing));
@@ -474,6 +478,7 @@ ProjectSongSettings settingsFromVar(const juce::var &value) {
   out.windowCustomized = static_cast<bool>(o->getProperty("windowCustomized"));
   if (o->hasProperty("arrangement")) {
     auto *songObj = new juce::DynamicObject(); songObj->setProperty("arrangement", o->getProperty("arrangement"));
+    if (o->hasProperty("blankPadEnabled")) songObj->setProperty("blankSong", new juce::DynamicObject());
     bool changed = false; out.arrangement = SongLibraryStore::songDataFromVar(juce::var(songObj), changed).arrangement;
   }
   out.arrangementCustomized = static_cast<bool>(o->getProperty("arrangementCustomized"));
@@ -484,6 +489,8 @@ ProjectSongSettings settingsFromVar(const juce::var &value) {
     out.dynamicGuide.languagePolicy = static_cast<DynamicGuideLanguagePolicy>(static_cast<int>(g->getProperty("languagePolicy")));
     out.dynamicGuide.guideChannelPolicy = static_cast<DynamicGuideChannelPolicy>(static_cast<int>(g->getProperty("channelPolicy")));
   }
+  if (o->hasProperty("blankPadEnabled"))
+    out.blankPadEnabled = static_cast<bool>(o->getProperty("blankPadEnabled"));
   out.dynamicGuideCustomized = static_cast<bool>(o->getProperty("dynamicGuideCustomized"));
   parseVirtualMix(o->getProperty("dynamicGuideMix"), out.dynamicGuideMix.volume, out.dynamicGuideMix.gain,
                   out.dynamicGuideMix.mute, out.dynamicGuideMix.solo, out.dynamicGuideMix.outputChannel,
@@ -513,6 +520,7 @@ ProjectSongSettings settingsFromLegacySetlistItem(
   settings.windowCustomized = item.windowCustomized;
   settings.arrangement = item.arrangement;
   settings.arrangementCustomized = item.arrangementCustomized;
+  settings.freeShowCues = song.freeShowCues;
   settings.dynamicGuide = item.dynamicGuide;
   settings.dynamicGuideCustomized = item.dynamicGuideCustomized;
   settings.dynamicGuideMix = item.dynamicGuideMix;
@@ -529,6 +537,10 @@ juce::File cachedSettingsFile(const juce::String &projectId) {
 
 bool writeCachedSettings(const juce::String &projectId,
                          const ProjectSongSettings &settings) {
+  playworship::lyrics::SongLyrics validated;
+  if (!playworship::lyrics::fromVar(playworship::lyrics::toVar(settings.freeShowCues),
+                                   validated))
+    return false;
   const auto target = cachedSettingsFile(projectId);
   if (target == juce::File{})
     return false;
@@ -556,8 +568,8 @@ bool readCachedSettings(const juce::String &projectId,
       static_cast<int>(root->getProperty("schemaVersion")) !=
           ProjectStore::kSchemaVersion)
     return false;
-  outSettings = settingsFromVar(root->getProperty("songSettings"));
-  return true;
+  return ProjectStore::deserializeSettings(root->getProperty("songSettings"),
+                                           outSettings);
 }
 
 bool copyZipEntry(juce::ZipFile &zip, const juce::String &name,
@@ -644,9 +656,26 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
     return false;
   }
   auto &song = document.song;
+  if (song.lyrics.has_value() && !isValidSongLyricsDocument(*song.lyrics)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("La letra o sus marcas de sección contienen datos no válidos.",
+                              "The lyrics or section labels contain invalid data.");
+    return false;
+  }
+  playworship::lyrics::SongLyrics validatedLyrics;
+  if (!playworship::lyrics::fromVar(playworship::lyrics::toVar(song.freeShowCues),
+                                   validatedLyrics, errorMessage) ||
+      !playworship::lyrics::fromVar(
+          playworship::lyrics::toVar(document.settings.freeShowCues), validatedLyrics,
+          errorMessage))
+    return false;
   if (song.id.trim().isEmpty()) song.id = juce::Uuid().toString();
   if (song.projectId.trim().isEmpty()) song.projectId = song.id.trim();
-  if (song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }
+  if (song.stems.empty() && !isValidBlankSong(song)) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }
+  if (song.blankSong && !isValidBlankSong(song)) {
+    if (errorMessage != nullptr) *errorMessage = "Invalid blank song.";
+    return false;
+  }
   const auto temp = destination.getSiblingFile(destination.getFileName() + ".tmp");
   if (temp.exists() && !temp.deleteFile()) {
     if (errorMessage != nullptr)
@@ -665,6 +694,7 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   stageDir.createDirectory();
   auto cleanupStage = [&stageDir] { if (stageDir.exists()) stageDir.deleteRecursively(); };
   ImportedSongData manifestSong = song;
+  manifestSong.freeShowCues = document.settings.freeShowCues;
   manifestSong.id = song.projectId;
   manifestSong.projectId.clear();
   manifestSong.projectPath.clear();
@@ -894,8 +924,26 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     if (errorMessage != nullptr) *errorMessage = "Unsupported project manifest."; return false;
   }
   bool changed = false;
+  ProjectSongSettings embeddedSettings;
+  playworship::lyrics::SongLyrics validatedLyrics;
+  const auto *songPayload = o->getProperty("song").getDynamicObject();
+  const auto settingsValue = o->hasProperty("songSettings")
+                                 ? o->getProperty("songSettings")
+                                 : juce::var(new juce::DynamicObject());
+  if ((songPayload != nullptr &&
+       !songFreeShowCuesFromContainer(o->getProperty("song"),
+                                      validatedLyrics, errorMessage)) ||
+      !deserializeSettings(settingsValue, embeddedSettings)) {
+    if (errorMessage != nullptr && errorMessage->isEmpty())
+      *errorMessage = "Project has invalid lyric marks or settings.";
+    return false;
+  }
   auto song = SongLibraryStore::songDataFromVar(o->getProperty("song"), changed);
-  if (song.id.isEmpty() || song.stems.empty()) {
+  // Older packages could store marks only with their song descriptor.
+  if (!hasSongFreeShowCuesPayload(o->getProperty("songSettings")))
+    embeddedSettings.freeShowCues = song.freeShowCues;
+  if (song.id.isEmpty() || (song.stems.empty() && !isValidBlankSong(song)) ||
+      (song.blankSong && !isValidBlankSong(song))) {
     SessionAuthLogger::write("[ProjectOpen] invalid song payload path=" +
                              file.getFullPathName() + " songId=" + song.id +
                              " stems=" +
@@ -948,11 +996,17 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                    true);
   ProjectSongSettings newerCachedSettings;
   const auto settingsCacheFile = cachedSettingsFile(song.id);
-  const bool hasNewerCachedSettings =
+  const bool shouldReadNewerCachedSettings =
       rebuildCache && settingsCacheFile.existsAsFile() &&
-      settingsCacheFile.getLastModificationTime() >
-          file.getLastModificationTime() &&
+      settingsCacheFile.getLastModificationTime() >=
+          file.getLastModificationTime();
+  const bool hasNewerCachedSettings = shouldReadNewerCachedSettings &&
       readCachedSettings(song.id, newerCachedSettings);
+  if (shouldReadNewerCachedSettings && !hasNewerCachedSettings) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Project has invalid cached settings; the cache was kept unchanged.";
+    return false;
+  }
   auto cache = getCacheDirectory(song.id);
   const bool shouldRebuildCache =
       rebuildCache && !cacheMatchesProject(file, cache);
@@ -1254,10 +1308,9 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                    L10n::tr("Restaurando configuración...",
                             "Restoring settings..."),
                    true);
-  const auto embeddedSettings =
-      settingsFromVar(o->getProperty("songSettings"));
   auto settings = hasNewerCachedSettings ? newerCachedSettings
                                          : embeddedSettings;
+  song.freeShowCues = settings.freeShowCues;
   if (rebuildCache) {
     settingsSaveQueue().remember(file, settings);
     writeCachedSettings(song.id, settings);
@@ -1441,6 +1494,142 @@ bool ProjectStore::convertLegacySongToProject(
   return true;
 }
 
+bool ProjectStore::lyricsUpdateSourceUnchanged(const PreparedProjectLyricsUpdate &prepared,
+                                               const bool verifyHash,
+                                               juce::String *errorMessage) {
+  const auto &file = prepared.file;
+  if (!file.existsAsFile() || file.getFileIdentifier() != prepared.baseFileIdentifier ||
+      file.getSize() != prepared.baseSize ||
+      file.getLastModificationTime().toMilliseconds() != prepared.baseModifiedMs ||
+      (verifyHash && juce::SHA256(file).toHexString() != prepared.baseSha256)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("El proyecto cambió mientras se guardaba la letra. Inténtalo de nuevo.",
+                              "The project changed while saving lyrics. Please retry.");
+    return false;
+  }
+  return true;
+}
+
+bool ProjectStore::prepareLyricsUpdate(const juce::File &file,
+                                       const std::optional<SongLyricsDocument> &lyrics,
+                                       PreparedProjectLyricsUpdate &outPrepared,
+                                       juce::String *errorMessage) {
+  if (errorMessage != nullptr) errorMessage->clear();
+  if (!file.existsAsFile() || (lyrics.has_value() && !isValidSongLyricsDocument(*lyrics))) {
+    if (errorMessage != nullptr) *errorMessage = "Invalid project or lyric document.";
+    return false;
+  }
+  PreparedProjectLyricsUpdate prepared;
+  prepared.file = file;
+  prepared.baseSize = file.getSize();
+  prepared.baseModifiedMs = file.getLastModificationTime().toMilliseconds();
+  prepared.baseFileIdentifier = file.getFileIdentifier();
+  prepared.baseSha256 = juce::SHA256(file).toHexString();
+  if (!lyricsUpdateSourceUnchanged(prepared, false, errorMessage)) return false;
+  prepared.stagedFile = file.getSiblingFile(file.getFileNameWithoutExtension() +
+      "_lyrics_stage_" + juce::Uuid().toString() + kFileExtension);
+  bool keepStagedFile = false;
+  struct StageCleanup {
+    juce::File file;
+    bool &keep;
+    ~StageCleanup() { if (!keep) file.deleteFile(); }
+  } cleanup{prepared.stagedFile, keepStagedFile};
+  const auto fail = [&](const juce::String &error) {
+    if (errorMessage != nullptr) *errorMessage = error;
+    return false;
+  };
+  juce::ZipFile original(file);
+  const int manifestIndex = original.getIndexOfFileName(kManifestName);
+  if (manifestIndex < 0) return fail("Project manifest is missing.");
+  std::unique_ptr<juce::InputStream> manifestStream(original.createStreamForEntry(manifestIndex));
+  if (!manifestStream) return fail("Couldn't read project manifest.");
+  auto root = juce::JSON::parse(manifestStream->readEntireStreamAsString());
+  auto *object = root.getDynamicObject();
+  auto *song = object != nullptr ? object->getProperty("song").getDynamicObject() : nullptr;
+  if (song == nullptr || static_cast<int>(object->getProperty("schemaVersion")) != kSchemaVersion)
+    return fail("Unsupported project manifest.");
+  prepared.projectId = song->getProperty("id").toString().trim();
+  if (prepared.projectId.isEmpty()) return fail("Project identity is missing.");
+  prepared.cacheWasCurrent = cacheMatchesProject(file, getCacheDirectory(prepared.projectId));
+  // A native content-only edit may be the first write to a package from the
+  // early FreeShow branch. Move its cues before replacing the shared old key.
+  playworship::lyrics::SongLyrics cues;
+  if (!songFreeShowCuesFromContainer(object->getProperty("song"), cues, errorMessage))
+    return false;
+  if (isLegacyFreeShowCuesPayload(song->getProperty("lyrics")))
+    song->setProperty("freeShowCues", playworship::lyrics::toVar(cues));
+  if (hasSongLyrics(lyrics)) song->setProperty("lyrics", songLyricsToVar(*lyrics));
+  else song->removeProperty("lyrics");
+  const auto manifest = juce::JSON::toString(root, true);
+  juce::ZipFile::Builder builder;
+  std::set<juce::String> entryNames;
+  for (int i = 0; i < original.getNumEntries(); ++i) {
+    const auto *entry = original.getEntry(i);
+    if (entry == nullptr || entry->isSymbolicLink || !entryNames.insert(entry->filename).second)
+      return fail("Project contains an ambiguous or unsupported ZIP entry.");
+    if (i == manifestIndex) {
+      builder.addEntry(new juce::MemoryInputStream(manifest.toRawUTF8(),
+                          static_cast<size_t>(manifest.getNumBytesAsUTF8()), true),
+                       0, entry->filename, entry->fileTime);
+    } else {
+      auto stream = original.createStreamForEntry(i);
+      if (stream == nullptr) return fail("Couldn't copy project resource: " + entry->filename);
+      // Copy the encoded asset bytes, never AudioFormatReader/FLAC conversion.
+      builder.addEntry(stream, 0, entry->filename, entry->fileTime);
+    }
+  }
+  {
+    juce::FileOutputStream output(prepared.stagedFile);
+    if (!output.openedOk() || !builder.writeToStream(output, nullptr))
+      return fail("Couldn't stage the lyric project update.");
+    output.flush();
+    if (output.getStatus().failed()) return fail("Couldn't finish the lyric project update.");
+  }
+  // Reopen the staged ZIP independently, without ProjectStore::open and its
+  // settings/cache effects. Check the full manifest and every opaque asset.
+  juce::ZipFile staged(prepared.stagedFile);
+  if (staged.getNumEntries() != original.getNumEntries()) return fail("Staged project is incomplete.");
+  for (int i = 0; i < original.getNumEntries(); ++i) {
+    const auto *entry = original.getEntry(i);
+    const auto index = staged.getIndexOfFileName(entry->filename);
+    const auto *copy = index >= 0 ? staged.getEntry(index) : nullptr;
+    std::unique_ptr<juce::InputStream> source(original.createStreamForEntry(i));
+    std::unique_ptr<juce::InputStream> destination(index >= 0 ? staged.createStreamForEntry(index) : nullptr);
+    if (copy == nullptr || !source || !destination) return fail("Couldn't verify staged project resources.");
+    if (i == manifestIndex) {
+      if (destination->readEntireStreamAsString() != manifest)
+        return fail("Staged lyric manifest does not match its draft.");
+    } else {
+      const auto originalHash = juce::SHA256(*source).toHexString();
+      const auto copyHash = juce::SHA256(*destination).toHexString();
+      if (copy->uncompressedSize != entry->uncompressedSize ||
+          source->getPosition() != entry->uncompressedSize ||
+          destination->getPosition() != entry->uncompressedSize || originalHash != copyHash)
+        return fail("Staged project resource changed: " + entry->filename);
+    }
+  }
+  if (!lyricsUpdateSourceUnchanged(prepared, true, errorMessage)) return false;
+  // The audio/settings source timestamp stays stable for this manifest-only
+  // write. Cloud compares SHA256 descriptors, not size/mtime (regression tested).
+  if (!prepared.stagedFile.setLastModificationTime(juce::Time(prepared.baseModifiedMs)))
+    return fail("Couldn't retain project settings precedence.");
+  outPrepared = std::move(prepared);
+  keepStagedFile = true;
+  return true;
+}
+
+void ProjectStore::refreshLyricsCacheMarker(const PreparedProjectLyricsUpdate &prepared) {
+  if (!prepared.cacheWasCurrent) return;
+  const auto cache = getCacheDirectory(prepared.projectId);
+  const auto marker = juce::JSON::parse(cache.getChildFile(kCacheSourceName));
+  const auto *object = marker.getDynamicObject();
+  if (object == nullptr || object->getProperty("projectPath").toString() != prepared.file.getFullPathName() ||
+      static_cast<juce::int64>(object->getProperty("projectSize")) != prepared.baseSize ||
+      static_cast<juce::int64>(object->getProperty("projectMtimeMs")) != prepared.baseModifiedMs) return;
+  if (!writeCacheProjectMarker(prepared.file, cache))
+    SessionAuthLogger::write("[Project] Couldn't refresh lyric-only source marker path=" + prepared.file.getFullPathName());
+}
+
 bool ProjectStore::updateSettings(const juce::File &file, const ProjectSongSettings &settings,
                                   juce::String *errorMessage) {
   // P1.2: the .pwproj no longer needs to be re-packed to persist
@@ -1481,6 +1670,12 @@ bool ProjectStore::writeCachedSettingsFromFile(const juce::File &file,
 
 void ProjectStore::scheduleSettingsSave(const juce::File &file,
                                         ProjectSongSettings settings) {
+  playworship::lyrics::SongLyrics validated;
+  if (!playworship::lyrics::fromVar(playworship::lyrics::toVar(settings.freeShowCues),
+                                   validated)) {
+    SessionAuthLogger::write("[Project] Invalid lyric marks; settings kept unchanged");
+    return;
+  }
   settingsSaveQueue().schedule(file, std::move(settings));
 }
 
@@ -1539,7 +1734,12 @@ bool ProjectStore::deserializeSettings(const juce::var &value,
                                        ProjectSongSettings &outSettings) {
   if (value.getDynamicObject() == nullptr)
     return false;
-  outSettings = settingsFromVar(value);
+  playworship::lyrics::SongLyrics lyrics;
+  if (!songFreeShowCuesFromContainer(value, lyrics))
+    return false;
+  auto decoded = settingsFromVar(value);
+  decoded.freeShowCues = std::move(lyrics);
+  outSettings = std::move(decoded);
   return true;
 }
 
@@ -1550,7 +1750,13 @@ bool ProjectStore::getCachedSettings(const juce::File &file,
   ProjectDocument document;
   if (!open(file, document, nullptr, false))
     return false;
-  outSettings = document.settings;
+  auto settings = document.settings;
+  const auto sidecar = cachedSettingsFile(projectIdentityForSong(document.song));
+  if (sidecar.existsAsFile() &&
+      sidecar.getLastModificationTime() >= file.getLastModificationTime() &&
+      !readCachedSettings(projectIdentityForSong(document.song), settings))
+    return false;
+  outSettings = std::move(settings);
   settingsSaveQueue().remember(file, outSettings);
   return true;
 }

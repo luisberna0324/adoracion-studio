@@ -143,7 +143,11 @@ posterior funciona sin red. Véanse pin y preparación alternativa en
 Al terminar, `Actions::reviewGuide(const GuideTranscript&)` entrega al editor
 el texto literal, las huellas y todos los tiempos hablados; no los reemplaza
 por nombres esperados. El editor prepara un `GuideAlignmentDraft` transitorio
-y muestra sus sugerencias sobre la onda existente. El cierre de configuración
+y muestra sus sugerencias sobre la onda existente.
+Al recibir el resultado, el editor vuelve a **Onda** y recalcula el layout para
+mantener accesibles Confirmar/Cancelar aunque el usuario haya abierto Letras
+durante el análisis. Las canciones en blanco no reciben propuestas de audio.
+El cierre de configuración
 se encola después de instalar esa revisión, con `SafePointer`, conservando el
 preview del editor. El callback puede destruir el panel sin un segundo cierre
 ni acceso posterior a sus miembros. La cancelación de UI prevalece incluso si
@@ -445,3 +449,26 @@ Logs locales: `/tmp/pw-guide-visual-final-build.log`,
 Esta evidencia corresponde al componente y sus callbacks reales. No acredita
 un recorrido manual completo por la ventana principal ni gestos en dispositivos
 móviles; la precisión de inicios musicales necesita click/stems de referencia.
+
+## Integración con main — 4 de noviembre de 2026
+
+La misma rama de detección incorpora `origin/main` en `83d1001` (44 commits
+posteriores a su base), conservando el trabajo Whisper y la revisión visual.
+El checkpoint `c386cae` y la rama local
+`codex/section-detection-before-main-20261104` conservan el estado anterior.
+
+La aplicación macOS arm64 Release compila con la versión canónica **2.4.0**.
+Se aprobaron 11 suites en 25,17 s: configuración, creación de canciones,
+letras de biblioteca, importación, waveform, runtime de audio, dominio de
+detección, servicio, panel, protocolo FreeShow y panel de letras.
+Los logs son `/tmp/pw-main-integration-final-build.log` y
+`/tmp/pw-main-integration-ctest.log`. La captura determinista del componente
+actualizado está en
+`output/section-detection-fixtures/guide-main-integration-preview.png`.
+
+Se observó la ventana principal **PlayWorship v2.4.0**, con los controles
+actuales Onda/Secciones/Letras, y después la revisión de guía durante
+reproducción: regla con estilo compartido, playhead claro con punta, marcas
+de sugerencias y Confirmar/Cancelar visibles. Esta observación de la app en
+uso no sustituye una validación musical contra click/stems ni acredita todas
+las secuencias manuales de cambio de vista durante inferencia.

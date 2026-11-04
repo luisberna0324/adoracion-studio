@@ -44,7 +44,9 @@ public:
 
   void setOnSongLoadRequested(SongLoadRequested cb);
   void setOnSongEditRequested(SongEditRequested cb);
+  void setOnSongLyricsRequested(SongEditRequested cb);
   void setOnSongConvertRequested(SongConvertRequested cb);
+  void setOnProjectExportRequested(SongEditRequested cb);
   void setOnProjectUploadRequested(ProjectUploadRequested cb);
   void setOnCloudDownloadRequested(CloudDownloadRequested cb);
   void setOnCloudSearchRequested(CloudSearchRequested cb);
@@ -82,6 +84,7 @@ public:
 
 private:
   friend struct TeamsWorkspaceTestAccess;
+  friend struct SongListLyricsTestAccess;
   std::shared_ptr<const LibraryState> remoteLibrary;
   enum class FilterChip {
     All = 0,
@@ -107,9 +110,10 @@ private:
     juce::String key;
     juce::String dominantCategory;
     juce::String artworkPath;
+    bool blankSong = false;
     double durationSeconds = 0.0;
     int64_t createdMs = 0;
-    int bpm = 0;
+    double bpm = 0.0;
     int stemCount = 0;
     int setlistUsageCount = 0;
     juce::Colour accentColour = UITheme::accent;
@@ -315,7 +319,9 @@ private:
 
   SongLoadRequested onSongLoadRequested;
   SongEditRequested onSongEditRequested;
+  SongEditRequested onSongLyricsRequested;
   SongConvertRequested onSongConvertRequested;
+  SongEditRequested onProjectExportRequested;
   ProjectUploadRequested onProjectUploadRequested;
   CloudDownloadRequested onCloudDownloadRequested;
   CloudSearchRequested onCloudSearchRequested;

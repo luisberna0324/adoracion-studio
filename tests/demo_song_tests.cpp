@@ -129,6 +129,54 @@ void expectPristine(const ImportedSongData &song) {
          "offline waveform is usable without recomputation");
 }
 
+void corruptPackagedWaveform(const juce::File &package) {
+  juce::TemporaryFile replacement(package);
+  {
+    juce::ZipFile archive(package);
+    expect(archive.getIndexOfFileName("waveform.bin") >= 0,
+           "demo fixture includes a packaged waveform");
+    juce::ZipFile::Builder builder;
+    for (int index = 0; index < archive.getNumEntries(); ++index) {
+      const auto *entry = archive.getEntry(index);
+      if (entry->filename == "waveform.bin") {
+        const char truncated = 0;
+        builder.addEntry(new juce::MemoryInputStream(&truncated, 1, true), 0,
+                         entry->filename, entry->fileTime);
+      } else {
+        auto *stream = archive.createStreamForEntry(index);
+        expect(stream != nullptr, "read demo entry for corruption fixture");
+        builder.addEntry(stream, 0, entry->filename, entry->fileTime);
+      }
+    }
+    juce::FileOutputStream output(replacement.getFile());
+    expect(output.openedOk() && builder.writeToStream(output, nullptr),
+           "write demo fixture with a damaged packaged waveform");
+  }
+  expect(replacement.overwriteTargetFileWithTemporary(),
+         "replace only the isolated demo package for the regression fixture");
+}
+
+void expectPrepared(const ImportedSongData &song,
+                    const ProjectDocument &document,
+                    const ProjectSongSettings &settings) {
+  expect(document.projectFile == juce::File(song.projectPath) &&
+             document.song.id == song.id &&
+             document.song.projectId == song.projectId &&
+             document.song.title == song.title && document.song.artist == song.artist &&
+             document.song.stems.size() == song.stems.size(),
+         "prepared document retains package, local identity and library metadata");
+  expect(ProjectStore::settingsJsonEqual(document.settings, settings),
+         "prepared document carries current settings for activation");
+  expect(document.waveformBins == SongLibraryStore::loadWaveformCache(song.id) &&
+             document.waveformBins.size() == 22400,
+         "prepared document carries the validated offline waveform");
+  for (size_t index = 0; index < song.stems.size(); ++index)
+    expect(document.song.stems[index].stemId == song.stems[index].stemId &&
+               document.song.stems[index].storedPath == song.stems[index].storedPath &&
+               juce::File(document.song.stems[index].storedPath).existsAsFile(),
+           "prepared document retains every installed stem identity and local resource");
+}
+
 void installationPreservesLibrary() {
   ImportedSongData personal;
   juce::String personalSetlist;
@@ -148,18 +196,23 @@ void installationPreservesLibrary() {
   const auto sessionBytes = SessionPersistence::getSnapshotFile().loadFileAsString();
 
   ImportedSongData first;
+  ProjectDocument firstDocument;
   double lastProgress = -1;
   const auto installed = DemoSongService::ensureInstalled(first,
       [&](double progress, const juce::String &) {
         expect(progress >= lastProgress && progress >= 0 && progress <= 1,
                "installation progress is monotonic");
         lastProgress = progress;
-      });
+      }, &firstDocument);
   expect(installed.wasOk() && near(lastProgress, 1), "install bundled demo offline");
   expect(juce::File(first.projectPath) == demoPackage() &&
              demoPackage().isAChildOf(SongLibraryStore::getRootDirectory()),
          "demo package is writable private storage");
   expectPristine(first);
+  ProjectSongSettings originalSettings;
+  expect(ProjectStore::getCachedSettings(first.projectId, originalSettings),
+         "load original settings for prepared installation output");
+  expectPrepared(first, firstDocument, originalSettings);
   expect(SongLibraryStore::loadSongs().size() == 2 &&
              setlistsJson() == originalSetlists &&
              personalSongJson(personal.id) == originalPersonal &&
@@ -199,14 +252,20 @@ void installationPreservesLibrary() {
   const auto packageTime = demoPackage().getLastModificationTime();
   const auto sidecar = ProjectStore::getCacheDirectory(first.projectId)
       .getChildFile("song-settings.json");
+  // Coarse timestamp resolution must not make the prepared document restore
+  // embedded defaults over the user's latest local mix.
+  expect(sidecar.setLastModificationTime(packageTime),
+         "prepare equal package and edited-settings timestamps");
   const auto sidecarBytes = sidecar.loadFileAsString();
   const auto sidecarTime = sidecar.getLastModificationTime();
 
   ImportedSongData repeated;
-  expect(DemoSongService::ensureInstalled(repeated).wasOk() &&
+  ProjectDocument repeatedDocument;
+  expect(DemoSongService::ensureInstalled(repeated, {}, &repeatedDocument).wasOk() &&
              repeated.id == first.id && repeated.title == renamed.title &&
              repeated.artist == renamed.artist && SongLibraryStore::loadSongs().size() == 2,
          "repeat installation returns existing metadata without duplicate entries");
+  expectPrepared(repeated, repeatedDocument, edited);
   ProjectSongSettings afterRepeat;
   expect(ProjectStore::getCachedSettings(first.projectId, afterRepeat) &&
              ProjectStore::settingsJsonEqual(edited, afterRepeat) &&
@@ -216,6 +275,38 @@ void installationPreservesLibrary() {
              demoPackage().getLastModificationTime() == packageTime &&
              setlistsJson() == editedSetlists,
          "repeat installation preserves edits, package and setlist memberships");
+
+  // The installed cache remains usable even if the packaged waveform later
+  // becomes corrupt. Reopening it through ProjectStore would delete this cache
+  // on validation failure, including the user's edited settings sidecar.
+  const auto audioFile = juce::File(repeated.stems.front().storedPath);
+  const auto audioHash = juce::SHA256(audioFile).toHexString();
+  corruptPackagedWaveform(demoPackage());
+  const auto damagedPackageHash = juce::SHA256(demoPackage()).toHexString();
+  ImportedSongData usableFromCache;
+  ProjectDocument cachedDocument;
+  expect(DemoSongService::ensureInstalled(usableFromCache, {}, &cachedDocument).wasOk(),
+         "damaged packaged waveform does not invalidate a usable installed demo");
+  expectPrepared(usableFromCache, cachedDocument, edited);
+  expect(juce::SHA256(audioFile).toHexString() == audioHash &&
+             sidecar.loadFileAsString() == sidecarBytes &&
+             sidecar.getLastModificationTime() == sidecarTime &&
+             juce::SHA256(demoPackage()).toHexString() == damagedPackageHash &&
+             setlistsJson() == editedSetlists,
+         "preparing the installed demo preserves audio, settings and damaged package");
+
+  expect(sidecar.deleteFile(), "simulate unavailable local demo settings");
+  ProjectDocument unavailableSettings = cachedDocument;
+  ImportedSongData unavailableSong = usableFromCache;
+  expect(DemoSongService::ensureInstalled(unavailableSong, {}, &unavailableSettings).failed() &&
+             unavailableSong.id.isEmpty() && unavailableSettings.song.id.isEmpty() &&
+             juce::SHA256(audioFile).toHexString() == audioHash &&
+             juce::SHA256(demoPackage()).toHexString() == damagedPackageHash &&
+             !sidecar.exists() && setlistsJson() == editedSetlists,
+         "missing local settings returns a recoverable error without resetting any files");
+  expect(sidecar.replaceWithText(sidecarBytes) &&
+             sidecar.setLastModificationTime(sidecarTime),
+         "restore isolated demo settings fixture");
 
   expect(SongLibraryStore::deleteSong(first.id), "delete demo through ordinary library flow");
   expect(demoPackage().existsAsFile() && SongLibraryStore::loadSongs().size() == 1,
@@ -236,7 +327,11 @@ void installationPreservesLibrary() {
   expect(missingStem.deleteFile(), "simulate removed cached stem");
   const auto databaseBeforeFailure = libraryJson();
   ImportedSongData failed = recovered;
-  expect(DemoSongService::ensureInstalled(failed).failed() && failed.id.isEmpty() &&
+  ProjectDocument failedDocument = firstDocument;
+  expect(DemoSongService::ensureInstalled(failed, {}, &failedDocument).failed() &&
+             failed.id.isEmpty() && failedDocument.song.id.isEmpty() &&
+             failedDocument.projectFile == juce::File{} &&
+             failedDocument.waveformBins.empty() && failedDocument.song.stems.empty() &&
              juce::JSON::toString(libraryJson()) == juce::JSON::toString(databaseBeforeFailure),
          "damaged existing demo returns error without resetting or duplicating it");
   expect(SongLibraryStore::deleteSong(recovered.id), "remove damaged demo fixture");

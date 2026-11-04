@@ -146,7 +146,8 @@ enum class SvgIconName {
   Pencil,
   Trash,
   VolumeX,
-  FileAudio
+  FileAudio,
+  FadersLinked
 };
 
 void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,

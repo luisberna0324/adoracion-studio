@@ -4,6 +4,9 @@
 #include "data/ProjectStore.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
+#include "data/Localization.h"
+#include "data/TempoValue.h"
+#include <limits>
 
 #include <atomic>
 #include <cmath>
@@ -88,6 +91,9 @@ struct SongListPanelTestAccess {
       button->onClick();
       expect(panel.libraryCreationWizard != nullptr && panel.songImportOverlay == nullptr,
              "Biblioteca + opens an internal page instead of an editor overlay");
+      // Native panels are injected separately in the async destination tests.
+      // This headless library-navigation fixture chooses the managed path.
+      panel.libraryCreationWizard->setProjectDestinationPrompt({});
       return *panel.libraryCreationWizard;
     }
     expect(false, "find Biblioteca + entry point");
@@ -135,6 +141,176 @@ struct SongListPanelTestAccess {
 struct SongImportWizardTestAccess {
   using Wizard = SongImportWizardComponent;
   using Step = Wizard::Step;
+
+  static void testDecimalTempoInput() {
+    double parsed = 123.0;
+    for (const auto *invalid : {"", ".", ",", "0", "-120.5", "120..5",
+                                "120,5.2", "120 5", "120bpm", "nan", "inf", "1e2"}) {
+      expect(!TempoValue::parseBpm(invalid, parsed) && parsed == 123.0,
+             "invalid BPM cannot silently apply a numeric prefix or change the output");
+    }
+    expect(TempoValue::formatBpm(120.0) == "120" &&
+               TempoValue::formatBpm(120.625) == "120.625" &&
+               TempoValue::formatBpm(120.123456) == "120.123456" &&
+               TempoValue::formatBpm(std::numeric_limits<double>::infinity()).isEmpty(),
+           "decimal BPM displays compactly without integer rounding or nonfinite text");
+
+    ImportedSongData initial;
+    initial.id = "decimal-tempo-editor";
+    initial.title = "Decimal BPM";
+    initial.bpm = 120.625;
+    Wizard wizard({}, Wizard::Mode::Edit, initial);
+    expect(wizard.bpmEditor.getText() == "120.625" &&
+               wizard.bpmEditor.getKeyboardType() == juce::TextInputTarget::decimalKeyboard,
+           "editing a song restores fractional BPM and requests a decimal keyboard");
+    for (const auto *input : {"120.5", "120,625", "20.125", "299,999999", "300"}) {
+      wizard.bpmEditor.clear();
+      wizard.bpmEditor.insertTextAtCaret(input);
+      expect(wizard.bpmEditor.getText() == input && wizard.validateStepMetadata(),
+             "typing the decimal separator and fractional digits survives the actual field filter");
+      expect(TempoValue::parseBpm(input, parsed) &&
+                 std::abs(wizard.buildSongData().bpm - parsed) < 1.0e-9,
+             "the song creation/edit draft keeps the entered fractional BPM");
+    }
+    wizard.bpmEditor.clear();
+    expect(wizard.validateStepMetadata() && wizard.buildSongData().bpm == 0.0,
+           "an empty original BPM still means unknown");
+  }
+
+  static void testBlankCreation(const AudioFixtures &files) {
+    int dismissed = 0, destinations = 0;
+    juce::String saveError;
+    const auto destination = files.directory.getChildFile("blank-wizard.pwproj");
+    Wizard wizard([&](ImportedSongData song, juce::String &error, const SongImportProgressFn &progress) {
+      const bool ok = SongProjectCreation::save(std::move(song), error, progress);
+      saveError = error; return ok;
+    }, Wizard::Mode::Import, {}, [&](const auto &, juce::File &out, auto &) {
+      ++destinations; out = destination; return true;
+    });
+    wizard.setEmbeddedLibraryPage(true);
+    wizard.setOnDismissRequested([&] { ++dismissed; });
+    fillMetadata(wizard);
+    auto &action = *wizard.blankSongMetadataAction;
+    expect(action.getButtonText() == L10n::tr("Crear canción en blanco", "Create blank song") &&
+        action.getDescription() == L10n::tr("Empieza sin pistas de audio y usa el clic y los pads.",
+                                           "Start without audio tracks and use the click and pads."),
+        "metadata card exposes the approved action and accessible description");
+    int actions = 0;
+    std::function<void(juce::Component &)> countActions = [&](auto &component) {
+      if (auto *button = dynamic_cast<juce::Button *>(&component))
+        if (button->getButtonText() == action.getButtonText()) ++actions;
+      for (auto *child : component.getChildren()) countActions(*child);
+    };
+    countActions(wizard);
+    expect(actions == 1, "Details contains exactly one blank-song action");
+    for (int width : {320, 390, 768, 1200}) {
+      wizard.setSize(width, 760);
+      expect(wizard.currentStep == Step::Metadata && action.isVisible() &&
+          action.getParentComponent() == &wizard.metadataContent &&
+          action.getBounds() == wizard.metadataCardBounds,
+          "blank action reuses the metadata card within the scrollable form");
+      expectInside(action, wizard.metadataContent.getLocalBounds(),
+                   "metadata card fits phone, tablet and desktop form");
+      expect(action.getHeight() >= 84 && action.getY() >= wizard.bpmEditor.getBottom(),
+          "metadata action reserves readable description and does not overlap fields");
+      // The card stays reachable when the available form is shorter (including
+      // a phone keyboard); it scrolls with metadata instead of adding a footer.
+      for (bool phone : {false, true}) {
+        wizard.phoneCreationLayout = phone;
+        wizard.layoutStepMetadata({17, 150, width - 34, 250});
+        wizard.metadataViewport.setViewPosition(0, action.getBottom() - 250);
+        expect(wizard.metadataViewport.getViewArea().contains(action.getBounds()),
+            "metadata action remains fully reachable in the short scrolled viewport");
+        expect(!action.getBounds().intersects(wizard.songTitleEditor.getBounds()) &&
+            !action.getBounds().intersects(wizard.keyBox.getBounds()),
+            "native phone and desktop form fields stay separate from the action");
+      }
+    }
+    wizard.setSize(390, 760); wizard.resized();
+    wizard.blankSongMetadataAction->onClick();
+    expect(wizard.isSubmissionInProgress() && wizard.currentStep == Step::Metadata &&
+        !wizard.blankSongMetadataAction->isEnabled() && !wizard.nextButton.isEnabled(),
+        "direct creation submits from metadata without audio, mapping or review screens");
+    wizard.blankSongMetadataAction->onClick(); wizard.nextButton.onClick();
+    expect(destinations == 1 && wizard.currentStep == Step::Metadata,
+           "pending blank save blocks duplicate submission and navigation");
+    pumpUntil([&] { return !wizard.isSubmissionInProgress(); }, "blank project transaction completes");
+    expect(dismissed == 1 && saveError.isEmpty(), "blank save closes after successful registration");
+    ProjectDocument reopened; juce::String error;
+    expect(ProjectStore::open(destination, reopened, &error) && reopened.song.blankSong &&
+        reopened.song.stems.empty() && reopened.waveformBins.empty() &&
+        reopened.song.blankSongBars == 0 && reopened.settings.arrangement.parts.empty() &&
+        reopened.settings.clickDynMix.metronomeEnabled == ClickDynMixSnapshot{}.metronomeEnabled &&
+        !reopened.settings.blankPadEnabled.has_value(),
+        "direct action saves an empty portable project with ordinary accompaniment defaults");
+
+    ImportedSongData draft;
+    int attempts = 0;
+    Wizard cancelled({}, Wizard::Mode::Import, {}, [&](const auto &song, auto &, auto &) {
+      draft = song; ++attempts; return false;
+    });
+    // A callback is required, but destination cancellation must never call it.
+    cancelled.onSubmit = [](auto, auto &, const auto &) { expect(false, "cancelled destination must not save"); return false; };
+    cancelled.setEmbeddedLibraryPage(true); cancelled.setSize(390, 760);
+    cancelled.songTitleEditor.clear(); cancelled.bpmEditor.clear();
+    cancelled.blankSongMetadataAction->onClick();
+    expect(attempts == 1 && draft.title.isNotEmpty() && draft.bpm == 120 &&
+        draft.blankSong && draft.stems.empty() && !cancelled.isSubmissionInProgress() &&
+        cancelled.blankSongMetadataAction->isEnabled() && cancelled.currentStep == Step::Metadata,
+        "blank defaults require no extra form and cancellation leaves the existing step usable");
+    cancelled.nextButton.onClick();
+    expect(!cancelled.blankSongMetadataAction->isVisible(),
+           "normal audio import hides the blank-song action outside Details");
+    expect(cancelled.currentStep == Step::Stems && !cancelled.creatingBlankSong &&
+        !cancelled.buildSongData().blankSong,
+        "normal Next still enters the ordinary audio-import flow after cancellation");
+
+    // Metadata editing keeps the saved arrangement; it does not reconstruct a
+    // special bar-count form or rescale existing seconds when BPM changes.
+    auto existing = reopened.song;
+    SongArrangementPartSnapshot part; part.id = "saved-section";
+    part.name = "Intro"; part.startSec = 0; part.endSec = 8;
+    existing.arrangement.parts.push_back(part);
+    Wizard editWizard({}, Wizard::Mode::Edit, existing);
+    editWizard.setSize(768, 760);
+    editWizard.bpmEditor.setText("60", juce::dontSendNotification);
+    const auto edited = editWizard.buildSongData();
+    expect(!editWizard.blankSongMetadataAction->isVisible() && edited.blankSong &&
+        edited.arrangement.parts.size() == 1 && edited.arrangement.parts.front().id == part.id &&
+        edited.arrangement.parts.front().endSec == 8,
+        "ordinary metadata editing preserves blank sections and their absolute times");
+    editWizard.handleSelectedStemFiles({files.first}, false);
+    const auto withAudio = editWizard.buildSongData();
+    expect(!withAudio.blankSong && withAudio.fileType == "FLAC" && withAudio.stems.size() == 1 &&
+               withAudio.id == existing.id && withAudio.title == existing.title,
+           "adding real audio to a blank converts the same song to ordinary audio metadata");
+    if (!AssetBootstrapManager::getAvailableEncoderBinary().existsAsFile()) {
+      // Keep the package roundtrip offline where no desktop encoder is
+      // installed. WAV metadata above is still covered; canonical FLAC can be
+      // embedded by the real project writer without a download or a stub.
+      const auto flac = files.directory.getChildFile("blank-added-audio.flac");
+      {
+        auto stream = std::unique_ptr<juce::OutputStream>(flac.createOutputStream());
+        juce::FlacAudioFormat format;
+        auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+            .withSampleRate(44100.0).withNumChannels(1).withBitsPerSample(16));
+        juce::AudioBuffer<float> audio(1, 256); audio.clear(); audio.setSample(0, 16, 0.25f);
+        expect(writer && writer->writeFromAudioSampleBuffer(audio, 0, 256), "real local FLAC fixture writes");
+      }
+      editWizard.handleSelectedStemFiles({flac}, true);
+    }
+    juce::String conversionError;
+    const bool convertedSaved = SongLibraryStore::updateSong(editWizard.buildSongData(), &conversionError);
+    if (!convertedSaved) std::cerr << "Blank -> audio save: " << conversionError << '\n';
+    expect(convertedSaved,
+           "the normal project-edit transaction saves added audio to the former blank");
+    ProjectDocument converted;
+    expect(ProjectStore::open(destination, converted, &conversionError) &&
+               converted.song.id == existing.id && !converted.song.blankSong &&
+               converted.song.stems.size() == 1 &&
+               juce::File(converted.song.stems.front().storedPath).existsAsFile(),
+           "reopening the same project restores ordinary audio metadata and embedded stem");
+  }
 
   static void fillMetadata(Wizard &wizard) {
     // No notifications: these tests must never trigger online autocomplete.
@@ -351,6 +527,100 @@ struct SongImportWizardTestAccess {
            "cancelled destination preserves the draft and restores actions");
   }
 
+  static void testAsyncDestinationChoice(const AudioFixtures &files) {
+    using Choice = std::function<void(juce::File, juce::String)>;
+    std::vector<Choice> choices;
+    std::atomic<int> saves{0};
+    int dismissed = 0;
+    const auto external = files.directory.getChildFile("external-drive");
+    expect(external.createDirectory().wasOk(), "prepare an external project location");
+    const auto destination = external.getChildFile("chosen-project.pwproj");
+    const auto source = files.directory.getChildFile("external-import.flac");
+    {
+      juce::FlacAudioFormat format;
+      std::unique_ptr<juce::OutputStream> stream = source.createOutputStream();
+      auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+          .withSampleRate(44100).withNumChannels(1).withBitsPerSample(16));
+      expect(writer != nullptr, "create a portable source without external codecs");
+      juce::AudioBuffer<float> audio(1, 1024);
+      audio.clear(); audio.setSample(0, 64, 0.25f);
+      expect(writer->writeFromAudioSampleBuffer(audio, 0, audio.getNumSamples()),
+             "write external import audio");
+    }
+    Wizard wizard([&](ImportedSongData song, juce::String &error,
+                      const SongImportProgressFn &progress) {
+      ++saves;
+      return SongProjectCreation::save(std::move(song), error, progress);
+    }, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
+    wizard.setProjectDestinationPrompt([&](const ImportedSongData &song, Choice choice) {
+      expect(song.title == "Wizard fixture" && song.stems.size() == 1,
+             "location picker receives the complete import draft");
+      choices.push_back(std::move(choice));
+    });
+    wizard.setOnDismissRequested([&] { ++dismissed; });
+    fillMetadata(wizard);
+    wizard.handleSelectedStemFiles({source}, false);
+    wizard.changeStep(Step::Review);
+    wizard.submitSong();
+    wizard.submitSong(); wizard.closeDialog();
+    expect(choices.size() == 1 && wizard.isSubmissionInProgress() && saves == 0 && dismissed == 0,
+           "waiting for a native location rejects duplicate save and dismissal");
+    choices.front()({}, {});
+    pumpUntil([&] { return !wizard.isSubmissionInProgress(); }, "cancelled picker releases submission");
+    expect(saves == 0 && dismissed == 0 && wizard.stems.size() == 1 &&
+               wizard.songTitleEditor.getText() == "Wizard fixture" && wizard.submitButton.isEnabled(),
+           "location cancellation keeps the editable draft without creating a project");
+    wizard.submitSong();
+    expect(choices.size() == 2 && wizard.isSubmissionInProgress(),
+           "the preserved draft can request another location");
+    choices.front()(destination, {});
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    expect(saves == 0 && !destination.existsAsFile() && wizard.isSubmissionInProgress(),
+           "a stale cancelled picker cannot save during a newer request");
+    choices.back()(destination, {});
+    choices.back()(destination, {});
+    pumpUntil([&] { return dismissed == 1 && !wizard.isSubmissionInProgress(); },
+              "chosen external location is saved and registered");
+    expect(saves == 1 && destination.existsAsFile() && source.existsAsFile(),
+           "the picker saves exactly once while preserving the source audio");
+    const auto library = SongLibraryStore::loadSongs();
+    const auto saved = std::find_if(library.begin(), library.end(), [&](const auto &song) {
+      return song.projectPath == destination.getFullPathName();
+    });
+    expect(saved != library.end() && !destination.isAChildOf(SongLibraryStore::getRootDirectory()),
+           "Biblioteca registers the selected external package rather than an internal replacement");
+    ProjectDocument reopened; juce::String error;
+    expect(ProjectStore::open(destination, reopened, &error) && reopened.song.stems.size() == 1,
+           "the external package reopens with its embedded audio");
+    juce::AudioFormatManager formats; formats.registerBasicFormats();
+    const auto reader = std::unique_ptr<juce::AudioFormatReader>(formats.createReaderFor(
+        juce::File(reopened.song.stems.front().storedPath)));
+    expect(reader != nullptr && reader->lengthInSamples == 1024,
+           "a copied project contains decodable audio without its original source path");
+
+    Choice afterDestruction;
+    {
+      auto abandoned = std::make_unique<Wizard>(
+          [](ImportedSongData, juce::String &, const SongImportProgressFn &) {
+            expect(false, "a picker must not save after the editor is destroyed"); return false;
+          }, Wizard::Mode::Import, ImportedSongData{}, SongProjectCreation::resolveDestination);
+      abandoned->setProjectDestinationPrompt([&](const ImportedSongData &, Choice choice) {
+        afterDestruction = std::move(choice);
+      });
+      fillMetadata(*abandoned);
+      abandoned->handleSelectedStemFiles({source}, false);
+      abandoned->changeStep(Step::Review);
+      abandoned->submitSong();
+    }
+    expect(static_cast<bool>(afterDestruction), "capture the pending picker completion");
+    afterDestruction(external.getChildFile("abandoned.pwproj"), {});
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    expect(!external.getChildFile("abandoned.pwproj").existsAsFile(),
+           "a late native picker completion leaves files untouched after destruction");
+    expect(SongLibraryStore::deleteSong(saved->id),
+           "remove the external test registration before the independent creation fixtures");
+  }
+
   static void testAsyncGuardAndSuccess(const AudioFixtures &files) {
     std::atomic<int> calls{0};
     std::atomic<bool> savedOnUi{true};
@@ -554,13 +824,15 @@ struct SongImportWizardTestAccess {
       pumpUntil([&] { return dismissed == 1 && !wizard.isSubmissionInProgress(); },
                 "portable edit completes and closes the wizard");
       expect(saveError.isEmpty(), "portable edit reports no persistence error");
+      double expectedBpm = 0.0;
+      expect(TempoValue::parseBpm(bpm, expectedBpm), "parse the edited decimal fixture BPM");
       const auto library = SongLibraryStore::loadSongs();
       expect(library.size() == 1 && library.front().id == songId &&
                  library.front().title == title &&
-                 library.front().bpm == bpm.getIntValue() &&
+                 library.front().bpm == expectedBpm &&
                  library.front().tempoMap.regions.size() == 1 &&
                  std::abs(library.front().tempoMap.regions.front().bpm -
-                          bpm.getIntValue()) < 0.01,
+                          expectedBpm) < 0.01,
              "edited metadata persists under the same library identity");
       const auto artwork = juce::ImageFileFormat::loadFrom(
           juce::File(library.front().artworkPath));
@@ -575,7 +847,7 @@ struct SongImportWizardTestAccess {
       const auto packagedArtwork = juce::ImageFileFormat::loadFrom(
           juce::File(reopened.song.artworkPath));
       expect(reopened.song.title == title &&
-                 reopened.song.bpm == bpm.getIntValue() &&
+                 reopened.song.bpm == expectedBpm &&
                  packagedArtwork.isValid() &&
                  packagedArtwork.getPixelAt(4, 4) == artwork.getPixelAt(4, 4),
              "portable manifest and embedded artwork match the library");
@@ -584,14 +856,14 @@ struct SongImportWizardTestAccess {
                "full edit persists the mapped stem name inside the project");
     };
 
-    edit(firstCover, "Edited once", "132", true);
+    edit(firstCover, "Edited once", "132.375", true);
     ProjectSongSettings settings;
     expect(ProjectStore::getCachedSettings(project, settings) &&
-               settings.tempoBpm == 132.0,
+               settings.tempoBpm == 132.375,
            "changing the original BPM updates playback tempo when it was unchanged");
-    edit(secondCover, "Edited twice", "144", false);
+    edit(secondCover, "Edited twice", "144,625", false);
     expect(ProjectStore::getCachedSettings(project, settings) &&
-               settings.tempoBpm == 144.0,
+               settings.tempoBpm == 144.625,
            "full edit also preserves the new BPM in project settings");
   }
 
@@ -882,11 +1154,13 @@ int main() {
     detailRejected = detail.tracks.empty() && error.type != SecuenciasError::Type::None;
   });
   expect(searchRejected && detailRejected, "retired catalog cannot return remote metadata");
+  SongImportWizardTestAccess::testDecimalTempoInput();
   AudioFixtures fixtures;
   SongImportWizardTestAccess::testStepLayouts(fixtures);
   SongImportWizardTestAccess::testDesktopEditLayout();
   SongImportWizardTestAccess::testDraftNavigation(fixtures);
   SongImportWizardTestAccess::testCancelledDestination(fixtures);
+  SongImportWizardTestAccess::testAsyncDestinationChoice(fixtures);
   SongImportWizardTestAccess::testAsyncGuardAndSuccess(fixtures);
   SongImportWizardTestAccess::testDesktopCreationRoundtrip(fixtures);
   SongImportWizardTestAccess::testProjectEditingRoundtrip(fixtures);
@@ -894,5 +1168,6 @@ int main() {
   SongImportWizardTestAccess::testLegacyMetadataEditing(fixtures);
   SongImportWizardTestAccess::testLoadedSongEditNotification();
   SongImportWizardTestAccess::testM4aCreation(fixtures);
+  SongImportWizardTestAccess::testBlankCreation(fixtures);
   std::cout << "Song creation wizard: all checks passed\n";
 }
