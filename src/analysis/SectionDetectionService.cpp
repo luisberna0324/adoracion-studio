@@ -165,6 +165,211 @@ bool renderMix(std::vector<AudioSource> &sources, double duration, double rate,
   }
   return true;
 }
+
+constexpr int guideCacheSchema = 1;
+constexpr juce::int64 maximumGuideCacheBytes = 8 * 1024 * 1024;
+
+// A bounded-memory content fingerprint, with cancellation between reads. The
+// domain marker fixes both the block size and the chunk-digest construction.
+bool contentFingerprint(const juce::File &file, const CancellationCheck &cancelled,
+                        juce::String &fingerprint, juce::String &error) {
+  auto stream = file.createInputStream();
+  if (!stream || stream->getTotalLength() <= 0) {
+    error = "No se puede leer el archivo: " + file.getFileName(); return false;
+  }
+  juce::MemoryOutputStream chunks;
+  chunks.writeString("content-chunk-sha256-1:1048576");
+  juce::HeapBlock<char> block(1024 * 1024);
+  while (!stream->isExhausted()) {
+    if (cancelled()) return false;
+    const auto count = stream->read(block.getData(), 1024 * 1024);
+    if (count <= 0) { error = "Error leyendo el archivo: " + file.getFileName(); return false; }
+    chunks.writeString(juce::SHA256(block.getData(), size_t(count)).toHexString());
+  }
+  chunks.writeInt64(stream->getPosition());
+  fingerprint = juce::SHA256(chunks.getData(), chunks.getDataSize()).toHexString();
+  return true;
+}
+
+bool validGuideTranscript(const GuideTranscript &transcript, double offset,
+                          double duration, juce::String &error) {
+  if (!std::isfinite(transcript.durationSeconds) ||
+      std::abs(transcript.durationSeconds - duration) > 0.05 ||
+      transcript.segments.size() > 65536) {
+    error = juce::String::fromUTF8("La transcripción devolvió una duración o cantidad de frases inválida."); return false;
+  }
+  double previousEnd = offset;
+  size_t textBytes = 0;
+  for (const auto &segment : transcript.segments) {
+    textBytes += size_t(segment.text.getNumBytesAsUTF8());
+    if (!std::isfinite(segment.startSeconds) || !std::isfinite(segment.endSeconds) ||
+        segment.startSeconds < offset - 0.000001 || segment.startSeconds < previousEnd - 0.000001 ||
+        segment.endSeconds <= segment.startSeconds || segment.endSeconds > duration + 0.000001 ||
+        segment.text.trim().isEmpty() || segment.text.length() > 16384 || textBytes > 4 * 1024 * 1024) {
+      error = juce::String::fromUTF8("La transcripción contiene frases o tiempos inválidos."); return false;
+    }
+    previousEnd = segment.endSeconds;
+  }
+  return true;
+}
+
+juce::var guideTranscriptToVar(const GuideTranscript &transcript, double offset) {
+  auto value = juce::var(new juce::DynamicObject());
+  auto &object = *value.getDynamicObject();
+  object.setProperty("schemaVersion", guideCacheSchema);
+  object.setProperty("provider", transcript.provider);
+  object.setProperty("providerVersion", transcript.providerVersion);
+  object.setProperty("modelFingerprint", transcript.modelFingerprint);
+  object.setProperty("audioFingerprint", transcript.audioFingerprint);
+  object.setProperty("language", transcript.language);
+  object.setProperty("offsetSeconds", offset);
+  object.setProperty("durationSeconds", transcript.durationSeconds);
+  juce::Array<juce::var> segments;
+  for (const auto &segment : transcript.segments) {
+    auto item = juce::var(new juce::DynamicObject());
+    item.getDynamicObject()->setProperty("startSeconds", segment.startSeconds);
+    item.getDynamicObject()->setProperty("endSeconds", segment.endSeconds);
+    item.getDynamicObject()->setProperty("text", segment.text);
+    segments.add(std::move(item));
+  }
+  object.setProperty("segments", std::move(segments));
+  return value;
+}
+
+bool readGuideCache(const juce::File &file, const GuideTranscript &identity,
+                    double offset, GuideTranscript &transcript) {
+  if (!file.existsAsFile() || file.getSize() <= 0 || file.getSize() >= maximumGuideCacheBytes) return false;
+  const auto value = juce::JSON::parse(file);
+  const auto *object = value.getDynamicObject();
+  const auto numeric = [](const juce::var &v) { return v.isInt() || v.isInt64() || v.isDouble(); };
+  if (!object || !object->getProperty("schemaVersion").isInt() ||
+      int(object->getProperty("schemaVersion")) != guideCacheSchema ||
+      object->getProperty("provider").toString() != identity.provider ||
+      object->getProperty("providerVersion").toString() != identity.providerVersion ||
+      object->getProperty("modelFingerprint").toString() != identity.modelFingerprint ||
+      object->getProperty("audioFingerprint").toString() != identity.audioFingerprint ||
+      object->getProperty("language").toString() != identity.language ||
+      !numeric(object->getProperty("offsetSeconds")) ||
+      !std::isfinite(double(object->getProperty("offsetSeconds"))) ||
+      std::abs(double(object->getProperty("offsetSeconds")) - offset) > 0.000001 ||
+      !numeric(object->getProperty("durationSeconds")) ||
+      !std::isfinite(double(object->getProperty("durationSeconds"))) ||
+      std::abs(double(object->getProperty("durationSeconds")) - identity.durationSeconds) > 0.000001) return false;
+  const auto *segments = object->getProperty("segments").getArray();
+  if (!segments || segments->size() > 65536) return false;
+  transcript = identity;
+  for (const auto &item : *segments) {
+    const auto *segment = item.getDynamicObject();
+    if (!segment || !numeric(segment->getProperty("startSeconds")) ||
+        !numeric(segment->getProperty("endSeconds")) || !segment->getProperty("text").isString()) return false;
+    transcript.segments.push_back({double(segment->getProperty("startSeconds")),
+                                  double(segment->getProperty("endSeconds")), segment->getProperty("text").toString()});
+  }
+  juce::String ignored;
+  return validGuideTranscript(transcript, offset, identity.durationSeconds, ignored);
+}
+
+void writeGuideCache(const juce::File &file, const GuideTranscript &transcript,
+                     double offset, const CancellationCheck &cancelled) {
+  if (cancelled() || !file.getParentDirectory().createDirectory()) return;
+  const auto json = juce::JSON::toString(guideTranscriptToVar(transcript, offset));
+  if (json.getNumBytesAsUTF8() >= maximumGuideCacheBytes) return;
+  juce::TemporaryFile temporary(file);
+  if (temporary.getFile().replaceWithText(json) && !cancelled())
+    temporary.overwriteTargetFileWithTemporary();
+  auto files = file.getParentDirectory().findChildFiles(juce::File::findFiles, false, "*.json");
+  std::sort(files.begin(), files.end(), [](const auto &a, const auto &b) { return a.getLastModificationTime() < b.getLastModificationTime(); });
+  while (files.size() > 64) { files.getReference(0).deleteFile(); files.remove(0); }
+}
+
+void transcribeGuide(const std::shared_ptr<IGuideTranscriber> &provider,
+                     const SectionDetectionRequest &request, DetectionOutcome &outcome,
+                     const CancellationCheck &cancelled,
+                     const std::function<void(DetectionStage)> &report,
+                     const GuideTranscriptionProgress &numericProgress) {
+  if (!provider || !provider->available()) {
+    outcome.error = provider ? provider->unavailableReason() : juce::String::fromUTF8("Sin transcriptor local de guía"); return;
+  }
+  const AnalysisStem *guide = nullptr;
+  for (const auto &stem : request.stems) if (stem.role == AnalysisStemRole::guide) {
+    if (guide) { outcome.error = juce::String::fromUTF8("Selecciona una sola pista como guía."); return; }
+    guide = &stem;
+  }
+  if (!guide) { outcome.error = juce::String::fromUTF8("Selecciona una pista como guía para transcribir."); return; }
+  if (!std::isfinite(guide->offsetSeconds) || guide->offsetSeconds < 0) {
+    outcome.error = juce::String::fromUTF8("Offset de guía inválido."); return;
+  }
+  const auto language = request.guideLanguage.trim().toLowerCase();
+  if (language.isEmpty() || language.length() > 32 || !language.containsOnly("abcdefghijklmnopqrstuvwxyz-")) {
+    outcome.error = juce::String::fromUTF8("Selecciona un idioma de transcripción válido."); return;
+  }
+  report(DetectionStage::preparingAudio);
+  if (numericProgress) numericProgress(0);
+  juce::AudioFormatManager formats; formats.registerBasicFormats();
+  auto reader = std::unique_ptr<juce::AudioFormatReader>(formats.createReaderFor(guide->file));
+  if (!reader || reader->sampleRate <= 0 || reader->sampleRate > 384000 ||
+      reader->lengthInSamples <= 0 || reader->numChannels == 0) {
+    outcome.error = juce::String::fromUTF8("No se puede leer el audio de la guía."); return;
+  }
+  const double duration = guide->offsetSeconds + double(reader->lengthInSamples) / reader->sampleRate;
+  if (!std::isfinite(duration) || duration <= 0 || duration > 12 * 3600) {
+    outcome.error = juce::String::fromUTF8("Duración de guía fuera del límite de análisis local (12 h)."); return;
+  }
+  reader.reset();
+  const auto model = request.guideModelFile == juce::File{} ? defaultWhisperGuideModelFile() : request.guideModelFile;
+  GuideTranscript identity;
+  identity.provider = provider->providerId(); identity.providerVersion = provider->version();
+  identity.language = language; identity.durationSeconds = duration;
+  if (!contentFingerprint(guide->file, cancelled, identity.audioFingerprint, outcome.error) ||
+      !contentFingerprint(model, cancelled, identity.modelFingerprint, outcome.error)) return;
+  juce::MemoryOutputStream key;
+  key.writeString("guide-transcript-cache-1"); key.writeString(identity.provider); key.writeString(identity.providerVersion);
+  key.writeString(identity.audioFingerprint); key.writeString(identity.modelFingerprint); key.writeString(language);
+  key.writeDouble(guide->offsetSeconds); key.writeDouble(duration);
+  const auto filename = juce::SHA256(key.getData(), key.getDataSize()).toHexString() + ".json";
+  const auto cacheFile = request.cacheDirectory == juce::File{} ? juce::File{} :
+      request.cacheDirectory.getChildFile("guide-transcripts-v1").getChildFile(filename);
+  GuideTranscript transcript;
+  if (cancelled()) return;
+  outcome.cacheHit = cacheFile != juce::File{} && readGuideCache(cacheFile, identity, guide->offsetSeconds, transcript);
+  if (!outcome.cacheHit) {
+    report(DetectionStage::transcribingGuide);
+    double lastProgress = 0;
+    const auto progress = [&](double fraction) {
+      if (numericProgress && !cancelled() && std::isfinite(fraction)) {
+        lastProgress = std::max(lastProgress, juce::jlimit(0.0, 1.0, fraction));
+        numericProgress(lastProgress);
+      }
+    };
+    const GuideTranscriptionRequest transcriptionRequest{guide->file, model, language, guide->offsetSeconds};
+    if (!provider->transcribe(transcriptionRequest, cancelled, progress, transcript, outcome.error)) {
+      if (outcome.error.isEmpty() && !cancelled()) outcome.error = juce::String::fromUTF8("No se pudo transcribir la guía.");
+      return;
+    }
+    if (cancelled()) return;
+    if (!validGuideTranscript(transcript, guide->offsetSeconds, duration, outcome.error)) return;
+    juce::String currentAudioFingerprint, currentModelFingerprint;
+    if (!contentFingerprint(guide->file, cancelled, currentAudioFingerprint, outcome.error) ||
+        !contentFingerprint(model, cancelled, currentModelFingerprint, outcome.error)) return;
+    if (currentAudioFingerprint != identity.audioFingerprint || currentModelFingerprint != identity.modelFingerprint) {
+      outcome.error = juce::String::fromUTF8("La guía o el modelo cambió durante la transcripción; vuelve a analizar."); return;
+    }
+    // Cache identities belong to this request, never unverified provider fields.
+    transcript.provider = identity.provider; transcript.providerVersion = identity.providerVersion;
+    transcript.audioFingerprint = identity.audioFingerprint; transcript.modelFingerprint = identity.modelFingerprint;
+    transcript.language = identity.language; transcript.durationSeconds = duration;
+    if (cacheFile != juce::File{}) writeGuideCache(cacheFile, transcript, guide->offsetSeconds, cancelled);
+  }
+  if (cancelled()) return;
+  auto &result = outcome.result;
+  result.songId = request.songId; result.durationSeconds = duration;
+  result.analysisProvider = identity.provider; result.analyzedAudioFingerprint = identity.audioFingerprint;
+  for (const auto &segment : transcript.segments)
+    if (const auto cue = normalizeGuideCue(segment.startSeconds, segment.text)) result.guideCues.push_back(*cue);
+  // Spoken cue times are not musical starts. Alignment is deliberately absent.
+  outcome.guideTranscript = std::move(transcript);
+  if (numericProgress) numericProgress(1);
+}
 } // namespace
 
 juce::String detectionStageName(DetectionStage s) {
@@ -180,21 +385,28 @@ juce::String detectionStageName(DetectionStage s) {
   return {};
 }
 std::shared_ptr<IMusicStructureAnalyzer> createPlatformMusicStructureAnalyzer() { return std::make_shared<AppleAnalyzer>(); }
-SectionDetectionService::SectionDetectionService(std::shared_ptr<IMusicStructureAnalyzer> p) : provider(std::move(p)) {}
+SectionDetectionService::SectionDetectionService(std::shared_ptr<IMusicStructureAnalyzer> p,
+    std::shared_ptr<IGuideTranscriber> g) : provider(std::move(p)), guideProvider(std::move(g)) {}
 bool SectionDetectionService::available() const { return provider && provider->available(); }
 juce::String SectionDetectionService::unavailableReason() const { return provider ? provider->unavailableReason() : juce::String::fromUTF8("Sin proveedor de análisis"); }
+bool SectionDetectionService::guideAvailable() const { return guideProvider && guideProvider->available(); }
+juce::String SectionDetectionService::guideUnavailableReason() const { return guideProvider ? guideProvider->unavailableReason() : juce::String::fromUTF8("Sin transcriptor local de guía"); }
 
 std::shared_ptr<SectionDetectionTask> SectionDetectionService::start(SectionDetectionRequest request,
-    std::function<void(DetectionStage)> progress, std::function<void(DetectionOutcome)> completion) const {
+    std::function<void(DetectionStage)> progress, std::function<void(DetectionOutcome)> completion,
+    GuideTranscriptionProgress numericProgress) const {
   auto task = std::make_shared<SectionDetectionTask>();
   auto cancelledState = task->cancelled;
-  std::thread([p = provider, request = std::move(request), progress = std::move(progress),
-               completion = std::move(completion), cancelledState] {
+  std::thread([p = provider, g = guideProvider, request = std::move(request), progress = std::move(progress),
+               completion = std::move(completion), numericProgress = std::move(numericProgress), cancelledState] {
     DetectionOutcome outcome;
     const auto cancelled = [cancelledState] { return cancelledState->load(); };
     const auto report = [&](DetectionStage stage) { if (progress) progress(stage); };
     const auto run = [&] {
       if (cancelled()) return;
+      if (request.transcribeGuideOnly) {
+        transcribeGuide(g, request, outcome, cancelled, report, numericProgress); return;
+      }
       if (!p || !p->available()) { outcome.error = p ? p->unavailableReason() : "Sin proveedor"; return; }
       report(DetectionStage::preparingAudio);
       juce::AudioFormatManager formats; formats.registerBasicFormats();
@@ -242,7 +454,11 @@ std::shared_ptr<SectionDetectionTask> SectionDetectionService::start(SectionDete
       fuseSectionSuggestions(result, request.fusion, outcome.error, cancelled);
     };
     try { run(); } catch (const std::exception &e) { outcome.error = juce::String::fromUTF8("Error de análisis local: ") + juce::String(e.what()); }
+    catch (...) { outcome.error = juce::String::fromUTF8("Error inesperado de análisis local."); }
     outcome.cancelled = cancelled();
+    if (outcome.cancelled || outcome.error.isNotEmpty()) {
+      outcome.guideTranscript.reset(); outcome.result.guideCues.clear();
+    }
     report(outcome.cancelled ? DetectionStage::cancelled : outcome.error.isNotEmpty() ? DetectionStage::error : DetectionStage::review);
     if (completion) completion(std::move(outcome));
   }).detach();

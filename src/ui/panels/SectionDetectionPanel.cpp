@@ -40,35 +40,89 @@ struct SectionDetectionPanel::SuggestionRow final : juce::Component {
 };
 
 SectionDetectionPanel::SectionDetectionPanel(ImportedSongData s, Actions a,
-    std::shared_ptr<IMusicStructureAnalyzer> provider)
-    : song(std::move(s)), actions(std::move(a)), service(std::move(provider)) {
+    std::shared_ptr<IMusicStructureAnalyzer> provider,
+    std::shared_ptr<IGuideTranscriber> guideProvider)
+    : song(std::move(s)), actions(std::move(a)), service(std::move(provider), std::move(guideProvider)),
+      guideModelFile(defaultWhisperGuideModelFile()) {
   analysisCacheDirectory = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("MTControls/cache/section-detection");
   setComponentID("section-detection-review");
-  for (auto *component : std::initializer_list<juce::Component *>{&title,&status,&help,&gridConfirmed,&analyze,&cancel,&add,&acceptSelected,&selectAll,&viewport,&spinner})
+  for (auto *component : std::initializer_list<juce::Component *>{&title,&status,&help,&gridConfirmed,&analyze,&cancel,&add,&acceptSelected,&selectAll,&viewport,&spinner,&transcribe,&chooseModel,&guideLanguage,&modelStatus,&showTracks})
     addAndMakeVisible(component);
-  title.setText(juce::String::fromUTF8("Detectar secciones · ") + song.title, juce::dontSendNotification);
+  addChildComponent(transcript);
+  title.setText(juce::String::fromUTF8(actions.reviewGuide ? "Sugerir secciones · " : "Detectar secciones · ") + song.title, juce::dontSendNotification);
   title.setFont(juce::Font(19.0f, juce::Font::bold));
-  help.setText(juce::String::fromUTF8("Confirma los roles. Solo se analiza la mezcla musical local. La guía se excluye de la mezcla y aún no se transcribe."), juce::dontSendNotification);
+  help.setText(juce::String::fromUTF8(actions.reviewGuide
+      ? "Elige la pista Guía. Al terminar, revisa las sugerencias sobre la onda y arrastra sus marcas antes de confirmar."
+      : "Elige una pista como Guía para transcribir su voz localmente. Los tiempos corresponden a los anuncios; todavía no son límites de sección."), juce::dontSendNotification);
   help.setFont(juce::Font(13.0f));
   gridConfirmed.setButtonText(juce::String::fromUTF8("Confirmo que el mapa de tempo y sus compases están sincronizados"));
   gridConfirmed.setToggleState(false, juce::dontSendNotification);
   gridConfirmed.setEnabled(song.bpm > 0 && song.timeSignature.isNotEmpty());
   analyze.setButtonText("Analizar"); cancel.setButtonText("Cerrar"); add.setButtonText(juce::String::fromUTF8("Añadir"));
   acceptSelected.setButtonText("Confirmar seleccionadas"); selectAll.setButtonText("Seleccionar todas");
+  for (auto *legacy : std::initializer_list<juce::Component *>{&gridConfirmed, &analyze, &add, &acceptSelected, &selectAll})
+    legacy->setVisible(!actions.reviewGuide);
+  transcribe.setButtonText(juce::String::fromUTF8(actions.reviewGuide ? "Sugerir secciones" : "Transcribir guía"));
+  transcribe.setComponentID("section-guide-transcribe");
+  chooseModel.setButtonText(juce::String::fromUTF8("Modelo de voz…"));
+  chooseModel.setComponentID("section-guide-model");
+  guideLanguage.addItem(juce::String::fromUTF8("Español"), 1);
+  guideLanguage.addItem(juce::String::fromUTF8("Inglés"), 2);
+  guideLanguage.setSelectedId(1, juce::dontSendNotification);
+  guideLanguage.setComponentID("section-guide-language");
+  modelStatus.setFont(juce::Font(12.0f));
+  transcript.setMultiLine(true); transcript.setReadOnly(true);
+  transcript.setScrollbarsShown(true); transcript.setCaretVisible(false);
+  transcript.setComponentID("section-guide-transcript");
+  showTracks.setButtonText("Ver pistas"); showTracks.setVisible(false);
+  showTracks.onClick = [this] {
+    transcriptReview = false; transcript.setVisible(false); viewport.setVisible(true);
+    for (auto &role : roles) role->setVisible(true);
+    setBusy(false); resized();
+  };
+  chooseModel.onClick = [this] { chooseGuideModel(); };
+  transcribe.onClick = [this] { start(true); };
   viewport.setViewedComponent(&content, false); viewport.setScrollBarsShown(true, false);
   for (const auto &stem : song.stems) { auto row = std::make_unique<RoleRow>(stem); content.addAndMakeVisible(*row); roles.push_back(std::move(row)); }
   analyze.onClick = [this] { start(); };
   cancel.onClick = [this] {
-    if (busy && task) { task->cancel(); status.setText(juce::String::fromUTF8("Cancelando…"), juce::dontSendNotification); cancel.setEnabled(false); }
+    if (busy) {
+      if (task) task->cancel();
+      if (modelTask) modelTask->cancel();
+      status.setText(juce::String::fromUTF8("Cancelando…"), juce::dontSendNotification); cancel.setEnabled(false);
+    }
     else if (actions.close) actions.close();
   };
   add.onClick = [this] { addProposal(); };
   acceptSelected.onClick = [this] { accept(); };
   selectAll.onClick = [this] { std::fill(selected.begin(), selected.end(), true); rebuildRows(); updatePreview(); };
-  status.setText(service.available() ? juce::String::fromUTF8("Listo para analizar · inicio y fin se muestran en segundos") : service.unavailableReason(), juce::dontSendNotification);
+  status.setText(service.guideAvailable()
+      ? (guideModelFile.existsAsFile()
+          ? juce::String::fromUTF8(actions.reviewGuide ? "Preparando sugerencias · comprueba la pista Guía" : "Listo para transcribir · selecciona una pista Guía")
+          : juce::String::fromUTF8("Descarga una vez el modelo de voz (57 MiB) para continuar"))
+      : service.available() ? juce::String::fromUTF8("Listo para analizar · inicio y fin se muestran en segundos") : service.unavailableReason(), juce::dontSendNotification);
   setBusy(false);
 }
-SectionDetectionPanel::~SectionDetectionPanel() { if (task) task->cancel(); }
+SectionDetectionPanel::~SectionDetectionPanel() {
+  if (task) task->cancel();
+  if (modelTask) modelTask->cancel();
+}
+void SectionDetectionPanel::beginSuggestionFlow() {
+  if (busy) return;
+  if (!service.guideAvailable()) {
+    status.setText(service.guideUnavailableReason(), juce::dontSendNotification); return;
+  }
+  const auto guideCount = std::count_if(roles.begin(), roles.end(), [](const auto &row) {
+    return row->role.getSelectedId() == 2;
+  });
+  if (guideCount != 1) {
+    status.setText(juce::String::fromUTF8("Elige una sola pista como Guía para sugerir secciones."), juce::dontSendNotification); return;
+  }
+  if (!guideModelFile.existsAsFile()) {
+    status.setText(juce::String::fromUTF8("Descarga una vez el modelo de voz (57 MiB) para continuar."), juce::dontSendNotification); return;
+  }
+  start(true);
+}
 void SectionDetectionPanel::paint(juce::Graphics &g) {
   g.fillAll(UITheme::panelDark);
   g.setColour(juce::Colours::white.withAlpha(0.2f)); g.drawRect(getLocalBounds());
@@ -77,12 +131,21 @@ void SectionDetectionPanel::resized() {
   auto b = getLocalBounds().reduced(14);
   auto heading = b.removeFromTop(30); cancel.setBounds(heading.removeFromRight(100)); title.setBounds(heading);
   help.setBounds(b.removeFromTop(40));
-  gridConfirmed.setBounds(b.removeFromTop(30));
+  auto voice = b.removeFromTop(30);
+  chooseModel.setBounds(voice.removeFromLeft(145).reduced(2));
+  guideLanguage.setBounds(voice.removeFromLeft(115).reduced(2));
+  transcribe.setBounds(voice.removeFromRight(155).reduced(2));
+  showTracks.setBounds(voice.removeFromRight(transcriptReview ? 95 : 0).reduced(2));
+  modelStatus.setBounds(voice);
+  if (!actions.reviewGuide) gridConfirmed.setBounds(b.removeFromTop(30));
   auto state = b.removeFromTop(30); spinner.setBounds(state.removeFromRight(90).reduced(4)); status.setBounds(state);
-  auto footer = b.removeFromBottom(38);
-  acceptSelected.setBounds(footer.removeFromRight(210).reduced(2)); analyze.setBounds(footer.removeFromRight(140).reduced(2));
-  add.setBounds(footer.removeFromLeft(85).reduced(2)); selectAll.setBounds(footer.removeFromLeft(165).reduced(2));
+  if (!actions.reviewGuide) {
+    auto footer = b.removeFromBottom(38);
+    acceptSelected.setBounds(footer.removeFromRight(210).reduced(2)); analyze.setBounds(footer.removeFromRight(140).reduced(2));
+    add.setBounds(footer.removeFromLeft(85).reduced(2)); selectAll.setBounds(footer.removeFromLeft(165).reduced(2));
+  }
   viewport.setBounds(b);
+  transcript.setBounds(b);
   const auto count = reviewing ? rows.size() : roles.size();
   const int height = reviewing ? 80 : 40;
   content.setSize(std::max(200, b.getWidth() - 16), std::max(b.getHeight(), int(count) * height));
@@ -93,13 +156,78 @@ void SectionDetectionPanel::resized() {
 void SectionDetectionPanel::setBusy(bool value) {
   busy = value;
   spinner.setVisible(value);
+  const bool modelPresent = guideModelFile.existsAsFile();
+  transcribe.setEnabled(!busy && service.guideAvailable());
+  transcribe.setButtonText(juce::String::fromUTF8(!modelPresent ? "Descargar y continuar" :
+      actions.reviewGuide ? "Sugerir secciones" : "Transcribir guía"));
+  chooseModel.setEnabled(!busy); guideLanguage.setEnabled(!busy);
+  showTracks.setVisible(transcriptReview); showTracks.setEnabled(!busy);
+  modelStatus.setText(modelPresent ? "Modelo local listo" : juce::String::fromUTF8("Descarga única · 57 MiB"), juce::dontSendNotification);
+  modelStatus.setTooltip(guideModelFile.getFullPathName());
+  transcribe.setTooltip(service.guideAvailable()
+      ? juce::String::fromUTF8(!modelPresent ? "Descargar una vez el modelo de voz y continuar. Tu audio permanece en este equipo." :
+          actions.reviewGuide ? "Preparar sugerencias locales para revisar sobre la onda"
+          : "Transcribir voz sin enviar el audio a Internet")
+      : service.guideUnavailableReason());
   analyze.setEnabled(!busy && service.available());
+  analyze.setTooltip(service.available() ? "Analizar estructura musical" : service.unavailableReason());
   analyze.setButtonText(reviewing ? "Analizar de nuevo" : "Analizar");
   cancel.setButtonText(busy ? "Cancelar" : "Descartar / cerrar"); cancel.setEnabled(true);
   add.setEnabled(!busy && reviewing); acceptSelected.setEnabled(!busy && reviewing); selectAll.setEnabled(!busy && reviewing);
-  gridConfirmed.setEnabled(!busy && !reviewing && song.bpm > 0 && song.timeSignature.isNotEmpty());
+  gridConfirmed.setEnabled(!busy && !reviewing && !transcriptReview && song.bpm > 0 && song.timeSignature.isNotEmpty());
   for (auto &role : roles) role->setEnabled(!busy);
   content.setEnabled(!busy);
+}
+void SectionDetectionPanel::chooseGuideModel() {
+  modelChooser = std::make_unique<juce::FileChooser>(juce::String::fromUTF8("Elegir modelo de voz multilingüe"), guideModelFile, "*.bin");
+  modelChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+      [safe = juce::Component::SafePointer<SectionDetectionPanel>(this)](const juce::FileChooser &chooser) {
+        if (!safe) return;
+        const auto chosen = chooser.getResult();
+        if (chosen.existsAsFile()) { safe->guideModelFile = chosen; safe->setBusy(false); }
+      });
+}
+void SectionDetectionPanel::prepareGuideModel() {
+  if (busy) return;
+  progress = 0; setBusy(true);
+  status.setText(juce::String::fromUTF8("Descargando modelo de voz · 57 MiB · tu audio permanece en este equipo"), juce::dontSendNotification);
+  auto safe = juce::Component::SafePointer<SectionDetectionPanel>(this);
+  modelTask = prepareWhisperGuideModel(guideModelFile, [safe](double value) {
+    juce::MessageManager::callAsync([safe, value] {
+      if (safe && safe->busy) safe->progress = juce::jlimit(0.0, 1.0, value);
+    });
+  }, [safe](GuideModelPreparationResult outcome) {
+    juce::MessageManager::callAsync([safe, outcome = std::move(outcome)]() mutable {
+      if (!safe) return;
+      const bool cancelled = outcome.cancelled || (safe->modelTask && safe->modelTask->isCancelled());
+      safe->modelTask.reset();
+      safe->setBusy(false);
+      if (cancelled || outcome.error.isNotEmpty()) {
+        safe->status.setText(cancelled ? "Cancelado" : outcome.error, juce::dontSendNotification); return;
+      }
+      safe->guideModelFile = outcome.modelFile;
+      safe->start(true);
+    });
+  }, modelDownloadSource, modelAsset);
+}
+void SectionDetectionPanel::showTranscript(const GuideTranscript &value) {
+  const auto timeLabel = [](double seconds) {
+    const auto milliseconds = juce::int64(std::llround(seconds * 1000));
+    return juce::String(milliseconds / 60000).paddedLeft('0', 2) + ":" +
+        juce::String((milliseconds / 1000) % 60).paddedLeft('0', 2) + "." +
+        juce::String(milliseconds % 1000).paddedLeft('0', 3);
+  };
+  juce::String text;
+  for (const auto &segment : value.segments)
+    text << "[" << timeLabel(segment.startSeconds) << " - " << timeLabel(segment.endSeconds) << "]  " << segment.text << "\n\n";
+  if (text.isEmpty()) text = juce::String::fromUTF8("No se reconocieron anuncios de voz. Comprueba la pista y el idioma elegidos.");
+  transcript.setText(text, false);
+  transcript.setVisible(true); viewport.setVisible(false);
+  transcriptReview = true; reviewing = false; selected.clear(); rows.clear();
+  if (actions.preview) actions.preview({});
+  status.setText(juce::String::fromUTF8("Transcripción local · ") + juce::String(int(value.segments.size())) +
+      juce::String::fromUTF8(" fragmentos · tiempos de voz, sin aplicar secciones"), juce::dontSendNotification);
+  setBusy(false); resized();
 }
 std::vector<double> SectionDetectionPanel::confirmedBars() const {
   std::vector<double> bars;
@@ -109,39 +237,79 @@ std::vector<double> SectionDetectionPanel::confirmedBars() const {
     if (mark.strong) bars.push_back(mark.timeSeconds);
   return bars;
 }
-void SectionDetectionPanel::start() {
+void SectionDetectionPanel::start(bool guideOnly) {
   if (busy) return;
   // A fresh analysis discards only untouched transient proposals. Edited ones
   // remain reviewable until the user explicitly closes this review.
   if (reviewing && (reviewModified || std::any_of(result.suggestions.begin(), result.suggestions.end(), [](const auto &s) { return s.userEdited; }))) {
     status.setText(juce::String::fromUTF8("Hay correcciones en la revisión. Confírmalas o descarta esta revisión antes de analizar de nuevo."), juce::dontSendNotification); return;
   }
+  if (guideOnly && !guideModelFile.existsAsFile()) {
+    const auto guideCount = std::count_if(roles.begin(), roles.end(), [](const auto &row) { return row->role.getSelectedId() == 2; });
+    if (guideCount != 1) {
+      status.setText(juce::String::fromUTF8("Elige una sola pista como Guía antes de descargar."), juce::dontSendNotification); return;
+    }
+    prepareGuideModel(); return;
+  }
   SectionDetectionRequest request;
   request.songId = song.id; request.fusion.confirmedBars = confirmedBars();
   request.cacheDirectory = analysisCacheDirectory;
+  request.transcribeGuideOnly = guideOnly;
+  request.guideModelFile = guideModelFile;
+  request.guideLanguage = guideLanguage.getSelectedId() == 2 ? "en" : "es";
   for (size_t i = 0; i < song.stems.size(); ++i) {
     const auto &stem = song.stems[i]; juce::File file(stem.storedPath);
     if (!file.existsAsFile()) file = juce::File(stem.sourcePath);
     request.stems.push_back({file, AnalysisStemRole(roles[i]->role.getSelectedId() - 1), 0.0});
   }
-  setBusy(true);
+  progress = -1; setBusy(true);
   auto safe = juce::Component::SafePointer<SectionDetectionPanel>(this);
   task = service.start(std::move(request), [safe](DetectionStage stage) {
     juce::MessageManager::callAsync([safe, stage] { if (safe) safe->status.setText(detectionStageName(stage), juce::dontSendNotification); });
   }, [safe](DetectionOutcome outcome) {
     juce::MessageManager::callAsync([safe, outcome = std::move(outcome)]() mutable {
-      if (!safe) return;
-      safe->setBusy(false);
-      if (outcome.cancelled || outcome.error.isNotEmpty()) {
-        safe->status.setText(outcome.cancelled ? "Cancelado" : outcome.error, juce::dontSendNotification); return;
-      }
-      safe->result = std::move(outcome.result); safe->reviewing = true;
-      safe->selected.assign(safe->result.suggestions.size(), true);
-      for (auto &role : safe->roles) role->setVisible(false);
-      safe->status.setText(juce::String::fromUTF8("Revisión · confianza heurística propia · inicio / fin en segundos") + juce::String(outcome.cacheHit ? juce::String::fromUTF8(" · caché local") : ""), juce::dontSendNotification);
-      safe->rebuildRows(); safe->setBusy(false); safe->updatePreview();
+      if (safe) safe->completeDetection(std::move(outcome));
     });
+  }, [safe](double value) {
+    juce::MessageManager::callAsync([safe, value] { if (safe && safe->busy) safe->progress = juce::jlimit(0.0, 1.0, value); });
   });
+}
+void SectionDetectionPanel::completeDetection(DetectionOutcome outcome) {
+  // The worker may have queued success just before the user presses Cancel.
+  // Honour the current UI cancellation as well as the worker's final snapshot.
+  const bool cancelled = outcome.cancelled || (task && task->isCancelled());
+  setBusy(false);
+  if (cancelled || outcome.error.isNotEmpty()) {
+    status.setText(cancelled ? "Cancelado" : outcome.error, juce::dontSendNotification); return;
+  }
+  if (outcome.guideTranscript) {
+    result = std::move(outcome.result);
+    if (actions.reviewGuide) {
+      reviewing = false; transcriptReview = false;
+      transcript.setVisible(false); selected.clear(); rows.clear();
+      setBusy(false);
+      status.setText(juce::String::fromUTF8("Revisa y arrastra las sugerencias sobre la onda antes de confirmar."), juce::dontSendNotification);
+      const auto reviewGuide = actions.reviewGuide;
+      const auto close = actions.close;
+      const auto completedTask = task;
+      const auto safe = juce::Component::SafePointer<SectionDetectionPanel>(this);
+      // The owner may destroy this panel while installing the waveform review.
+      // Capture everything first and never access members after the handoff.
+      reviewGuide(*outcome.guideTranscript);
+      if (close) juce::MessageManager::callAsync([safe, close, completedTask] {
+        if (safe && (!completedTask || !completedTask->isCancelled())) close();
+      });
+      return;
+    }
+    showTranscript(*outcome.guideTranscript);
+    return;
+  }
+  transcriptReview = false; transcript.setVisible(false); viewport.setVisible(true);
+  result = std::move(outcome.result); reviewing = true;
+  selected.assign(result.suggestions.size(), true);
+  for (auto &role : roles) role->setVisible(false);
+  status.setText(juce::String::fromUTF8("Revisión · confianza heurística propia · inicio / fin en segundos") + juce::String(outcome.cacheHit ? juce::String::fromUTF8(" · caché local") : ""), juce::dontSendNotification);
+  rebuildRows(); setBusy(false); updatePreview();
 }
 void SectionDetectionPanel::rebuildRows() {
   rows.clear();

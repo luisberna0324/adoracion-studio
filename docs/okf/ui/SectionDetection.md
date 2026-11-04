@@ -3,8 +3,8 @@ type: UI and Analysis Contract
 title: Detección asistida de secciones
 description: Propuestas locales revisables sobre el editor de arrange existente
 resource: src/analysis/SectionDetectionService.h
-tags: [audio, sections, macos, analysis, offline]
-timestamp: 2026-10-27
+tags: [audio, sections, macos, analysis, offline, whisper]
+timestamp: 2026-11-04
 ---
 
 # Detectar secciones
@@ -66,8 +66,8 @@ El handle `SectionDetectionTask` permite cancelar sin esperar en la UI.
 
 Las fases son preparando audio, analizando estructura/compases, transcribiendo
 guía, fusionando sugerencias, revisión, error y cancelado. Una API sin porcentaje
-real requiere progreso indeterminado. La fase de transcripción está reservada
-para el proveedor de voz; su presencia en el enum no acredita ASR implementado.
+real requiere progreso indeterminado. La ruta guía-only usa preparación,
+transcripción y revisión del texto; no ejecuta estructura ni fusión musical.
 
 La clasificación musical de stems se confirma por selección del usuario. Las
 categorías existentes ayudan a presentar roles, pero el nombre de archivo por
@@ -97,9 +97,9 @@ desconocida.
 El entorno inspeccionado contiene Xcode 26.6, SDK macOS 26.5 y macOS 26.2.
 No contiene MusicUnderstanding. Compilar el fallback o ejecutar fixtures
 inyectados no verifica la rama nativa; requiere además SDK y sistema compatibles.
-La transcripción con SpeechAnalyzer/SpeechTranscriber y la evaluación de la guía
-adjunta pertenecen a la entrega 2 y no se acreditan mediante normalización de
-texto sintetizado.
+La nueva transcripción Whisper funciona mediante otro proveedor, sin necesitar
+MusicUnderstanding. Su evaluación con una guía real no se acredita mediante la
+normalización de texto sintetizado ni mediante compilación del fallback Apple.
 
 La documentación oficial declara MusicUnderstanding para macOS/iOS 27 o
 posterior y el ejemplo de Apple requiere Xcode 27. El bridge actual solo registra
@@ -107,23 +107,121 @@ la ruta macOS; mantener la exclusión runtime aunque se compile con un SDK nuevo
 
 Referencias: [Music Understanding](https://developer.apple.com/documentation/musicunderstanding),
 [MusicUnderstandingSession](https://developer.apple.com/documentation/musicunderstanding/musicunderstandingsession),
-[StructureResult](https://developer.apple.com/documentation/musicunderstanding/structureresult),
-[SpeechAnalyzer](https://developer.apple.com/documentation/speech/speechanalyzer).
+[StructureResult](https://developer.apple.com/documentation/musicunderstanding/structureresult).
+
+## Sugerir secciones sobre la onda
+
+La entrada principal es **Sugerir secciones** en el modo Editar de la onda.
+El editor abre la preparación y llama explícitamente
+`SectionDetectionPanel::beginSuggestionFlow()`: si hay una única pista Guía,
+backend y modelo locales, empieza el análisis sin otro clic. Construir el
+componente no inicia trabajo ni descargas. Si falta o hay más de una guía, el
+panel conserva los selectores de rol y explica cómo elegir una sola. Esta ruta
+no exige stems musicales ni los decodifica. **Analizar** mantiene por separado
+el flujo de estructura Apple para diagnóstico; su disponibilidad es independiente.
+
+**Modelo de voz…** selecciona un archivo local. Inicialmente se propone
+`defaultWhisperGuideModelFile()`; en macOS corresponde a
+`~/Library/MTControls/models/ggml-base-q5_1.bin`. El selector de idioma permite
+elegir el idioma de reconocimiento antes de comenzar. Tener un archivo en esa
+ruta no prueba su validez: el proveedor valida al ejecutar y los errores se
+muestran sin modificar el arreglo. El selector manual se conserva como opción
+avanzada; no hace falta buscar un archivo para comenzar con el modelo habitual.
+
+Si el modelo falta, se informa de la descarga única de unos **57 MiB** y se
+ofrece **Descargar y continuar**. Se requiere ese clic explícito; abrir la entrada
+no descarga. `GuideModelProvisioner` realiza GET del modelo fijado en un worker,
+comprueba tamaño y SHA-256, guarda mediante temporal y reemplazo atómico, y borra
+el temporal ante error/cancelación. Reutiliza el modelo correcto existente sin
+red y no reemplaza un archivo existente inválido. Los tests pueden inyectar la
+fuente de descarga; la UI de producción usa el descriptor upstream fijado.
+El progreso y los errores vuelven al message thread. Tras el éxito continúa
+automáticamente el análisis local. No se transmite el audio y el reconocimiento
+posterior funciona sin red. Véanse pin y preparación alternativa en
+[el contrato de audio](../audio-systems/SectionDetection.md#preparar-el-modelo-una-vez).
+
+Al terminar, `Actions::reviewGuide(const GuideTranscript&)` entrega al editor
+el texto literal, las huellas y todos los tiempos hablados; no los reemplaza
+por nombres esperados. El editor prepara un `GuideAlignmentDraft` transitorio
+y muestra sus sugerencias sobre la onda existente. El cierre de configuración
+se encola después de instalar esa revisión, con `SafePointer`, conservando el
+preview del editor. El callback puede destruir el panel sin un segundo cierre
+ni acceso posterior a sus miembros. La cancelación de UI prevalece incluso si
+el worker ya había encolado un éxito: no entrega `reviewGuide` ni confirma nada.
+
+La lista de transcripción cruda se conserva únicamente como fallback si el
+componente no recibe `reviewGuide`, por ejemplo en probes y pruebas diagnósticas.
+El flujo principal no muestra un panel con todas las secciones para confirmarlas
+una por una. El servicio ASR sigue devolviendo tiempos del anuncio hablado,
+incluidos silencios iniciales y offset; la hipótesis musical pertenece al borrador
+revisable. Conteos sin nombre no identifican secciones y los errores de voz
+permanecen revisables. No se aplica ningún resultado automáticamente.
+
+Cambiar de canción o cerrar el panel cancela el trabajo y descarta callbacks
+obsoletos mediante identidad/generación y `SafePointer`. Cancelar no espera en
+el message thread. La caché guarda únicamente transcripción local y huellas;
+no escribe secciones, letras nativas, cues de FreeShow ni metadata cloud.
+
+Prueba manual de esta ruta, independiente del análisis Apple:
+
+1. Abrir una canción con guía local y pulsar **Sugerir secciones** en Editar.
+   Con modelo preparado y una guía, verificar inicio inmediato. Sin modelo,
+   comprobar que espera el clic **Descargar y continuar**, informa el tamaño y
+   permite cancelar; tras descargar, continúa sin otro clic de análisis.
+2. Comprobar respuesta de UI, progreso y cancelación. Repetir cambiando de
+   canción durante el trabajo; no aceptar resultados sobre la canción nueva.
+3. Comprobar que cierra la preparación y lleva la revisión a la onda, sin lista
+   de transcripción. Mover origen y límites, descartar y confirmar por separado.
+   Antes de confirmar, arreglo, BPM/compás y archivos fuente deben seguir iguales.
+4. Sin red, repetir con el modelo disponible; registrar si se usó caché.
+   Una ejecución desde caché no verifica de nuevo la inferencia offline.
+5. Elegir un modelo ausente/ilegible o una selección de roles sin guía o con
+   varias guías; comprobar error visible y recuperación al corregir la entrada.
+   Diferenciar pruebas sintéticas, reconocimiento real y alineación musical.
 
 ## Revisión en la línea de tiempo
 
-`WaveformBar` expone una sola acción `Detectar secciones` en Más. Su disponibilidad
-y explicación se reciben del orquestador mediante
+El acceso **Sugerir secciones** de Editar utiliza el `WaveformBar` existente.
+Su disponibilidad y explicación se reciben del orquestador mediante
 `setSectionDetectionAvailability`; el callback se registra con
-`setOnSectionDetectionRequest`. Si no hay proveedor compatible se presenta
-indisponibilidad condicionada, sin una acción vacía.
+`setOnSectionDetectionRequest`. El acceso al panel puede estar disponible por
+el backend Whisper aunque Apple no esté disponible. Cada acción muestra su
+propia disponibilidad y motivo; sin ambos proveedores se conserva la explicación
+y la edición manual.
 
 `setSectionDetectionPreview` muestra bloques translúcidos con límites punteados
 y rótulo Sugerencia sobre la onda real. Es una capa visual separada del snapshot
 comprometido: no altera reproducción, persistencia ni historial.
 `clearSectionDetectionPreview` descarta esa capa. Cargar otra canción también
-la elimina. La edición, selección y escucha de propuestas pertenecen al panel
-de revisión y utilizan estos bloques como contexto temporal.
+la elimina. La revisión de guía vive directamente sobre esta onda; el panel de
+filas anterior se mantiene para resultados estructurales/diagnóstico Apple.
+
+### Cuadrícula, origen y anticipación
+
+`GuideAlignmentDraft` contiene la cuadrícula y propuestas, junto con BPM,
+compás, mapa de tempo, origen del primer compás y anticipación de la guía en
+compases. La cuadrícula se muestra con marcas pequeñas de pulsos y compases,
+integradas en el estilo y controles de la onda. Su regla reutiliza
+`drawMusicalTimelineRuler`: misma fuente de 10 puntos, números centrados y
+separación mínima de 72 puntos, con pulsos desde 10 puntos de separación.
+El playhead sigue visible en la regla durante la revisión. El origen del primer compás es
+ajustable visualmente: moverlo reconstruye **todo** el borrador con ese origen,
+manteniendo los textos hablados originales. Cambiar la anticipación también
+recalcula las hipótesis; un aviso de voz no se convierte por sí solo en el
+inicio musical real.
+
+Arrastrar un límite de sección ajusta esa frontera y su vecina para conservar
+intervalos contiguos; no desplaza globalmente las demás secciones. Cuando se
+elige ajuste a compases, usa la cuadrícula del borrador. Esta operación es
+distinta de mover el origen, que recalcula todas las posiciones. La revisión
+debe respetar IDs de ocurrencia, límites válidos, duración mínima y secciones
+existentes protegidas. No altera el mapa de tempo persistido para hacer encajar
+las propuestas ni acredita sincronización de click sin compararla con el audio.
+
+Confirmar usa la aceptación atómica y el historial de arreglo existentes que
+se describen debajo: una sola operación de undo revierte la confirmación.
+Descartar elimina las marcas transitorias sin persistir secciones. Las huellas
+y el texto ASR crudo permanecen independientes de los ajustes visuales.
 
 `applyDetectedSections` recibe el snapshot final ya fusionado. Comprueba que
 cada sección y cue existentes mantengan ID, nombre, región fuente, acciones y
@@ -166,7 +264,7 @@ y la identidad de canción sigan vigentes.
 
 La guía de referencia se copia explícitamente desde el adjunto a un fixture
 local ignorado por Git; véase `tests/fixtures/section-detection/README.md`.
-Su secuencia esperada sirve para contrastar una futura transcripción real, no
+Su secuencia esperada sirve para contrastar una transcripción real, no
 para introducir nombres o tiempos en el algoritmo. Medir diferencia entre cue
 hablado e inicio musical requiere los stems/click correspondientes y un etiquetado
 manual; disponer solo de `Guia.mp3` no acredita esa alineación.
@@ -285,9 +383,65 @@ Logs macOS: `/tmp/playworship-section-build-final.log`,
 `/tmp/playworship-section-build-final-incremental.log` y
 `/tmp/playworship-section-ctest.log`.
 
-Falta compilar/ejecutar la rama nativa con SDK/macOS 27, comprobar sus modelos y
-funcionamiento sin red, incorporar ASR local temporizado y comparar con los
-stems/click de referencia. Tampoco se verificaron aquí escucha física continua,
+En esa entrega faltó compilar/ejecutar la rama nativa con SDK/macOS 27, comprobar
+sus modelos y funcionamiento sin red e incorporar ASR local temporizado. La
+ruta Whisper se incorpora en el incremento registrado debajo; comparar con los
+stems/click de referencia sigue pendiente. Tampoco se
+verificaron en aquella entrega escucha física continua,
 QA manual de la app completa, build Windows, app iOS final ni APK completo.
 La comparación de click y las equivalencias por análisis de stems siguen siendo
 extensiones posteriores; no se deducen nombres musicales a partir de energía.
+
+## Evidencia histórica del incremento Whisper — 3 de noviembre de 2026
+
+La aplicación macOS arm64 Release y las cuatro suites de dominio, servicio,
+panel y waveform compilaron; las cuatro suites aprobaron. El panel añade una
+prueba determinista de cancelación después de encolar un éxito: la UI muestra
+Cancelado y no presenta ni aplica el resultado tardío.
+
+El componente de producción se ejercitó también con `Guia.mp3` y el modelo
+multilingüe `ggml-base-q5_1.bin`, idioma español, proveedor Whisper real y
+Apple indisponible. Se usó una raíz temporal nueva de caché y `sandbox-exec`
+con `(deny network*)`; no fue una reutilización de la evidencia sintética.
+
+`output/section-detection-fixtures/real-guide-panel.log` registra las cinco
+comprobaciones del ejecutable, incluida la inferencia real. La captura
+`output/section-detection-fixtures/whisper-transcript-panel.png` muestra los
+15 fragmentos con texto literal y tiempos de voz, scroll y controles de modelo,
+idioma y regreso a pistas. Se inspeccionó visualmente; Confirmar seleccionadas
+permanece deshabilitado. Los errores léxicos observados se conservan visibles,
+sin reemplazarlos por la secuencia esperada de la fixture.
+
+Esta prueba valida el panel real; no acredita un flujo manual completo en la
+ventana principal ni ejecución en móviles/Windows. La transcripción temporizada
+no acredita alineación de secciones: aún faltan stems/click y límites musicales
+de referencia del mismo proyecto.
+
+## Evidencia de revisión sobre la onda — 4 de noviembre de 2026
+
+- Aplicación macOS arm64 Release compilada con la revisión visual integrada.
+- Cuatro suites aprobadas: dominio, servicio, panel y waveform; el grupo final
+  terminó en 8,08 s. El dominio incorpora 122 comprobaciones.
+- Pruebas del componente real: entrada solamente al editar, marcas/pulsos,
+  arrastre repetido del origen, snap y Alt libre, renombrado inline, anticipación,
+  zoom, descarte, Confirmar en una transacción, Undo/Redo y Cancelar sin publicar.
+- Una prueba adicional conecta los gestos con `alignGuideSections` y
+  `moveGuideSectionBoundary` reales. Mover el origen de 0 a 0,5 s recalcula las
+  entradas; arrastrar una entrada cambia el final de su vecina sin mover la
+  siguiente; cambiar anticipación recalcula desde los anuncios. La suite
+  waveform completa volvió a aprobar en 8,20 s con esta integración.
+- `output/section-detection-fixtures/guide-calculated-preview.png` es una captura
+  del `WaveformBar` de producción con audio visual y anuncios deterministas de
+  prueba, calculados por el dominio real. Se inspeccionaron identidad visual,
+  cuadrícula, marcadores pequeños y barra compacta; no representa una medición
+  de alineación de la guía privada con sus stems.
+- El helper nativo descargó el modelo fijado en una ruta QA aislada; tamaño y
+  SHA-256 coinciden con el pin. Una segunda ejecución con red bloqueada verificó
+  y reutilizó el archivo (`reused=1`). El modelo de usuario existente se conservó.
+
+Logs locales: `/tmp/pw-guide-visual-final-build.log`,
+`/tmp/pw-guide-visual-final-ctest.log`, `/tmp/pw-guide-calculated-ctest.log`,
+`/tmp/pw-guide-native-download.log` y `/tmp/pw-guide-native-reuse.log`.
+Esta evidencia corresponde al componente y sus callbacks reales. No acredita
+un recorrido manual completo por la ventana principal ni gestos en dispositivos
+móviles; la precisión de inicios musicales necesita click/stems de referencia.

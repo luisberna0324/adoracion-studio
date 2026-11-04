@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
+#include <limits>
 #include <thread>
 
 using namespace playworship::analysis;
@@ -69,6 +70,33 @@ public:
   }
 };
 
+class FakeGuideTranscriber final : public IGuideTranscriber {
+public:
+  std::atomic<int> calls{0};
+  bool enabled = true;
+  juce::String algorithmVersion = "guide-synthetic-1";
+  std::function<bool(const GuideTranscriptionRequest &, const CancellationCheck &,
+                     const GuideTranscriptionProgress &, GuideTranscript &, juce::String &)> inspect;
+  bool available() const override { return enabled; }
+  juce::String unavailableReason() const override { return "synthetic guide transcriber unavailable"; }
+  juce::String providerId() const override { return "synthetic-guide-test-only"; }
+  juce::String version() const override { return algorithmVersion; }
+  bool transcribe(const GuideTranscriptionRequest &request, const CancellationCheck &cancelled,
+                  const GuideTranscriptionProgress &progress, GuideTranscript &out,
+                  juce::String &error) override {
+    ++calls;
+    juce::WavAudioFormat wav;
+    auto reader = std::unique_ptr<juce::AudioFormatReader>(wav.createReaderFor(request.audioFile.createInputStream().release(), true));
+    expect(reader != nullptr, "synthetic guide provider receives selected source audio");
+    out.durationSeconds = request.offsetSeconds + double(reader->lengthInSamples) / reader->sampleRate;
+    out.segments = {{request.offsetSeconds + 0.1, request.offsetSeconds + 0.3, "Coro"},
+                    {request.offsetSeconds + 0.5, request.offsetSeconds + 0.7, "uno dos tres"},
+                    {request.offsetSeconds + 0.8, request.offsetSeconds + 1.0, "Verso dos"}};
+    if (progress) { progress(0.2); progress(0.6); }
+    return !inspect || inspect(request, cancelled, progress, out, error);
+  }
+};
+
 struct RunState {
   std::mutex mutex;
   std::condition_variable ready;
@@ -76,6 +104,7 @@ struct RunState {
   int completionCount = 0;
   DetectionOutcome outcome;
   std::vector<DetectionStage> stages;
+  std::vector<double> fractions;
   std::thread::id completionThread;
 };
 struct Run {
@@ -93,6 +122,9 @@ struct Run {
       ++captured->completionCount;
       captured->completed = true;
       captured->ready.notify_all();
+    }, [captured](double fraction) {
+      std::lock_guard<std::mutex> lock(captured->mutex);
+      captured->fractions.push_back(fraction);
     });
   }
   DetectionOutcome wait() const {
@@ -279,6 +311,149 @@ void testCancellation(TemporaryFixtures &fixtures) {
   expect(run.state->stages.back() == DetectionStage::cancelled, "cancellation is visible");
   expect(!rendered.getParentDirectory().exists(), "cancellation cleans all temporary audio");
 }
+
+SectionDetectionRequest guideRequest(TemporaryFixtures &fixtures, const juce::String &prefix) {
+  auto request = requestFor(fixtures.wave(prefix + "-guide", 16000, 32000, [](int) { return 0.2f; }));
+  request.transcribeGuideOnly = true;
+  request.stems.front().role = AnalysisStemRole::guide;
+  request.guideModelFile = fixtures.directory.getChildFile(prefix + "-model.bin");
+  expect(request.guideModelFile.replaceWithText("synthetic-test-model-a"), "write synthetic model identity");
+  return request;
+}
+
+void testGuideIndependentFromStructure(TemporaryFixtures &fixtures) {
+  auto structure = std::make_shared<FakeAnalyzer>(); structure->enabled = false;
+  auto guide = std::make_shared<FakeGuideTranscriber>();
+  const SectionDetectionService service(structure, guide);
+  expect(!service.available() && service.guideAvailable(), "guide transcription is available without Apple structure");
+  auto request = guideRequest(fixtures, "guide-independent");
+  request.stems.front().offsetSeconds = 0.25;
+  request.stems.push_back({fixtures.directory.getChildFile("missing-music.wav"), AnalysisStemRole::music, 0});
+  request.stems.push_back({fixtures.directory.getChildFile("missing-click.wav"), AnalysisStemRole::click, 0});
+  guide->inspect = [&](const auto &received, const auto &, const auto &progress, auto &, auto &) {
+    expect(received.audioFile == request.stems.front().file && received.modelFile == request.guideModelFile,
+           "guide source and selected model are passed unchanged");
+    expect(received.language == "es", "guide language reaches the transcriber");
+    near(received.offsetSeconds, 0.25, 0, "source offset reaches the transcriber");
+    progress(0.5); progress(std::numeric_limits<double>::quiet_NaN()); progress(1.5);
+    return true;
+  };
+  Run run(service, request); const auto outcome = run.wait();
+  expect(outcome.error.isEmpty() && outcome.guideTranscript && structure->calls == 0 && guide->calls == 1,
+         "guide-only run neither uses nor requires structure or unselected music");
+  near(outcome.result.durationSeconds, 2.25, 0.000001, "guide timeline duration includes explicit offset");
+  expect(outcome.result.songId == request.songId && outcome.result.suggestions.empty(),
+         "transcription never invents musical boundaries or section suggestions");
+  expect(outcome.guideTranscript->segments.size() == 3 && outcome.result.guideCues.size() == 2,
+         "literal transcript retains counting while musical normalizer excludes it");
+  near(outcome.guideTranscript->segments[0].startSeconds, 0.35, 0.000001, "spoken timestamp remains source-based");
+  near(outcome.result.guideCues[0].cueTimeSeconds, 0.35, 0.000001, "normalization does not quantize spoken timestamps");
+  expect(outcome.result.guideCues[1].normalizedType == SectionType::verse &&
+             outcome.result.guideCues[1].spokenOrdinal == 2,
+         "timed spoken labels normalize Spanish types and ordinals");
+  expect(run.state->stages == std::vector<DetectionStage>{DetectionStage::preparingAudio,
+      DetectionStage::transcribingGuide, DetectionStage::review}, "guide run reports actual transcription, never structure/fusion");
+  double previous = -1;
+  for (double value : run.state->fractions) {
+    expect(std::isfinite(value) && value >= previous && value <= 1, "numeric transcription progress is finite bounded and monotonic");
+    previous = value;
+  }
+  expect(previous == 1, "successful transcription completes numeric progress");
+  expect(outcome.guideTranscript->provider == guide->providerId() &&
+             outcome.guideTranscript->audioFingerprint.isNotEmpty() &&
+             outcome.guideTranscript->modelFingerprint.isNotEmpty(), "verified request identities accompany transcript");
+}
+
+void testGuideCacheIdentities(TemporaryFixtures &fixtures) {
+  auto guide = std::make_shared<FakeGuideTranscriber>();
+  const SectionDetectionService service(nullptr, guide);
+  auto request = guideRequest(fixtures, "guide-cache");
+  request.cacheDirectory = fixtures.directory.getChildFile("guide-evidence-cache");
+  auto outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == 1, "first guide run stores validated evidence");
+  const auto audioFingerprint = outcome.guideTranscript->audioFingerprint;
+  const auto modelFingerprint = outcome.guideTranscript->modelFingerprint;
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && outcome.cacheHit && guide->calls == 1 && outcome.result.guideCues.size() == 2,
+         "cached transcript regenerates normalized spoken cues without inference");
+  const auto originalSize = request.stems.front().file.getSize();
+  const auto originalTime = request.stems.front().file.getLastModificationTime();
+  fixtures.wave("guide-cache-guide", 16000, 32000, [](int) { return 0.4f; });
+  expect(request.stems.front().file.getSize() == originalSize &&
+             request.stems.front().file.setLastModificationTime(originalTime), "guide mutation preserves size and timestamp");
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == 2 &&
+             outcome.guideTranscript->audioFingerprint != audioFingerprint, "actual guide bytes invalidate ASR cache");
+  expect(request.guideModelFile.replaceWithText("synthetic-test-model-b"), "change model bytes without changing path");
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == 3 &&
+             outcome.guideTranscript->modelFingerprint != modelFingerprint, "model content invalidates ASR cache");
+  request.guideLanguage = "en"; outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == 4 && outcome.guideTranscript->language == "en",
+         "selected language invalidates ASR cache");
+  request.stems.front().offsetSeconds = 0.5; outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == 5, "explicit offset invalidates ASR cache");
+  near(outcome.guideTranscript->segments.front().startSeconds, 0.6, 0.000001, "offset cache uses updated spoken times");
+  guide->algorithmVersion = "guide-synthetic-2"; outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == 6, "provider version invalidates ASR cache");
+  const auto files = request.cacheDirectory.findChildFiles(juce::File::findFiles, true);
+  expect(files.size() == 6, "independent ASR requests retain only six JSON evidence files");
+  for (const auto &file : files) expect(file.hasFileExtension("json"), "ASR cache never stores decoded audio or models");
+  // Corrupt every cache entry so that the exact current identity must re-run.
+  for (const auto &file : files) expect(file.replaceWithText("{\"schemaVersion\":999}"), "replace cache with unsupported schema");
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == 7, "unsupported cache schema is recomputed safely");
+}
+
+void testGuideErrorsAndCancellation(TemporaryFixtures &fixtures) {
+  auto guide = std::make_shared<FakeGuideTranscriber>();
+  const SectionDetectionService service(nullptr, guide);
+  auto request = guideRequest(fixtures, "guide-failure");
+  request.cacheDirectory = fixtures.directory.getChildFile("failed-guide-cache");
+  auto invalid = request; invalid.stems.clear();
+  expect(Run(service, invalid).wait().error.isNotEmpty() && guide->calls == 0, "no guide fails before transcription");
+  invalid = request; invalid.stems.push_back(request.stems.front());
+  expect(Run(service, invalid).wait().error.isNotEmpty() && guide->calls == 0, "multiple guides require explicit selection");
+  invalid = request; invalid.stems.front().offsetSeconds = -1;
+  expect(Run(service, invalid).wait().error.isNotEmpty() && guide->calls == 0, "negative guide offset is rejected");
+  invalid = request; invalid.guideModelFile = fixtures.directory.getChildFile("missing-model.bin");
+  expect(Run(service, invalid).wait().error.isNotEmpty() && guide->calls == 0, "missing model fails before transcription");
+  guide->inspect = [](const auto &, const auto &, const auto &, auto &, auto &error) { error = "synthetic ASR failure"; return false; };
+  auto outcome = Run(service, request).wait();
+  expect(outcome.error == "synthetic ASR failure" && !outcome.guideTranscript && outcome.result.guideCues.empty(),
+         "provider failure exposes no partial transcript or cues");
+  guide->inspect = [](const auto &, const auto &, const auto &, auto &transcript, auto &) {
+    transcript.segments.front().startSeconds = std::numeric_limits<double>::quiet_NaN(); return true;
+  };
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isNotEmpty() && !outcome.guideTranscript, "nonfinite provider timestamp fails validation");
+  guide->inspect = [](const auto &, const auto &, const auto &, auto &transcript, auto &) {
+    transcript.segments.back().endSeconds = 20; return true;
+  };
+  expect(Run(service, request).wait().error.isNotEmpty(), "timestamp beyond source duration fails validation");
+  guide->inspect = [](const auto &received, const auto &, const auto &, auto &, auto &) {
+    expect(received.modelFile.replaceWithText("synthetic-test-model-changed"), "mutate selected model during inference"); return true;
+  };
+  expect(Run(service, request).wait().error.isNotEmpty(), "a model changed during inference cannot retain the old cache identity");
+  expect(!request.cacheDirectory.exists(), "failed or invalid transcripts never create cache evidence");
+  std::mutex mutex; std::condition_variable gate; bool entered = false;
+  guide->inspect = [&](const auto &, const CancellationCheck &cancelled, const auto &, auto &, auto &error) {
+    std::unique_lock<std::mutex> lock(mutex); entered = true; gate.notify_one();
+    while (!cancelled()) gate.wait_for(lock, std::chrono::milliseconds(5));
+    error = "cancelled"; return false;
+  };
+  Run run(service, request);
+  { std::unique_lock<std::mutex> lock(mutex); expect(gate.wait_for(lock, std::chrono::seconds(5), [&] { return entered; }), "ASR starts before cancellation"); }
+  const auto before = std::chrono::steady_clock::now(); run.task->cancel();
+  expect(std::chrono::steady_clock::now() - before < std::chrono::milliseconds(50), "guide cancellation does not block caller");
+  outcome = run.wait();
+  expect(outcome.cancelled && !outcome.guideTranscript && outcome.result.guideCues.empty() && outcome.result.suggestions.empty(),
+         "cancelled guide run never publishes partial transcript, cues, or musical sections");
+  expect(!request.cacheDirectory.exists(), "cancelled transcript never creates cache evidence");
+  guide->enabled = false;
+  expect(!service.guideAvailable() && service.guideUnavailableReason() == guide->unavailableReason(), "guide capability explains unavailable local transcriber");
+  expect(Run(service, request).wait().error == guide->unavailableReason(), "guide unavailability is independent from Apple");
+}
 } // namespace
 
 int main() {
@@ -288,6 +463,9 @@ int main() {
   testFailuresAndCleanup(fixtures);
   testOverrangeAudio(fixtures);
   testCancellation(fixtures);
+  testGuideIndependentFromStructure(fixtures);
+  testGuideCacheIdentities(fixtures);
+  testGuideErrorsAndCancellation(fixtures);
   std::cout << "Section detection service tests passed (synthetic provider; no Apple accuracy claims).\n";
   return 0;
 }

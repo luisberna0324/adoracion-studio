@@ -1,6 +1,9 @@
 # Source-only offline analysis is independent of playback and cloud services.
+include("${CMAKE_CURRENT_LIST_DIR}/WhisperGuide.cmake")
 target_sources(MTControls PRIVATE
     src/analysis/SectionDetection.cpp
+    src/analysis/GuideSectionAlignment.cpp
+    src/analysis/GuideModelProvisioner.cpp
     src/analysis/SectionDetectionService.cpp
     src/ui/panels/SectionDetectionPanel.cpp
     src/platform/AppleMusicStructureBridge.cpp)

@@ -1512,8 +1512,58 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   });
   {
     const playworship::analysis::SectionDetectionService detection;
-    waveformBarRaw->setSectionDetectionAvailability(detection.available(), detection.unavailableReason());
+    waveformBarRaw->setSectionDetectionAvailability(
+        detection.available() || detection.guideAvailable(),
+        detection.guideAvailable() ? juce::String{} : detection.unavailableReason());
     waveformBarRaw->setOnSectionDetectionRequest([this] { showSectionDetection(); });
+    waveformBarRaw->setGuideAlignmentCallbacks(
+        [this](double origin) {
+          if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id) return;
+          auto options = guideReviewDraft.options;
+          options.originSeconds = origin;
+          rebuildGuideSectionReview(options);
+        },
+        [this](const juce::String &id, double seconds, bool snapToBars) {
+          if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
+          juce::String error;
+          if (!playworship::analysis::moveGuideSectionBoundary(guideReviewDraft, id, seconds, snapToBars, error)) {
+            waveformBarPtr->setGuideAlignmentError(error); return;
+          }
+          waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+        },
+        [this] { finishGuideSectionReview(true); },
+        [this] { finishGuideSectionReview(false); },
+        [this](int bars) {
+          if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id) return;
+          auto options = guideReviewDraft.options;
+          options.anticipationBars = bars;
+          rebuildGuideSectionReview(options);
+        });
+    waveformBarRaw->setOnGuideAlignmentRename([this](const juce::String &id, const juce::String &name) {
+      if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
+      const auto cleaned = name.trim();
+      if (cleaned.isEmpty() || cleaned.length() > 128) {
+        waveformBarPtr->setGuideAlignmentError(L10n::tr("Escribe un nombre de hasta 128 caracteres.", "Enter a name of up to 128 characters.")); return;
+      }
+      for (auto &suggestion : guideReviewDraft.suggestions) if (suggestion.id == id) {
+        suggestion.displayName = cleaned; suggestion.userEdited = true;
+        guideReviewNames[id] = cleaned;
+        waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+        break;
+      }
+    });
+    waveformBarRaw->setOnGuideAlignmentRemove([this](const juce::String &id) {
+      if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
+      const auto found = std::find_if(guideReviewDraft.suggestions.begin(), guideReviewDraft.suggestions.end(),
+          [&id](const auto &suggestion) { return suggestion.id == id; });
+      if (found == guideReviewDraft.suggestions.end()) return;
+      guideReviewDiscarded.insert(id.toStdString());
+      const auto index = size_t(std::distance(guideReviewDraft.suggestions.begin(), found));
+      guideReviewDraft.suggestions.erase(found);
+      if (index > 0) guideReviewDraft.suggestions[index - 1].endSeconds = index < guideReviewDraft.suggestions.size()
+          ? guideReviewDraft.suggestions[index].startSeconds : guideReviewDraft.durationSeconds;
+      waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+    });
   }
   waveformBarRaw->setOnWaveformHeightToggle([this](bool expanded) {
     isWaveformHeightExpanded = expanded;
@@ -4184,7 +4234,7 @@ void MTControlsAudioProcessorEditor::closePractice() {
 }
 
 void MTControlsAudioProcessorEditor::showSectionDetection() {
-  if (sectionDetectionPanel || !hasCurrentLoadedSong || playbackSession.isRemote() || !waveformBarPtr)
+  if (sectionDetectionPanel || guideReviewTranscript || !hasCurrentLoadedSong || playbackSession.isRemote() || !waveformBarPtr)
     return;
   const auto arrangement = waveformBarPtr->getArrangementSnapshot();
   // Providers analyze original synchronized files. A reordered source map
@@ -4216,16 +4266,91 @@ void MTControlsAudioProcessorEditor::showSectionDetection() {
     if(!safe->waveformBarPtr->applyDetectedSections(plan.arrangement)) { error=juce::String::fromUTF8("El arreglo cambió o hay un conflicto con secciones existentes."); return false; }
     return true;
   };
-  actions.close = [safe] { juce::MessageManager::callAsync([safe] { if(safe) safe->closeSectionDetection(); }); };
+  actions.reviewGuide = [safe,id](const playworship::analysis::GuideTranscript &transcript) {
+    if (safe && safe->hasCurrentLoadedSong && safe->currentLoadedSong.id == id && !safe->playbackSession.isRemote())
+      safe->beginGuideSectionReview(transcript);
+  };
+  actions.close = [safe] { juce::MessageManager::callAsync([safe] { if(safe) safe->closeSectionDetection(true); }); };
   sectionDetectionPanel = std::make_unique<SectionDetectionPanel>(currentLoadedSong,std::move(actions));
   addAndMakeVisible(*sectionDetectionPanel);
   sectionDetectionPanel->setBounds(getLocalBounds().removeFromBottom(std::min(430,std::max(260,getHeight()-150))));
   sectionDetectionPanel->toFront(true);
+  sectionDetectionPanel->beginSuggestionFlow();
 }
 
-void MTControlsAudioProcessorEditor::closeSectionDetection() {
+void MTControlsAudioProcessorEditor::closeSectionDetection(bool keepGuideReview) {
   if(waveformBarPtr) waveformBarPtr->clearSectionDetectionPreview();
   sectionDetectionPanel.reset();
+  if (!keepGuideReview) finishGuideSectionReview(false);
+}
+
+void MTControlsAudioProcessorEditor::beginGuideSectionReview(
+    const playworship::analysis::GuideTranscript &transcript) {
+  if (!hasCurrentLoadedSong || songLoadBusy || playbackSession.isRemote() || !waveformBarPtr) return;
+  guideReviewTranscript = transcript;
+  // The guide may stop before the musical tail. The draft ends at the full
+  // original source, never at the last spoken announcement or playback tempo.
+  const auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  guideReviewTranscript->durationSeconds = std::max(transcript.durationSeconds,
+                                                    processorRef.getLoadedSongLengthSeconds());
+  guideReviewSongId = currentLoadedSong.id;
+  guideReviewNames.clear(); guideReviewDiscarded.clear();
+  playworship::analysis::GuideAlignmentOptions options;
+  options.originSeconds = transcript.segments.empty() ? 0.0 : transcript.segments.front().startSeconds;
+  options.bpm = currentLoadedSong.bpm;
+  options.timeSignature = currentLoadedSong.timeSignature;
+  options.tempoMap = currentLoadedSong.tempoMap;
+  guideReviewDraft = playworship::analysis::alignGuideSections(*guideReviewTranscript, options);
+  waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+  if (guideReviewDraft.error.isNotEmpty()) waveformBarPtr->setGuideAlignmentError(guideReviewDraft.error);
+}
+
+void MTControlsAudioProcessorEditor::rebuildGuideSectionReview(
+    const playworship::analysis::GuideAlignmentOptions &options) {
+  if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr || playbackSession.isRemote()) return;
+  auto rebuilt = playworship::analysis::alignGuideSections(*guideReviewTranscript, options);
+  if (rebuilt.error.isNotEmpty()) { waveformBarPtr->setGuideAlignmentError(rebuilt.error); return; }
+  rebuilt.suggestions.erase(std::remove_if(rebuilt.suggestions.begin(), rebuilt.suggestions.end(),
+      [this](const auto &suggestion) { return guideReviewDiscarded.count(suggestion.id.toStdString()) != 0; }), rebuilt.suggestions.end());
+  for (size_t i = 0; i < rebuilt.suggestions.size(); ++i) {
+    auto &suggestion = rebuilt.suggestions[i];
+    suggestion.endSeconds = i + 1 < rebuilt.suggestions.size()
+        ? rebuilt.suggestions[i + 1].startSeconds : rebuilt.durationSeconds;
+    const auto corrected = guideReviewNames.find(suggestion.id);
+    if (corrected != guideReviewNames.end()) {
+      suggestion.displayName = corrected->second; suggestion.userEdited = true;
+    }
+  }
+  guideReviewDraft = std::move(rebuilt);
+  waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+}
+
+void MTControlsAudioProcessorEditor::finishGuideSectionReview(bool confirm) {
+  if (!confirm) {
+    if (waveformBarPtr) waveformBarPtr->clearGuideAlignmentPreview();
+    guideReviewTranscript.reset(); guideReviewDraft = {};
+    guideReviewSongId.clear(); guideReviewNames.clear(); guideReviewDiscarded.clear();
+    return;
+  }
+  if (!guideReviewTranscript || !hasCurrentLoadedSong || guideReviewSongId != currentLoadedSong.id ||
+      playbackSession.isRemote() || !waveformBarPtr) return;
+  if (guideReviewDraft.error.isNotEmpty()) {
+    waveformBarPtr->setGuideAlignmentError(guideReviewDraft.error); return;
+  }
+  if (guideReviewDraft.suggestions.empty()) {
+    waveformBarPtr->setGuideAlignmentError(L10n::tr("No hay sugerencias para confirmar.", "There are no suggestions to confirm.")); return;
+  }
+  const auto plan = playworship::analysis::appendConfirmedSuggestions(
+      waveformBarPtr->getArrangementSnapshot(), guideReviewDraft.suggestions,
+      guideReviewDraft.durationSeconds);
+  if (plan.error.isNotEmpty()) { waveformBarPtr->setGuideAlignmentError(plan.error); return; }
+  if (!waveformBarPtr->applyDetectedSections(plan.arrangement)) {
+    waveformBarPtr->setGuideAlignmentError(L10n::tr(
+        "Hay un conflicto con las secciones existentes. Ajusta o descarta las marcas que coincidan.",
+        "There is a conflict with existing sections. Adjust or discard overlapping suggestions."));
+    return;
+  }
+  finishGuideSectionReview(false);
 }
 
 bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
@@ -4941,6 +5066,9 @@ void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
+  if (guideReviewTranscript && (!hasCurrentLoadedSong || songLoadBusy ||
+      playbackSession.isRemote() || guideReviewSongId != currentLoadedSong.id))
+    finishGuideSectionReview(false);
   if (appleLinkFlow.stage != AppleLinkFlow::Stage::idle &&
       !appleLinkFlow.valid(juce::Time::currentTimeMillis())) {
     cancelAuthenticationAttempt();

@@ -55,6 +55,20 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static juce::Point<float> guideOrigin(WaveformBar &wave) {
+    wave.rebuildGuideAlignmentMarkers(); return wave.guideOriginPill.getCentre();
+  }
+  static juce::Point<float> guideMarker(WaveformBar &wave, const juce::String &id) {
+    wave.rebuildGuideAlignmentMarkers();
+    for (const auto &marker : wave.guideAlignmentMarkers) if (marker.id == id) return marker.pill.getCentre();
+    throw std::runtime_error("guide marker missing from viewport");
+  }
+  static int guideMarkerCount(WaveformBar &wave) { wave.rebuildGuideAlignmentMarkers(); return int(wave.guideAlignmentMarkers.size()); }
+  static auto &guideAccept(WaveformBar &wave) { return wave.guideAlignmentAcceptButton; }
+  static auto &guideCancel(WaveformBar &wave) { return wave.guideAlignmentCancelButton; }
+  static auto &guideAnticipation(WaveformBar &wave) { return wave.guideAnticipationBox; }
+  static auto &guideRename(WaveformBar &wave) { return wave.guideNameEditor; }
+  static auto &suggestSections(WaveformBar &wave) { return wave.suggestSectionsButton; }
   static void clickLiveToggle(TopBar &bar) {
     auto menu = bar.createMorePopoverContent();
     auto *toggle = dynamic_cast<juce::Button *>(menu->findChildWithID("timeline-sections"));
@@ -3152,6 +3166,221 @@ void testDetectedSectionsReviewAndHistory() {
          "undo of the first detection restores the original empty arrangement");
 }
 
+playworship::analysis::GuideAlignmentDraft guideDraftFixture() {
+  playworship::analysis::GuideAlignmentDraft draft;
+  draft.options.originSeconds = 1.0; draft.options.bpm = 120; draft.options.anticipationBars = 1;
+  draft.durationSeconds = 30;
+  for (int pulse = 0; pulse < 59; ++pulse)
+    draft.grid.push_back({1.0 + pulse * 0.5, pulse / 4 + 1, pulse % 4 + 1, pulse % 4 == 0});
+  for (int i = 0; i < 3; ++i) {
+    playworship::analysis::SectionSuggestion suggestion;
+    suggestion.id = "guide-preview-" + juce::String(i);
+    suggestion.displayName = i == 0 ? "Cordo" : i == 1 ? "Verso 1" : "Final";
+    suggestion.startSeconds = 5.0 + i * 8; suggestion.endSeconds = i == 2 ? 30 : 13.0 + i * 8;
+    suggestion.matchedCueTimeSeconds = suggestion.startSeconds - 2;
+    draft.suggestions.push_back(suggestion);
+  }
+  return draft;
+}
+
+juce::MouseEvent guidePointer(WaveformBar &wave, juce::Point<float> position,
+                              juce::Point<float> start, bool dragged, bool free = false) {
+  const juce::Time now(1000000);
+  return {juce::Desktop::getInstance().getMainMouseSource(), position,
+      juce::ModifierKeys::leftButtonModifier | (free ? juce::ModifierKeys::altModifier : 0),
+      1, 0, 0, 0, 0, &wave, &wave, now, start, now, 1, dragged};
+}
+
+void testCalculatedGuideAlignmentReview() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  wave.setArrangement({}, false); wave.setSize(1200, 320);
+  std::vector<float> bins(4096);
+  for (size_t i = 0; i < bins.size(); ++i)
+    bins[i] = float(0.08 + 0.72 * std::abs(std::sin(i * 0.137)) * std::abs(std::cos(i * 0.019)));
+  wave.setWaveformBins(std::move(bins));
+  GuideTranscript transcript;
+  transcript.audioFingerprint = "calculated-review-fixture";
+  transcript.durationSeconds = 30;
+  transcript.segments = {{0, 1, "Uno, dos, tres, cuatro"}, {3.1, 3.4, "Coro"},
+      {9.1, 9.5, "Verso uno"}, {17.1, 17.5, "Final"}};
+  GuideAlignmentOptions options;
+  auto draft = alignGuideSections(transcript, options);
+  expect(draft.error.isEmpty() && draft.suggestions.size() == 3, "spoken cues create the real calculated review draft");
+  wave.setGuideAlignmentCallbacks([&](double origin) {
+    options.originSeconds = origin;
+    draft = alignGuideSections(transcript, options);
+    expect(draft.error.isEmpty(), "dragged origin rebuilds a valid musical grid");
+    wave.setGuideAlignmentPreview(draft);
+  }, [&](const juce::String &id, double seconds, bool snap) {
+    juce::String error;
+    expect(moveGuideSectionBoundary(draft, id, seconds, snap, error), "dragged marker uses the real boundary calculation");
+    wave.setGuideAlignmentPreview(draft);
+  }, [&] {
+    const auto plan = appendConfirmedSuggestions(wave.getArrangementSnapshot(), draft.suggestions, draft.durationSeconds);
+    expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement), "calculated review confirms through domain acceptance and ordinary history");
+    wave.clearGuideAlignmentPreview();
+  }, [&] { wave.clearGuideAlignmentPreview(); }, [&](int anticipation) {
+    options.anticipationBars = anticipation;
+    draft = alignGuideSections(transcript, options);
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setGuideAlignmentPreview(draft);
+  const auto body = WaveformEditingTestAccess::waveBody(wave);
+  const auto origin = WaveformEditingTestAccess::guideOrigin(wave);
+  const auto targetOrigin = origin.translated(body.getWidth() * 0.5f / 30.0f, 0);
+  wave.mouseDown(guidePointer(wave, origin, origin, false));
+  wave.mouseDrag(guidePointer(wave, targetOrigin, origin, true));
+  wave.mouseUp(guidePointer(wave, targetOrigin, origin, true));
+  expectNear(draft.options.originSeconds, 0.5, "origin gesture reaches musical alignment");
+  expectNear(draft.suggestions[0].startSeconds, 4.5, "origin correction recomputes the first proposed entry");
+  expectNear(draft.suggestions[1].startSeconds, 10.5, "origin correction recomputes the following entry");
+  const auto marker = WaveformEditingTestAccess::guideMarker(wave, draft.suggestions[1].id);
+  const auto targetMarker = marker.translated(body.getWidth() * 0.8f / 30.0f, 0);
+  wave.mouseDown(guidePointer(wave, marker, marker, false, true));
+  wave.mouseDrag(guidePointer(wave, targetMarker, marker, true, true));
+  wave.mouseUp(guidePointer(wave, targetMarker, marker, true, true));
+  expectNear(draft.suggestions[1].startSeconds, 11.3, "local marker correction retains the precise dragged source time");
+  expectNear(draft.suggestions[0].endSeconds, 11.3, "local correction recalculates the preceding section end");
+  expectNear(draft.suggestions[2].startSeconds, 18.5, "local correction preserves the later section start");
+  expect(fixture.commits == 0 && wave.getArrangementSnapshot().parts.empty(), "calculated origin and boundary edits remain provisional");
+  WaveformEditingTestAccess::guideAnticipation(wave).setSelectedId(3, juce::sendNotificationSync);
+  expectNear(draft.suggestions[0].startSeconds, 6.5, "anticipation control rebuilds real proposed entries");
+  expectNear(draft.suggestions[1].startSeconds, 12.5, "new anticipation recalculates all entries from spoken evidence");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_CALCULATED_CAPTURE_PATH", {});
+  if (capturePath.isNotEmpty()) {
+    const juce::File file(capturePath);
+    expect(file.getParentDirectory().createDirectory().wasOk(), "calculated preview capture directory opens");
+    auto output = file.createOutputStream();
+    expect(output && juce::PNGImageFormat().writeImageToStream(wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.5f), *output),
+           "production waveform renders the actual alignment calculation");
+  }
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  expect(fixture.commits == 1 && wave.getArrangementSnapshot().parts.size() == 3, "one confirmation publishes all calculated sections together");
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().parts.empty(), "one undo reverts the calculated confirmation");
+}
+
+void testGuideAlignmentWaveformReview() {
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  wave.setArrangement({}, false);
+  wave.setSize(1200, 320);
+  std::vector<float> bins(4096);
+  for (size_t i = 0; i < bins.size(); ++i) {
+    const double t = double(i) / double(bins.size());
+    const double swell = t < 0.12 ? 0.27 : t < 0.42 ? 0.82 : t < 0.70 ? 0.48 : 0.95;
+    bins[i] = float((0.07 + 0.65 * std::abs(std::sin(i * 0.137)) * std::abs(std::cos(i * 0.019))) * swell);
+  }
+  wave.setWaveformBins(std::move(bins));
+  int entryCalls = 0;
+  wave.setSectionDetectionAvailability(true);
+  wave.setOnSectionDetectionRequest([&] { ++entryCalls; });
+  auto &entry = WaveformEditingTestAccess::suggestSections(wave);
+  expect(entry.isVisible() && entry.isEnabled() && entry.getButtonText() == "Sugerir secciones",
+         "suggestion entry uses the existing edit toolbar and exact requested label");
+  entry.onClick(); expect(entryCalls == 1, "edit suggestion button dispatches the existing entry callback");
+  wave.triggerEditToggleFromMidi();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  expect(!entry.isVisible(), "suggestions entry disappears outside edit mode");
+  wave.triggerEditToggleFromMidi();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+
+  auto draft = guideDraftFixture();
+  double origin = -1, moved = -1; juce::String movedId; bool snapped = false;
+  int accepted = 0, cancelled = 0, anticipation = -1;
+  wave.setGuideAlignmentCallbacks([&](double value) {
+    origin = value;
+    const auto delta = value - draft.options.originSeconds;
+    draft.options.originSeconds = value;
+    for (auto &mark : draft.grid) mark.timeSeconds += delta;
+    wave.setGuideAlignmentPreview(draft);
+  }, [&](const juce::String &id, double value, bool snap) {
+    movedId = id; moved = value; snapped = snap;
+    for (auto &suggestion : draft.suggestions) if (suggestion.id == id) suggestion.startSeconds = value;
+    wave.setGuideAlignmentPreview(draft);
+  }, [&] {
+    SongArrangementSnapshot snapshot = wave.getArrangementSnapshot();
+    for (const auto &suggestion : draft.suggestions) {
+      auto part = original(suggestion.id.toRawUTF8(), suggestion.startSeconds, suggestion.endSeconds);
+      part.name = suggestion.displayName; snapshot.parts.push_back(part);
+    }
+    expect(wave.applyDetectedSections(snapshot), "confirm applies suggestions through ordinary arrangement transaction");
+    ++accepted; wave.clearGuideAlignmentPreview();
+  }, [&] { ++cancelled; wave.clearGuideAlignmentPreview(); }, [&](int value) { anticipation = value; });
+  wave.setOnGuideAlignmentRename([&](juce::String id, juce::String name) {
+    for (auto &suggestion : draft.suggestions) if (suggestion.id == id) suggestion.displayName = name;
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setGuideAlignmentPreview(draft);
+  expect(wave.hasGuideAlignmentPreview() && fixture.commits == 0 && wave.getArrangementSnapshot().parts.empty(),
+         "visual markers never enter committed arrangement or persistence");
+  expect(!entry.isVisible(), "review toolbar replaces editing actions while proposals are transient");
+  auto start = WaveformEditingTestAccess::guideOrigin(wave);
+  auto body = WaveformEditingTestAccess::waveBody(wave);
+  auto target = start.translated(body.getWidth() * 0.375f / 30.0f, 0);
+  wave.mouseDown(guidePointer(wave, start, start, false));
+  wave.mouseDrag(guidePointer(wave, target, start, true));
+  expectNear(origin, 1.375, "bar one handle supports free sub-beat origin correction");
+  target = start.translated(body.getWidth() * 0.75f / 30.0f, 0);
+  wave.mouseDrag(guidePointer(wave, target, start, true));
+  wave.mouseUp(guidePointer(wave, target, start, true));
+  expectNear(origin, 1.75, "synchronous draft refresh preserves drag anchor without accumulating movement");
+
+  start = WaveformEditingTestAccess::guideMarker(wave, "guide-preview-1");
+  target = start.translated(body.getWidth() * 0.25f / 30.0f, 0);
+  wave.mouseDown(guidePointer(wave, start, start, false));
+  wave.mouseDrag(guidePointer(wave, target, start, true));
+  wave.mouseUp(guidePointer(wave, target, start, true));
+  expect(movedId == "guide-preview-1" && snapped, "section marker requests bar snapping by default");
+  expectNear(moved, 13.25, "marker forwards source seconds with pill grab offset preserved");
+  start = WaveformEditingTestAccess::guideMarker(wave, "guide-preview-1");
+  target = start.translated(body.getWidth() * 0.125f / 30.0f, 0);
+  wave.mouseDown(guidePointer(wave, start, start, false, true));
+  wave.mouseDrag(guidePointer(wave, target, start, true, true));
+  wave.mouseUp(guidePointer(wave, target, start, true, true));
+  expect(!snapped, "Alt requests a free local boundary correction");
+  expectNear(moved, 13.375, "free boundary edit retains sub-beat precision");
+
+  start = WaveformEditingTestAccess::guideMarker(wave, "guide-preview-0");
+  wave.mouseDoubleClick(guidePointer(wave, start, start, false));
+  auto &rename = WaveformEditingTestAccess::guideRename(wave);
+  expect(rename.isVisible(), "double click edits a doubtful marker name inline");
+  rename.setText("Coro", false); rename.onReturnKey();
+  expect(draft.suggestions.front().displayName == "Coro" && fixture.commits == 0,
+         "renaming updates only the transient draft via its callback");
+  WaveformEditingTestAccess::guideAnticipation(wave).setSelectedId(3, juce::sendNotificationSync);
+  expect(anticipation == 2, "anticipation control requests the selected whole-bar offset");
+  expect(fixture.command('Z') && wave.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && fixture.commits == 0,
+         "review absorbs old arrangement undo and delete shortcuts without mutating the base");
+
+  WaveformEditingTestAccess::fixedPlaybackViewport(wave, 0.4f, 0.25f);
+  expect(WaveformEditingTestAccess::guideMarkerCount(wave) == 1,
+         "zoomed preview excludes offscreen markers instead of pinning them to viewport edges");
+  WaveformEditingTestAccess::fixedPlaybackViewport(wave, 0, 1);
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_ALIGNMENT_CAPTURE_PATH", {});
+  if (capturePath.isNotEmpty()) {
+    expect(juce::File::isAbsolutePath(capturePath), "guide review screenshot path is absolute");
+    const juce::File file(capturePath);
+    expect(file.getParentDirectory().createDirectory().wasOk(), "guide screenshot output directory opens");
+    auto output = file.createOutputStream();
+    expect(output && juce::PNGImageFormat().writeImageToStream(wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.5f), *output),
+           "deterministic waveform and draggable markers render in the actual component");
+  }
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  expect(accepted == 1 && fixture.commits == 1 && fixture.published.parts.size() == 3 && !wave.hasGuideAlignmentPreview(),
+         "Confirm publishes one complete arrangement transaction and closes preview");
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().parts.empty(), "one ordinary undo restores the pre-review arrangement");
+  expect(fixture.command('Y') && wave.getArrangementSnapshot().parts.size() == 3, "ordinary redo restores accepted IDs and boundaries");
+  const auto commits = fixture.commits;
+  wave.setGuideAlignmentPreview(draft);
+  WaveformEditingTestAccess::guideCancel(wave).onClick();
+  expect(cancelled == 1 && !wave.hasGuideAlignmentPreview() && fixture.commits == commits,
+         "Cancel clears markers and toolbar without persistence or history changes");
+  wave.setGuideAlignmentPreview(draft); wave.resetPlaybackViewForSong();
+  expect(!wave.hasGuideAlignmentPreview(), "song view reset removes review markers and toolbar");
+}
+
 void testCueVisualPreview() {
   const auto path = juce::SystemStats::getEnvironmentVariable("PW_CUE_CAPTURE_DIR",{});
   if (path.isEmpty()) return;
@@ -3219,6 +3448,8 @@ int main() {
   run("cue capacity rejects copy and paste atomically", testCueCapacityRejectsCopyWithoutChangingTimeline);
   run("cue component previews", testCueVisualPreview);
   run("section detection preview, safe confirmation and undo", testDetectedSectionsReviewAndHistory);
+  run("guide waveform review, origin and marker gestures, confirmation and undo", testGuideAlignmentWaveformReview);
+  run("calculated guide grid, live origin and boundary edits, atomic confirmation", testCalculatedGuideAlignmentReview);
   run("independent cue drag, history and deletion", testIndependentCueEditing);
   run("stacked cue double-click deletion and undo", testCueDoubleClickDeletesOnlyItsPoint);
   run("wave cues preserve rendered musical ruler", testCueOverlayPreservesMusicalRuler);

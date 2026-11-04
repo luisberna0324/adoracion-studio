@@ -43,3 +43,16 @@ inline void drawMusicalTimelineRuler(
     }
   }
 }
+
+// The small flag and fine needle keep the playback cursor distinct from marks.
+inline void drawTimelinePlayhead(juce::Graphics &g, float x, float top,
+                                 float bottom, float opacity, bool drawHead = true) {
+  if (!std::isfinite(x) || bottom <= top) return;
+  g.setColour(UITheme::textPrimary.withAlpha(opacity));
+  g.drawLine(x, top, x, bottom, 1.0f);
+  if (drawHead) {
+    juce::Path flag;
+    flag.addTriangle(x - 4.0f, top + 1.0f, x + 4.0f, top + 1.0f, x, top + 6.0f);
+    g.fillPath(flag);
+  }
+}

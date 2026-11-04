@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../data/SongData.h"
+#include "../../analysis/GuideSectionAlignment.h"
 #include "../UiCommon.h"
 #include "../components/AppModal.h"
 #include "PracticeTimelineRuler.h"
@@ -60,7 +61,7 @@ public:
   void setLiveMode(bool enabled);
   bool isLiveMode() const { return liveMode; }
   bool canToggleLiveMode() const {
-    return liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty());
+    return liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty() && !guideAlignmentActive);
   }
 
   void setWaveformBins(std::vector<float> bins);
@@ -109,6 +110,17 @@ public:
   // Transient review blocks never enter the player, persistence or edit history.
   void setSectionDetectionPreview(std::vector<SongArrangementPartSnapshot> parts);
   void clearSectionDetectionPreview();
+  void setGuideAlignmentPreview(const playworship::analysis::GuideAlignmentDraft &);
+  void clearGuideAlignmentPreview();
+  bool hasGuideAlignmentPreview() const { return guideAlignmentActive; }
+  const playworship::analysis::GuideAlignmentDraft &getGuideAlignmentPreview() const { return guideAlignmentPreview; }
+  void setGuideAlignmentCallbacks(std::function<void(double)> originMoved,
+      std::function<void(const juce::String &, double, bool)> boundaryMoved,
+      std::function<void()> accept, std::function<void()> cancel,
+      std::function<void(int)> anticipationChanged);
+  void setGuideAlignmentError(juce::String);
+  void setOnGuideAlignmentRename(std::function<void(juce::String, juce::String)>);
+  void setOnGuideAlignmentRemove(std::function<void(const juce::String &)>);
   SongArrangementSnapshot getArrangementSnapshot() const { return arrangement; }
   // Confirms only additive, non-overlapping annotations, preserving every
   // existing part/cue and entering the ordinary arrangement undo history once.
@@ -362,6 +374,41 @@ private:
   bool sectionDetectionAvailable = false;
   juce::String sectionDetectionUnavailableReason;
   std::vector<SongArrangementPartSnapshot> sectionDetectionPreview;
+  playworship::analysis::GuideAlignmentDraft guideAlignmentPreview;
+  bool guideAlignmentActive = false;
+  juce::String guideAlignmentError;
+  std::function<void(double)> onGuideOriginMoved;
+  std::function<void(const juce::String &, double, bool)> onGuideBoundaryMoved;
+  std::function<void()> onGuideAlignmentAccept, onGuideAlignmentCancel;
+  std::function<void(int)> onGuideAnticipationChanged;
+  std::function<void(juce::String, juce::String)> onGuideAlignmentRename;
+  std::function<void(const juce::String &)> onGuideAlignmentRemove;
+  juce::Label guideAlignmentLabel;
+  AdaptiveComboBox guideAnticipationBox;
+  juce::TextButton guideAlignmentAcceptButton, guideAlignmentCancelButton;
+  juce::TextButton suggestSectionsButton;
+  juce::Rectangle<int> guideAlignmentToolbarBounds;
+  struct GuideAlignmentMarkerBounds {
+    juce::String id;
+    juce::Rectangle<float> pill, lineHit;
+    float x = 0.0f;
+  };
+  std::vector<GuideAlignmentMarkerBounds> guideAlignmentMarkers;
+  juce::Rectangle<float> guideOriginPill, guideOriginHit;
+  bool guideOriginDragging = false, guideBoundaryDragging = false, guidePanning = false;
+  juce::String guideDraggedId;
+  juce::Point<float> guideDragStart;
+  double guideDragSourceStart = 0.0;
+  float guideDragViewportStart = 0.0f, guideDragViewportSpan = 1.0f;
+  juce::TextEditor guideNameEditor;
+  juce::String guideRenamingId;
+  void layoutGuideAlignmentToolbar();
+  void rebuildGuideAlignmentMarkers();
+  void drawGuideAlignmentPreview(juce::Graphics &, juce::Rectangle<float>, juce::Rectangle<float>);
+  int hitGuideAlignmentMarker(juce::Point<float>) const;
+  float guideAlignmentTimeX(double) const;
+  void beginGuideAlignmentRename(const juce::String &);
+  void finishGuideAlignmentRename(bool);
   std::function<void()> onCloudSettingsSyncRequested;
   std::function<void(juce::Rectangle<int>)>
       onCloudSettingsVersionsRequested;
@@ -657,7 +704,8 @@ private:
                                 const juce::Rectangle<float> &bounds,
                                 float windowStart, float windowSpan) const;
   void drawSeekRuler(juce::Graphics &g, const juce::Rectangle<float> &bounds,
-                     float windowStart, float windowSpan) const;
+                     float windowStart, float windowSpan,
+                     bool showMusicalMarks = true) const;
   void drawSectionInsertionAnchor(
       juce::Graphics &g, const juce::Rectangle<float> &waveBounds,
       const juce::Rectangle<float> &rulerBounds, float windowStart,

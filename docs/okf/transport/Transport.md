@@ -567,6 +567,16 @@ su dibujo e interacción sobre esta referencia. Las indicaciones se superponen
 a la onda y no reservan altura adicional en la regla. En teléfono la regla
 está disponible en edición y permanece oculta en performance.
 
+En escritorio, `TimelineRulerStyle::drawTimelinePlayhead` dibuja el cursor con
+una línea fina de `UITheme::textPrimary`, también en la onda y el minimapa. En
+la regla añade una pequeña punta y usa opacidad de 0.65 en reproducción y 0.25
+en pausa. Las sugerencias transitorias conservan sus marcas discontinuas de
+color para distinguirlas del cursor. La revisión dibuja el cursor sobre su propia
+cuadrícula, sin superponer las marcas de la regla habitual. Esta apariencia
+recupera el estilo existente de escritorio sin cambiar posición, seguimiento,
+seek ni comandos de transporte.
+El dibujo de iOS y Android conserva su implementación vigente.
+
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la
 barra contextual de cada sección y abre el selector contextual. La lista inicial

@@ -1,5 +1,6 @@
 #pragma once
 #include "../../analysis/SectionDetectionService.h"
+#include "../../analysis/GuideModelProvisioner.h"
 #include "../UiCommon.h"
 
 // Review-only state. Persistence remains owned by WaveformBar's existing edit
@@ -11,18 +12,30 @@ public:
     std::function<void(double)> listen;
     std::function<bool(const std::vector<playworship::analysis::SectionSuggestion> &, double, juce::String &)> accept;
     std::function<void()> close;
+    // The main editor owns grid alignment and review on the existing waveform.
+    // Without this callback the literal transcript remains available for probes.
+    std::function<void(const playworship::analysis::GuideTranscript &)> reviewGuide;
   };
   SectionDetectionPanel(ImportedSongData, Actions,
       std::shared_ptr<playworship::analysis::IMusicStructureAnalyzer> =
-          playworship::analysis::createPlatformMusicStructureAnalyzer());
+          playworship::analysis::createPlatformMusicStructureAnalyzer(),
+      std::shared_ptr<playworship::analysis::IGuideTranscriber> =
+          playworship::analysis::createWhisperGuideTranscriber());
   ~SectionDetectionPanel() override;
+  // Called explicitly by the editor's Sugerir secciones entry. Constructors do
+  // not start work or download anything implicitly.
+  void beginSuggestionFlow();
   void paint(juce::Graphics &) override;
   void resized() override;
 private:
   friend struct SectionDetectionPanelTestAccess;
   struct RoleRow;
   struct SuggestionRow;
-  void start();
+  void start(bool guideOnly = false);
+  void completeDetection(playworship::analysis::DetectionOutcome);
+  void chooseGuideModel();
+  void prepareGuideModel();
+  void showTranscript(const playworship::analysis::GuideTranscript &);
   void rebuildRows();
   void updatePreview();
   void setBusy(bool);
@@ -34,6 +47,9 @@ private:
   Actions actions;
   playworship::analysis::SectionDetectionService service;
   std::shared_ptr<playworship::analysis::SectionDetectionTask> task;
+  std::shared_ptr<playworship::analysis::GuideModelPreparationTask> modelTask;
+  std::shared_ptr<playworship::analysis::IGuideModelDownloadSource> modelDownloadSource;
+  playworship::analysis::GuideModelAsset modelAsset = playworship::analysis::defaultWhisperGuideModelAsset();
   playworship::analysis::SectionDetectionResult result;
   juce::File analysisCacheDirectory;
   std::vector<bool> selected;
@@ -42,9 +58,15 @@ private:
   juce::Viewport viewport;
   juce::Component content;
   juce::Label title, status, help;
+  juce::Label modelStatus;
+  juce::ComboBox guideLanguage;
+  juce::TextEditor transcript;
+  juce::File guideModelFile;
+  std::unique_ptr<juce::FileChooser> modelChooser;
+  juce::TextButton transcribe, chooseModel, showTracks;
   juce::ToggleButton gridConfirmed;
   juce::TextButton analyze, cancel, add, acceptSelected, selectAll;
   double progress = -1;
   juce::ProgressBar spinner{progress};
-  bool busy = false, reviewing = false, reviewModified = false;
+  bool busy = false, reviewing = false, reviewModified = false, transcriptReview = false;
 };

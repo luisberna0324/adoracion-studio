@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "analysis/GuideSectionAlignment.h"
 #include "platform/NativeAppleSignIn.h"
 #include "data/SessionPersistence.h"
 #include "data/AppleLinkFlow.h"
@@ -21,6 +22,7 @@
 #include <JuceHeader.h>
 
 #include <optional>
+#include <map>
 #include <unordered_set>
 
 class TopBar;
@@ -70,7 +72,10 @@ public:
 
 private:
   void showSectionDetection();
-  void closeSectionDetection();
+  void closeSectionDetection(bool keepGuideReview = false);
+  void beginGuideSectionReview(const playworship::analysis::GuideTranscript &);
+  void rebuildGuideSectionReview(const playworship::analysis::GuideAlignmentOptions &);
+  void finishGuideSectionReview(bool confirm);
   void updateTeamsOnboarding();
   void processTeamsRevocations();
   juce::var teamsPendingRevocations;
@@ -243,6 +248,11 @@ private:
   std::unique_ptr<juce::Component> settingsOverlay;
   std::unique_ptr<PracticePanel> practiceOverlay;
   std::unique_ptr<SectionDetectionPanel> sectionDetectionPanel;
+  std::optional<playworship::analysis::GuideTranscript> guideReviewTranscript;
+  playworship::analysis::GuideAlignmentDraft guideReviewDraft;
+  juce::String guideReviewSongId;
+  std::map<juce::String, juce::String> guideReviewNames;
+  std::unordered_set<std::string> guideReviewDiscarded;
   playworship::remote::RemoteSession remoteSession;
   std::string remotePracticeOwner;
   std::string remoteSectionAutomationOwner;
