@@ -12,6 +12,23 @@
 using namespace playworship::analysis;
 
 namespace {
+class CacheOnlyGuideTranscriber final : public IGuideTranscriber {
+public:
+  explicit CacheOnlyGuideTranscriber(std::shared_ptr<IGuideTranscriber> original)
+      : original_(std::move(original)) {}
+  bool available() const override { return original_->available(); }
+  juce::String unavailableReason() const override { return original_->unavailableReason(); }
+  juce::String providerId() const override { return original_->providerId(); }
+  juce::String version() const override { return original_->version(); }
+  bool transcribe(const GuideTranscriptionRequest &, const CancellationCheck &,
+      const GuideTranscriptionProgress &, GuideTranscript &, juce::String &error) override {
+    error = "Cache-only replay requires an existing compatible transcript; no decoder was run.";
+    return false;
+  }
+private:
+  std::shared_ptr<IGuideTranscriber> original_;
+};
+
 juce::var transcriptJson(const GuideTranscript &transcript) {
   auto root = juce::var(new juce::DynamicObject());
   auto *object = root.getDynamicObject();
@@ -88,12 +105,13 @@ int main(int argc, char **argv) {
     std::cerr << "Usage: MTControlsGuideTranscriptionProbe --audio local-file --output result.json "
                  "[--model ggml-base-q5_1.bin] [--language es-en] [--offset seconds] "
                  "[--cache-directory local-dir] [--bpm source-bpm] [--meter 4/4] [--grid-origin seconds] "
+                 "[--require-cache-hit 1] "
                  "[--cancel-after-ms milliseconds] [--cancel-at-progress fraction]\n"
                  "Exit codes: 0 recognized, 1 failed, 2 cancelled, 3 backend unavailable. "
                  "Transcript text is written only to the requested JSON file.\n";
   };
   if (arguments.isEmpty() || arguments.contains("--help")) { usage(); return arguments.isEmpty() ? 1 : 0; }
-  const auto allowed = juce::StringArray{"--audio", "--output", "--model", "--language", "--offset", "--cancel-after-ms", "--cancel-at-progress", "--cache-directory", "--bpm", "--meter", "--grid-origin"};
+  const auto allowed = juce::StringArray{"--audio", "--output", "--model", "--language", "--offset", "--cancel-after-ms", "--cancel-at-progress", "--cache-directory", "--bpm", "--meter", "--grid-origin", "--require-cache-hit"};
   for (int i = 0; i < arguments.size(); i += 2) {
     if (!allowed.contains(arguments[i]) || i + 1 >= arguments.size()) { usage(); return 1; }
   }
@@ -102,6 +120,10 @@ int main(int argc, char **argv) {
     return index >= 0 ? arguments[index + 1] : fallback;
   };
   if (value("--audio").isEmpty() || value("--output").isEmpty()) { usage(); return 1; }
+  const bool cacheOnly = value("--require-cache-hit") == "1";
+  if ((!value("--require-cache-hit").isEmpty() && !cacheOnly) ||
+      (cacheOnly && value("--cache-directory").isEmpty())) { usage(); return 1; }
+  if (cacheOnly) provider = std::make_shared<CacheOnlyGuideTranscriber>(provider);
   const auto numeric = [&](const char *key, double fallback, double &destination) {
     const auto input = value(key);
     if (input.isEmpty()) { destination = fallback; return true; }
@@ -185,11 +207,12 @@ int main(int argc, char **argv) {
   object->setProperty("maximumProgress", maximumProgress);
   object->setProperty("offsetSeconds", offset);
   object->setProperty("cacheHit", cacheHit);
+  object->setProperty("cacheOnlyReplay", cacheOnly);
   if (succeeded && bpm > 0) {
     GuideAlignmentOptions options;
-    options.originSeconds = value("--grid-origin").isNotEmpty() ? gridOrigin
-        : transcript.segments.empty() ? 0.0 : transcript.segments.front().startSeconds;
     options.bpm = bpm; options.timeSignature = value("--meter", "4/4");
+    if (value("--grid-origin").isNotEmpty()) options.originSeconds = gridOrigin;
+    else options = makeInitialGuideAlignmentOptions(transcript, options);
     const auto draft = alignGuideSections(transcript, options);
     object->setProperty("alignmentError", draft.error);
     object->setProperty("alignmentOriginSeconds", options.originSeconds);

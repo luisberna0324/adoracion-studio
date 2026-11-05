@@ -399,6 +399,230 @@ const GuideGridMark *gridMark(const GuideAlignmentDraft &draft, double seconds) 
   for (const auto &mark : draft.grid) if (close(mark.timeSeconds,seconds)) return &mark;
   return nullptr;
 }
+void testInitialGuideGridPhaseFromObservedCounts() {
+  const double countTimes[]{.02,1.08,2.18,2.73,3.27,3.82};
+  const char *countNames[]{"One", "Two", "One", "Two", "Three", "Four"};
+  auto transcript=guide(265.27791383219954,{});
+  for(size_t i=0;i<6;++i)
+    transcript.segments.push_back({countTimes[i],countTimes[i]+.4,countNames[i]});
+  GuideAlignmentOptions context;context.bpm=110;
+  context.tempoMap.regions={{"source-tempo",0,transcript.durationSeconds,110,"4/4"}};
+  const auto initial=makeInitialGuideAlignmentOptions(transcript,context);
+  expect(close(initial.originSeconds,0) && close(initial.bpm,110) && initial.timeSignature=="4/4" &&
+         initial.tempoMap.regions.size()==1 && close(initial.tempoMap.regions[0].bpm,110),
+         "six actual count attacks recover a small initial phase error without replacing musical context");
+  const auto draft=alignGuideSections(transcript,initial);
+  expect(draft.error.isEmpty() && draft.secondaryCues.size()==6,
+         "initial phase refinement preserves every observed count rather than manufacturing another pulse");
+  for(size_t i=0;i<6;++i)
+    expect(close(draft.secondaryCues[i].timeSeconds,countTimes[i]) &&
+           close(draft.secondaryCues[i].rawTimeSeconds,countTimes[i]) &&
+           close(transcript.segments[i].startSeconds,countTimes[i]),
+           "phase estimation never changes measured count positions or the raw transcript");
+
+  auto measuredCompound=guide(12,{{.02,4.26,"one two one two three four"}});
+  measuredCompound.segments[0].acousticResidualRatio=.01;
+  const char *numericNames[]{"1","2","1","2","3","4"};
+  for(size_t i=0;i<6;++i)
+    measuredCompound.segments[0].acousticAnnouncements.push_back({numericNames[i],"en", "known-count-"+juce::String(i),
+        countTimes[i],countTimes[i]+.4,.99});
+  GuideAlignmentOptions measuredContext;measuredContext.bpm=110;
+  expect(close(makeInitialGuideAlignmentOptions(measuredCompound,measuredContext).originSeconds,0),
+         "independently measured count attacks on an intact acoustic parent can support the same initial phase refinement");
+  measuredCompound.segments[0].acousticAnnouncements[2].correlation=.5;
+  expect(close(makeInitialGuideAlignmentOptions(measuredCompound,measuredContext).originSeconds,.02),
+         "invalid acoustic metadata cannot contribute timing votes by masquerading as measured count evidence");
+
+  auto fewer=transcript;fewer.segments.resize(3);
+  expect(close(makeInitialGuideAlignmentOptions(fewer,context).originSeconds,.02),
+         "fewer than four measured counts cannot certify an initial phase refinement");
+  auto inconsistent=guide(12,{{.02,.2,"One"},{.8,1,"Two"},{1.5,1.7,"Three"},{2.1,2.3,"Four"}});
+  GuideAlignmentOptions regular;
+  expect(close(makeInitialGuideAlignmentOptions(inconsistent,regular).originSeconds,.02),
+         "incoherent count attacks retain the first spoken origin rather than snapping arbitrary speech");
+  auto excessive=guide(12,{{.08,.3,"One"},{.5,.7,"Two"},{1,1.2,"Three"},{1.5,1.7,"Four"},{2,2.2,"One"}});
+  expect(close(makeInitialGuideAlignmentOptions(excessive,regular).originSeconds,.08),
+         "a consensus demanding more than forty milliseconds cannot replace the initial origin");
+  auto duplicate=guide(12,{{.02,.12,"One"},{.03,.13,"Two"},{.04,.14,"Three"},{.05,.15,"Four"}});
+  expect(close(makeInitialGuideAlignmentOptions(duplicate,regular).originSeconds,.02),
+         "multiple numbers inside a single pulse cannot supply distinct timing evidence");
+  auto changing=context;
+  changing.tempoMap.regions={{"before",0,2,110,"4/4"},{"after",2,12,90,"4/4"}};
+  expect(close(makeInitialGuideAlignmentOptions(transcript,changing).originSeconds,.02),
+         "an initial count crossing tempo changes does not assume a constant pulse for phase estimation");
+  auto meterChange=context;
+  meterChange.tempoMap.regions={{"before",0,2,110,"4/4"},{"after",2,12,110,"3/4"}};
+  expect(close(makeInitialGuideAlignmentOptions(transcript,meterChange).originSeconds,.02),
+         "an initial count crossing a meter reset remains available for manual origin review");
+  auto words=guide(12,{{.02,2.3,"one two three four"}});
+  words.segments[0].words={{"one",.02,.45,.8},{"two",.5,.95,.8},
+      {"three",1,1.45,.8},{"four",1.5,1.95,.8}};
+  expect(close(makeInitialGuideAlignmentOptions(words,regular).originSeconds,.02),
+         "ASR word intervals resolved against the grid cannot circularly estimate that same grid origin");
+  auto mixedWords=guide(12,{{.02,.3,"One"},{.5,.8,"Two"},{1,1.3,"Three"},
+      {1.5,1.8,"Four"},{2,2.3,"One"},{2.5,4.0,"two three four"}});
+  mixedWords.segments.back().words={{"two",2.52,2.9,.8},{"three",3.02,3.4,.8},{"four",3.52,3.9,.8}};
+  expect(close(makeInitialGuideAlignmentOptions(mixedWords,regular).originSeconds,.02),
+         "a compound already resolved by word intervals protects its existing count pulses even with enough atomic count evidence");
+  expect(close(makeInitialGuideAlignmentOptions(guide(12,{{.37,.9,"Verse"}}),regular).originSeconds,.37) &&
+         close(makeInitialGuideAlignmentOptions(guide(12,{}),regular).originSeconds,0),
+         "a guide without measured counts retains the first spoken occurrence or zero for an empty transcript");
+
+  auto offset=transcript;
+  offset.durationSeconds+=2.5;
+  for(auto &segment:offset.segments){segment.startSeconds+=2.5;segment.endSeconds+=2.5;}
+  regular.bpm=110;
+  expect(close(makeInitialGuideAlignmentOptions(offset,regular).originSeconds,2.5),
+         "phase refinement supports a nonzero musical origin rather than imposing source zero globally");
+
+  GuideAlignmentOptions manual=context;manual.originSeconds=.02;
+  auto boundary=transcript;boundary.segments.push_back({10.9,11.56,"Verse"});
+  const auto explicitDraft=alignGuideSections(boundary,manual);
+  expect(explicitDraft.error.isEmpty() && close(explicitDraft.options.originSeconds,.02) &&
+         close(explicitDraft.suggestions[0].startSeconds,.02+5*240.0/110),
+         "an explicit origin passed to alignment remains authoritative even when count evidence could refine initial defaults");
+  const auto outside=alignGuideSections(guide(12,{{3.965,4.5,"Chorus"}}),{});
+  expect(close(outside.suggestions[0].startSeconds,4),
+         "the fixed-origin thirty-five-millisecond boundary regression keeps its original following-bar classification");
+}
+
+void testGloriosoDiaEntrancesPreserveCounts() {
+  const double countTimes[]{.02,1.08,2.18,2.73,3.27,3.82};
+  const char *countNames[]{"One", "Two", "One", "Two", "Three", "Four"};
+  const double mainTimes[]{10.9,28.36,37.08,54.54,63.26,80.72,93.8,102.54,119.98,
+      128.72,146.18,159.26,176.72,194.18,209.44,226.9,242.18,244.36,253.08};
+  const int entryBarIndices[]{6,14,18,26,30,38,44,48,56,60,68,74,82,90,97,105,112,113,117};
+  const double instructionTimes[]{68.72,168,195.28,237.8};
+  const char *instructionNames[]{"All In","Breakdown","Build","Breakdown"};
+  const int instructionBarIndices[]{32,78,90,110};
+  auto transcript=guide(265.27791383219954,{});
+  for(size_t i=0;i<6;++i)transcript.segments.push_back({countTimes[i],countTimes[i]+.4,countNames[i]});
+  for(double time:mainTimes)transcript.segments.push_back({time,time+.4,"Verse"});
+  for(size_t i=0;i<4;++i)transcript.segments.push_back({instructionTimes[i],instructionTimes[i]+.4,instructionNames[i]});
+  std::sort(transcript.segments.begin(),transcript.segments.end(),[](const auto &left,const auto &right){
+    return left.startSeconds<right.startSeconds;
+  });
+  GuideAlignmentOptions context;context.bpm=110;
+  context.tempoMap.regions={{"unchanged-source-tempo",0,transcript.durationSeconds,110,"4/4"}};
+  const auto options=makeInitialGuideAlignmentOptions(transcript,context);
+  auto draft=alignGuideSections(transcript,options);
+  expect(draft.error.isEmpty() && draft.suggestions.size()==19 && draft.secondaryCues.size()==10 &&
+         close(options.originSeconds,0),
+         "the real count and onset timing regression creates nineteen entrances, six counts and four independent instructions");
+  const double bar=240.0/110;
+  for(size_t i=0;i<19;++i)
+    expect(close(draft.suggestions[i].startSeconds,entryBarIndices[i]*bar) &&
+           close(draft.suggestions[i].rawStartSeconds,mainTimes[i]),
+           "every reported primary enters at the following musical bar while preserving its original announcement time");
+  for(size_t i=0;i<6;++i)
+    expect(close(draft.secondaryCues[i].timeSeconds,countTimes[i]) &&
+           close(draft.secondaryCues[i].rawTimeSeconds,countTimes[i]),
+           "all six correct count cues remain exactly where the original voice pronounced them");
+  for(size_t i=0;i<4;++i)
+    expect(draft.secondaryCues[i+6].name==instructionNames[i] &&
+           close(draft.secondaryCues[i+6].timeSeconds,instructionBarIndices[i]*bar) &&
+           close(draft.secondaryCues[i+6].rawTimeSeconds,instructionTimes[i]),
+           "midbar and near-boundary instructions each target the next bar rather than adding an entire duration blindly");
+  const auto plan=appendConfirmedGuideSuggestions({},draft);
+  expect(plan.error.isEmpty() && plan.arrangement.parts.size()==19 && plan.arrangement.cues.size()==10,
+         "corrected entrances and unchanged counts confirm together through the existing additive transaction");
+  for(size_t i=0;i<6;++i)
+    expect(close(resolveArrangementCueSeconds(plan.arrangement,plan.arrangement.cues[i]),countTimes[i]),
+           "confirmed counts preserve their absolute source positions across section-relative anchoring");
+  for(size_t i=0;i<4;++i)
+    expect(close(resolveArrangementCueSeconds(plan.arrangement,plan.arrangement.cues[i+6]),instructionBarIndices[i]*bar),
+           "instruction musical entries retain their proposed times after native arrangement anchoring");
+
+  auto moved=options;moved.originSeconds=.005;
+  const auto rebuilt=alignGuideSections(transcript,moved);
+  expect(rebuilt.secondaryCues.size()==10 && rebuilt.secondaryCues[6].id==draft.secondaryCues[6].id &&
+         close(rebuilt.secondaryCues[6].rawTimeSeconds,68.72) &&
+         close(rebuilt.secondaryCues[6].timeSeconds,.005+32*bar),
+         "rebuilding from a manually moved grid preserves utility source identity while recomputing its proposed entry");
+  juce::String error;
+  expect(moveGuideSecondaryCue(draft,draft.secondaryCues[6].id,70.123,false,error) &&
+         close(draft.secondaryCues[6].timeSeconds,70.123) && close(draft.secondaryCues[6].rawTimeSeconds,68.72),
+         "explicit free adjustment remains available after an automatic following-bar instruction proposal");
+}
+
+void testInstructionEntriesAtBoundariesAndSourceEnd() {
+  for(double onset:{3.98,3.985,4.0,4.015,4.02}) {
+    const auto draft=alignGuideSections(guide(12,{{onset,onset+.3,"All In"}}),{});
+    expect(draft.error.isEmpty() && draft.suggestions.empty() && draft.secondaryCues.size()==1 &&
+           close(draft.secondaryCues[0].timeSeconds,6) && close(draft.secondaryCues[0].rawTimeSeconds,onset),
+           "instruction entrances share the bounded onset tolerance without becoming primary boundaries");
+  }
+  const auto outside=alignGuideSections(guide(12,{{3.965,4.3,"All In"}}),{});
+  expect(outside.error.isEmpty() && close(outside.secondaryCues[0].timeSeconds,4),
+         "instructions outside the twenty-millisecond window retain the containing-bar distinction");
+  const auto unavailable=alignGuideSections(guide(9.9,{{9.8,9.85,"Build"}}),{});
+  expect(unavailable.error.isNotEmpty() && unavailable.secondaryCues.size()==1 &&
+         close(unavailable.secondaryCues[0].rawTimeSeconds,9.8) && close(unavailable.secondaryCues[0].timeSeconds,9.8),
+         "an unavailable next-bar instruction remains visible at its source evidence with a blocking error");
+  const auto rejected=appendConfirmedGuideSuggestions({},unavailable);
+  expect(rejected.error.isNotEmpty() && rejected.arrangement.parts.empty() && rejected.arrangement.cues.empty(),
+         "a late instruction cannot be silently clamped or partially confirmed");
+}
+
+void testPendingInstructionReviewIsResolvedPerSourceId() {
+  const auto transcript=guide(9.9,{{.1,.4,"One"},{1,1.4,"Verse"},
+      {9.1,9.3,"Build"},{9.5,9.8,"All In"}});
+  auto draft=alignGuideSections(transcript,{});
+  expect(canReviewGuideAlignment(draft) && draft.timingIssues.size()==2 && draft.error.isNotEmpty() &&
+         draft.secondaryCues.size()==3 && appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "pending automatic instruction entries remain editable but block confirmation");
+  const auto buildId=draft.secondaryCues[1].id, allInId=draft.secondaryCues[2].id;
+  juce::String error;
+  expect(moveGuideSecondaryCue(draft,buildId,8.75,false,error) && draft.timingIssues.size()==1 &&
+         draft.error.contains("All In") && !draft.error.contains("Build") &&
+         close(draft.secondaryCues[1].rawTimeSeconds,9.1) && close(draft.secondaryCues[1].timeSeconds,8.75) &&
+         draft.secondaryCues[1].userEdited && appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "an explicit instruction adjustment resolves only its own source issue and leaves other entries blocking");
+  expect(discardGuideSecondaryCue(draft,allInId,error) && draft.timingIssues.empty() && draft.error.isEmpty() &&
+         draft.secondaryCues.size()==2 && close(draft.secondaryCues[0].timeSeconds,.1),
+         "discarding the remaining pending instruction clears its own issue without moving a count");
+  const auto accepted=appendConfirmedGuideSuggestions({},draft);
+  expect(accepted.error.isEmpty() && accepted.arrangement.parts.size()==1 && accepted.arrangement.cues.size()==2,
+         "all explicitly resolved secondary timing issues allow the ordinary atomic confirmation");
+  expect(!discardGuideSecondaryCue(draft,allInId,error) && draft.secondaryCues.size()==2 && draft.error.isEmpty(),
+         "a stale discarded source ID cannot erase another point or recreate a timing issue");
+
+  auto rebuilt=alignGuideSections(transcript,{});
+  expect(canReviewGuideAlignment(rebuilt) && moveGuideSecondaryCue(rebuilt,buildId,8.75,false,error) &&
+         discardGuideSecondaryCue(rebuilt,allInId,error) && rebuilt.error.isEmpty() &&
+         close(rebuilt.secondaryCues[1].timeSeconds,8.75),
+         "review decisions can be reapplied by stable source ID before a rebuilt pending draft is accepted");
+  auto explicitSame=alignGuideSections(transcript,{});
+  expect(moveGuideSecondaryCue(explicitSame,buildId,9.1,false,error) &&
+         explicitSame.secondaryCues[1].userEdited && explicitSame.timingIssues.size()==1,
+         "explicitly choosing the retained source point also resolves that source's automatic-entry issue");
+  auto alias=alignGuideSections(transcript,{});
+  expect(discardGuideSecondaryCue(alias,alias.secondaryCues[1].id,error) && alias.timingIssues.size()==1 &&
+         alias.error.contains("All In") && !alias.error.contains("Build"),
+         "discard remains safe when the supplied ID is a reference into the point being removed");
+
+  auto mixed=alignGuideSections(guide(9.9,{{1,1.4,"Verse"},{9.05,9.25,"Build"},
+      {9.35,9.55,"Final"},{9.7,9.85,"All In"}}),{});
+  const auto mixedBuild=mixed.secondaryCues[0].id, mixedBand=mixed.secondaryCues[1].id;
+  expect(mixed.timingIssues.size()==3 && moveGuideSecondaryCue(mixed,mixedBuild,8.5,false,error) &&
+         discardGuideSecondaryCue(mixed,mixedBand,error) && mixed.timingIssues.size()==1 &&
+         !mixed.timingIssues[0].secondary && mixed.error.contains("Final") &&
+         appendConfirmedGuideSuggestions({},mixed).error.isNotEmpty(),
+         "resolving every secondary issue cannot hide an unavailable principal entry");
+  auto fatal=alignGuideSections(transcript,{});fatal.error="Unrelated structural failure";
+  expect(!canReviewGuideAlignment(fatal) && !moveGuideSecondaryCue(fatal,buildId,8.5,false,error) &&
+         !discardGuideSecondaryCue(fatal,allInId,error) && fatal.error=="Unrelated structural failure" &&
+         fatal.timingIssues.size()==2 && fatal.secondaryCues.size()==3,
+         "unrelated validation errors are never cleared or bypassed by timing review actions");
+  auto invalid=alignGuideSections(transcript,{});invalid.grid[0].timeSeconds=std::numeric_limits<double>::quiet_NaN();
+  expect(!canReviewGuideAlignment(invalid) && !moveGuideSecondaryCue(invalid,buildId,8.5,false,error) &&
+         !discardGuideSecondaryCue(invalid,allInId,error),
+         "pending instruction state cannot turn an invalid musical grid into an editable draft");
+  auto hidden=alignGuideSections(transcript,{});hidden.error.clear();
+  expect(!canReviewGuideAlignment(hidden) && appendConfirmedGuideSuggestions({},hidden).error.isNotEmpty(),
+         "clearing a presentation string cannot bypass structured unresolved entry state");
+}
+
 void testGuideAlignmentOriginAndMeter() {
   const auto transcript=guide(30,{{1.25,2.5,"uno dos tres cuatro"},{2.8,3.1,"Verso uno"},{8.0,8.4,"Coro"}});
   GuideAlignmentOptions options; options.originSeconds=1.25; options.bpm=120;
@@ -551,8 +775,9 @@ void testGuideTimingRegressionAndLateReview() {
   }
   expect(changed==9,"twenty millisecond classification corrects precisely nine of fourteen measured boundary cases");
   expect(draft.secondaryCues.size()==2 && close(draft.secondaryCues[0].timeSeconds,1.74) &&
-         close(draft.secondaryCues[1].timeSeconds,74.78),
-         "count and utility points keep their exact source times during musical boundary correction");
+         close(draft.secondaryCues[1].timeSeconds,22*240.0/69) &&
+         close(draft.secondaryCues[1].rawTimeSeconds,74.78),
+         "counts keep source time while utility entries use the following bar and retain raw evidence");
   const auto retained=alignGuideSections(guide(9.9,{{1.0,1.5,"Verse"},{9.7,9.8,"Final"},{9.8,9.85,"Hold"}}),{});
   expect(retained.error.isNotEmpty() && retained.error.contains("Final") && retained.suggestions.size()==1 &&
          close(retained.suggestions[0].startSeconds,2) && retained.secondaryCues.size()==1 &&
@@ -616,9 +841,9 @@ void testCorrectedAnnouncementsKeepTheirMusicalRoles() {
   const juce::StringArray raw{"Thor","Base.","Swin."};
   for (size_t i=0;i<draft.secondaryCues.size();++i)
     expect(draft.secondaryCues[i].name==names[int(i)] && draft.secondaryCues[i].rawText==raw[int(i)] &&
-           close(draft.secondaryCues[i].timeSeconds,3.99+4*i) &&
+           close(draft.secondaryCues[i].timeSeconds,i==0 ? 3.99 : 6+4*i) &&
            close(draft.secondaryCues[i].rawTimeSeconds,3.99+4*i),
-           "corrected secondary points are never delayed, quantized or promoted into sections");
+           "corrected count keeps its onset while utilities use the following bar without becoming sections");
   juce::String error;
   const auto id=draft.suggestions[0].id;
   expect(moveGuideSectionBoundary(draft,id,5.25,false,error) &&
@@ -736,8 +961,10 @@ void testGuideUtilitiesDoNotDivideMusicalSections() {
          draft.suggestions[2].type==SectionType::refrain && close(draft.suggestions[2].startSeconds,12),
          "a mixed-language guide preserves musical order and newly recognized refrain boundaries");
   expect(draft.secondaryCues.size()==2 && draft.secondaryCues[0].name=="Drums In" &&
-         close(draft.secondaryCues[0].timeSeconds,1.6) && draft.secondaryCues[1].name=="Build" &&
-         close(draft.secondaryCues[1].timeSeconds,4.2),"known utilities survive as independent points at their spoken onsets");
+         close(draft.secondaryCues[0].timeSeconds,2) && draft.secondaryCues[1].name=="Build" &&
+         close(draft.secondaryCues[1].timeSeconds,6) && close(draft.secondaryCues[0].rawTimeSeconds,1.6) &&
+         close(draft.secondaryCues[1].rawTimeSeconds,4.2),
+         "known utilities target independent following-bar entries and retain their spoken evidence");
 }
 
 GuideSecondaryCueSuggestion secondary(juce::String id, juce::String name, double time) {
@@ -773,8 +1000,10 @@ void testSecondarySourceTimingAndMoves() {
     GuideAlignmentOptions options; options.originSeconds=origin;
     const auto rebuilt=alignGuideSections(transcript,options);
     expect(rebuilt.error.isEmpty() && rebuilt.secondaryCues[0].id==id &&
-           close(rebuilt.secondaryCues[0].timeSeconds,1.6) && close(rebuilt.secondaryCues[1].timeSeconds,4.2),
-           "changing bar origin never shifts utility source onsets");
+           close(rebuilt.secondaryCues[0].timeSeconds,origin+2) &&
+           close(rebuilt.secondaryCues[1].timeSeconds,origin+(origin<.2 ? 6 : 4)) &&
+           close(rebuilt.secondaryCues[0].rawTimeSeconds,1.6) && close(rebuilt.secondaryCues[1].rawTimeSeconds,4.2),
+           "changing the origin recomputes utility entries without changing source identities or spoken times");
   }
   const auto primary=draft.suggestions;
   juce::String error;
@@ -782,7 +1011,7 @@ void testSecondarySourceTimingAndMoves() {
          "secondary dragging snaps to a pulse, breaking an exact tie forward");
   expect(moveGuideSecondaryCue(draft,id,2.375,false,error) && close(draft.secondaryCues[0].timeSeconds,2.375) &&
          close(draft.secondaryCues[0].rawTimeSeconds,1.6) && draft.secondaryCues[0].userEdited &&
-         close(draft.secondaryCues[1].timeSeconds,4.2),"free secondary dragging changes one point and preserves raw onset and other instructions");
+         close(draft.secondaryCues[1].timeSeconds,6),"free secondary dragging changes one point and preserves raw onset and other instruction entries");
   expect(draft.suggestions[0].startSeconds==primary[0].startSeconds && draft.suggestions[0].endSeconds==primary[0].endSeconds &&
          draft.suggestions[1].startSeconds==primary[1].startSeconds && draft.suggestions[1].endSeconds==primary[1].endSeconds,
          "moving secondary points never divides, stretches or moves musical sections");
@@ -817,9 +1046,10 @@ void testGuideIndividualCountPoints() {
   const juce::StringArray names{"1","2","2","3","4","All In"};
   const double times[]{0,1.74,4.34,5.2,6.08,8.1};
   for (size_t i=0;i<draft.secondaryCues.size();++i)
-    expect(draft.secondaryCues[i].name==names[int(i)] && close(draft.secondaryCues[i].timeSeconds,times[i]) &&
+    expect(draft.secondaryCues[i].name==names[int(i)] &&
+           close(draft.secondaryCues[i].timeSeconds,i<5 ? times[i] : 3*240.0/69) &&
            close(draft.secondaryCues[i].rawTimeSeconds,times[i]),
-           "count points retain the actual spoken onsets without adding a missing beat or merging repeated numbers");
+           "counts retain measured onsets while the utility entry targets its following bar");
   expect(draft.secondaryCues[0].rawText=="Uno." && draft.secondaryCues[0].asrConfidence==.62 &&
          draft.secondaryCues[1].id!=draft.secondaryCues[2].id &&
          draft.secondaryCues[1].rawText==draft.secondaryCues[2].rawText,
@@ -829,10 +1059,14 @@ void testGuideIndividualCountPoints() {
     const auto rebuilt=alignGuideSections(transcript,changed);
     expect(rebuilt.error.isEmpty() && rebuilt.secondaryCues.size()==draft.secondaryCues.size(),
            "changing section-grid settings preserves all independent count occurrences");
-    for (size_t i=0;i<draft.secondaryCues.size();++i)
+    for (size_t i=0;i<5;++i)
       expect(rebuilt.secondaryCues[i].id==draft.secondaryCues[i].id &&
              rebuilt.secondaryCues[i].timeSeconds==draft.secondaryCues[i].timeSeconds,
              "count IDs and source positions remain independent of the chosen origin");
+    expect(rebuilt.secondaryCues[5].id==draft.secondaryCues[5].id &&
+           close(rebuilt.secondaryCues[5].timeSeconds,origin+3*240.0/69) &&
+           close(rebuilt.secondaryCues[5].rawTimeSeconds,8.1),
+           "the same source utility recalculates its musical entry as the grid moves");
   }
   const auto accepted=appendConfirmedGuideSuggestions({},draft);
   expect(accepted.error.isEmpty() && accepted.arrangement.parts.size()==2 && accepted.arrangement.cues.size()==6 &&
@@ -1130,6 +1364,8 @@ int main() {
   testFusionWithoutGuideAndSafeSnapping();
   testGuideAnticipationAndRepetitions(); testConfirmedGridAndMeters();
   testAcceptancePreservesManualState(); testTimebaseCancellationAndCodec();
+  testInitialGuideGridPhaseFromObservedCounts(); testGloriosoDiaEntrancesPreserveCounts();
+  testInstructionEntriesAtBoundariesAndSourceEnd(); testPendingInstructionReviewIsResolvedPerSourceId();
   testGuideAlignmentOriginAndMeter(); testGuideAlignmentTempoPhaseAndCapacity();
   testGuideAlignmentReviewAndAnticipation(); testGuideUtilitiesDoNotDivideMusicalSections();
   testGuideMusicalOnsetBoundaryTolerance(); testGuideTimingRegressionAndLateReview();

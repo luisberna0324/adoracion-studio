@@ -203,13 +203,14 @@ Las entradas de instrumentos y cambios de intensidad se presentan como
 inferior de la misma onda. Siguen el estilo de las indicaciones nativas y no
 dividen Verso/Coro ni ocupan el espacio de una sección completa. Se pueden
 arrastrar al pulso (Alt para posición libre), renombrar con doble clic y
-descartar desde el menú contextual. Su punto inicial coincide con la marca de
-voz, sin el adelanto de compases de las secciones principales.
+descartar desde el menú contextual. El punto propone su entrada musical en
+el compás siguiente al anuncio, conservando el tiempo de voz original como
+evidencia. No se desplazan las cuentas junto con estas indicaciones.
 Si la guía agrupa `Interludio, toda la banda`, ambos anuncios se separan por
 sus pausas y se reconocen individualmente antes de pintar las marcas.
 Interludio mantiene su entrada en el compás siguiente y Toda la banda es un
-punto independiente en su instante hablado. Si la separación no tiene
-evidencia suficiente, el texto completo queda para revisión en lugar de
+punto independiente con su propio destino de compás posterior. Si la separación
+no tiene evidencia suficiente, el texto completo queda para revisión en lugar de
 absorber la instrucción dentro del nombre musical.
 
 Los conteos reconocidos aparecen igualmente como sugerencias de punto, en
@@ -229,9 +230,9 @@ Los intervalos son aproximados; no se usan sus inicios como ataques de voz
 exactos ni se completan números ausentes. Si un intervalo contiene cero o
 varios pulsos se conserva el compuesto para revisión.
 
-Cambiar el origen recalcula las secciones principales y las propuestas que
-dependen de intervalos de palabra; los conteos individuales medidos conservan
-su instante. Se reaplican las correcciones de nombre/posición y los descartes
+Cambiar el origen recalcula las secciones principales, las indicaciones
+reconocidas y las propuestas que dependen de intervalos de palabra; los conteos
+individuales medidos conservan su instante. Se reaplican las correcciones de nombre/posición y los descartes
 de las secundarias.
 **Confirmar** incorpora ambas clases de sugerencia en una sola operación de
 arrange, con un solo Deshacer; **Cancelar** no aplica ninguna. También puede
@@ -293,13 +294,28 @@ filas anterior se mantiene para resultados estructurales/diagnóstico Apple.
 
 `GuideAlignmentDraft` contiene la cuadrícula y propuestas, junto con BPM,
 compás, mapa de tempo y origen del primer compás. La propuesta automática de
-una sección principal siempre usa el compás siguiente al que contiene su
-anuncio: no se ofrece un selector de cero o dos compases. La cuadrícula se
-muestra con marcas pequeñas de pulsos y compases,
+una sección principal o indicación reconocida usa el compás siguiente al que
+contiene su anuncio: no se ofrece un selector de cero o dos compases. La
+cuadrícula se muestra con marcas pequeñas de pulsos y compases,
 integradas en el estilo y controles de la onda. Su regla reutiliza
 `drawMusicalTimelineRuler`: misma fuente de 10 puntos, números centrados y
 separación mínima de 72 puntos, con pulsos desde 10 puntos de separación.
-El playhead sigue visible en la regla durante la revisión. El origen del primer compás es
+El playhead sigue visible en la regla durante la revisión. La inicialización
+usa `makeInitialGuideAlignmentOptions` y puede refinar el origen candidato del
+primer fragmento ASR mediante consenso de cuentas medidas, incluidas las
+recuperadas mediante evidencia acústica. Requiere al menos cuatro pulsos
+distintos, un rango de tres pulsos y cuatro observaciones concordantes que
+representen al menos el 75 % de las disponibles. La mediana de residuos al
+pulso define el ajuste, acotado a 40 ms o un cuarto de pulso. El margen de
+concordancia es 12 ms y la desviación absoluta mediana máxima es 8 ms, con
+márgenes menores si los pulsos son muy cortos. No utiliza intervalos de palabra
+que ya dependan de esa cuadrícula, ni refina a través de cambios de tempo o
+métrica. Si un conteo compuesto ya es expandible mediante intervalos de
+palabra y la cuadrícula inicial, conserva el origen aunque haya otras cuentas
+atómicas concordantes, para no desplazar esas cuentas dependientes del mapa.
+El cálculo no mueve las cuentas ni completa números; sin consenso
+mantiene el origen candidato. Este refinamiento sólo se usa al iniciar la
+revisión. El origen del primer compás es
 ajustable visualmente: moverlo reconstruye **todo** el borrador con ese origen,
 manteniendo los textos hablados originales. Un aviso de voz no se convierte
 por sí solo en el inicio musical real; la propuesta sigue siendo revisable.
@@ -311,12 +327,22 @@ a esa referencia; mantiene visible y disponible el tiempo de voz original.
 Así, a 120 BPM en 4/4, un anuncio en 3,985 s se considera en la línea de 4 s
 y propone la entrada en 6 s. Fuera de esa tolerancia se conserva el compás
 que contiene realmente el inicio hablado. Se usa el mapa de tempo y métrica,
-no una duración global de compás. Las secundarias y los conteos conservan sus
-propios tiempos, incluidas las correcciones de reconocimiento como
-«Thor»→4, «Base»→Bass y «Swin»→Swell.
+no una duración global de compás. Las indicaciones como «Base»→Bass y
+«Swin»→Swell conservan el tiempo original y muestran el punto de entrada
+propuesto. Los conteos como «Thor»→4 conservan su instante medido, sin recibir
+el desplazamiento de las secciones o instrucciones.
 Si no existe una entrada posterior válida al final del audio, se indica un
-error para revisar el origen, conservando las demás sugerencias. No se vuelve
-al compás del anuncio para hacer caber una sección al final del audio.
+error para revisar el origen, conservando las demás sugerencias y bloqueando
+la confirmación completa. No se vuelve al compás del anuncio para hacer caber
+una sección o indicación al final del audio.
+
+Las incidencias de tiempo conservan el ID y la voz original en
+`GuideAlignmentDraft::timingIssues`. `canReviewGuideAlignment` permite revisar
+ese borrador sin tratarlo como un error estructural. Se puede mover una
+indicación tardía o descartarla por ID; cada gesto elimina sólo su incidencia
+y mantiene las demás. Al recalcular el origen se reaplican los movimientos y
+descartes antes de validar el resultado. Confirmar sigue bloqueado mientras
+quede cualquier incidencia, incluso si el texto visible de error está vacío.
 
 Arrastrar un límite de sección ajusta esa frontera y su vecina para conservar
 intervalos contiguos; no desplaza globalmente las demás secciones. Cuando se
@@ -326,6 +352,15 @@ conserva el ajuste manual al confirmar, sin volver a imponer el compás siguient
 Debe respetar IDs de ocurrencia, límites válidos, duración mínima y secciones
 existentes protegidas. No altera el mapa de tempo persistido para hacer encajar
 las propuestas ni acredita sincronización de click sin compararla con el audio.
+
+El cierre de esta corrección compiló app y probes, verificó la firma estricta
+y pasó 8/8 suites nativas en 11,88 s. Glorioso Día se validó con el cálculo
+nativo y la caché existente: 19 secciones, cuatro indicaciones y seis cuentas
+coincidentes, sin mover cuentas ni escribir el arreglo. El replay separado de
+54 escenarios conserva las 205 marcas y cero extras con las 43 instrucciones
+en su nuevo destino musical. Es validación de alineación sin ASR nuevo.
+La captura `secondary-entry-native.png` corresponde a una fixture nativa de
+VI LA LUZ; no prueba un guardado ni una revisión manual de Glorioso Día.
 
 Confirmar usa la aceptación atómica y el historial de arreglo existentes que
 se describen debajo: una sola operación de undo revierte la confirmación.

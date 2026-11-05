@@ -1670,8 +1670,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         const auto cue = std::find_if(guideReviewDraft.secondaryCues.begin(), guideReviewDraft.secondaryCues.end(),
             [&id](const auto &candidate) { return candidate.id == id; });
         if (cue == guideReviewDraft.secondaryCues.end()) return;
+        juce::String error;
+        if (!playworship::analysis::discardGuideSecondaryCue(guideReviewDraft, id, error)) {
+          waveformBarPtr->setGuideAlignmentError(error); return;
+        }
         guideReviewDiscarded.insert(id.toStdString());
-        guideReviewDraft.secondaryCues.erase(cue);
         guideReviewSecondaryTimes.erase(id);
         waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
         return;
@@ -4463,10 +4466,10 @@ void MTControlsAudioProcessorEditor::beginGuideSectionReview(
   guideReviewSongId = currentLoadedSong.id;
   guideReviewNames.clear(); guideReviewDiscarded.clear(); guideReviewSecondaryTimes.clear();
   playworship::analysis::GuideAlignmentOptions options;
-  options.originSeconds = transcript.segments.empty() ? 0.0 : transcript.segments.front().startSeconds;
   options.bpm = currentLoadedSong.bpm;
   options.timeSignature = currentLoadedSong.timeSignature;
   options.tempoMap = currentLoadedSong.tempoMap;
+  options = playworship::analysis::makeInitialGuideAlignmentOptions(*guideReviewTranscript, options);
   juce::String learningError;
   if (!playworship::analysis::loadGuideSectionLearnedMappings(
           guideSectionLearningFile(), options.learnedMappings, learningError))
@@ -4482,7 +4485,10 @@ void MTControlsAudioProcessorEditor::rebuildGuideSectionReview(
     const playworship::analysis::GuideAlignmentOptions &options) {
   if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr || playbackSession.isRemote()) return;
   auto rebuilt = playworship::analysis::alignGuideSections(*guideReviewTranscript, options);
-  if (rebuilt.error.isNotEmpty()) { waveformBarPtr->setGuideAlignmentError(rebuilt.error); return; }
+  if (!playworship::analysis::canReviewGuideAlignment(rebuilt)) {
+    waveformBarPtr->setGuideAlignmentError(rebuilt.error.isNotEmpty() ? rebuilt.error :
+        L10n::tr("La propuesta tiene datos inválidos.", "The suggestion contains invalid data.")); return;
+  }
   rebuilt.suggestions.erase(std::remove_if(rebuilt.suggestions.begin(), rebuilt.suggestions.end(),
       [this](const auto &suggestion) { return guideReviewDiscarded.count(suggestion.id.toStdString()) != 0; }), rebuilt.suggestions.end());
   for (size_t i = 0; i < rebuilt.suggestions.size(); ++i) {
@@ -4494,13 +4500,27 @@ void MTControlsAudioProcessorEditor::rebuildGuideSectionReview(
       applyReviewedGuideSectionName(suggestion, corrected->second);
     }
   }
-  rebuilt.secondaryCues.erase(std::remove_if(rebuilt.secondaryCues.begin(), rebuilt.secondaryCues.end(),
-      [this](const auto &cue) { return guideReviewDiscarded.count(cue.id.toStdString()) != 0; }), rebuilt.secondaryCues.end());
+  // Apply explicit per-source review decisions before deciding whether a
+  // rebuilt timing issue is still pending. Structural errors were rejected above.
+  std::vector<juce::String> discardedSecondary;
+  for (const auto &cue : rebuilt.secondaryCues)
+    if (guideReviewDiscarded.count(cue.id.toStdString())) discardedSecondary.push_back(cue.id);
+  for (const auto &id : discardedSecondary) {
+    juce::String error;
+    if (!playworship::analysis::discardGuideSecondaryCue(rebuilt, id, error)) {
+      waveformBarPtr->setGuideAlignmentError(error); return;
+    }
+  }
   for (auto &cue : rebuilt.secondaryCues) {
     const auto correctedName = guideReviewNames.find(cue.id);
     if (correctedName != guideReviewNames.end()) { cue.name = correctedName->second; cue.userEdited = true; }
     const auto correctedTime = guideReviewSecondaryTimes.find(cue.id);
-    if (correctedTime != guideReviewSecondaryTimes.end()) { cue.timeSeconds = correctedTime->second; cue.userEdited = true; }
+    if (correctedTime != guideReviewSecondaryTimes.end()) {
+      juce::String error;
+      if (!playworship::analysis::moveGuideSecondaryCue(rebuilt, cue.id, correctedTime->second, false, error)) {
+        waveformBarPtr->setGuideAlignmentError(error); return;
+      }
+    }
   }
   guideReviewDraft = std::move(rebuilt);
   waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);

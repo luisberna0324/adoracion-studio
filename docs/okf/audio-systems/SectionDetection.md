@@ -217,8 +217,9 @@ inicio/final fuente y correlación; `acousticResidualRatio` conserva el residuo
 conjunto. Los finales pueden solaparse realmente aunque los comienzos sean
 estrictamente crecientes. Esos hijos no se insertan en `transcript.segments`,
 cuyo contrato conserva frases sin solapamiento. La alineación expande una copia
-revalidada, deja las cuentas/indicaciones en sus tiempos medidos y aplica el
-compás siguiente a las principales. No presenta correlación como confianza ASR
+revalidada, conserva los tiempos medidos como evidencia y propone el compás
+siguiente para principales e indicaciones reconocidas. Las cuentas mantienen
+su instante medido. No presenta correlación como confianza ASR
 de los hijos. Las sugerencias musicales añaden la fuente
 `known-guide-recording`; el padre permanece disponible para revisión.
 
@@ -286,10 +287,32 @@ y [puntero Git LFS del modelo fijado](https://huggingface.co/ggerganov/whisper.c
 `GuideSectionAlignment.h` separa la transcripción de su revisión musical.
 `alignGuideSections(transcript, options)` devuelve `GuideAlignmentDraft`, con
 cuadrícula y propuestas transitorias; no modifica `ImportedSongData`, BPM,
-mapa de tempo ni el arreglo confirmado. El caller propone inicialmente el
-inicio del primer fragmento hablado como `originSeconds`, incluso si ese
-fragmento es un conteo. Ese origen es el pulso 1 del compás 1 y puede corregirse.
-Cambiarlo recalcula el borrador completo a partir de los tiempos de voz originales.
+mapa de tempo ni el arreglo confirmado.
+`makeInitialGuideAlignmentOptions(transcript, musicalContext)` toma el comienzo
+del primer fragmento hablado como candidato a `originSeconds`, incluso si ese
+fragmento es un conteo, y puede refinar su fase mediante las cuentas realmente
+observadas. Sólo usa cuentas atómicas o evidencia acústica validada; excluye
+límites de palabras que ya dependan de la cuadrícula propuesta. Si el borrador
+inicial ya puede expandir un conteo compuesto mediante sus intervalos de
+palabra y la cuadrícula, conserva el origen completo, incluso si hay cuatro
+cuentas atómicas concordantes: refinarlo también movería aquellas cuentas
+cuya posición ya depende de la cuadrícula.
+
+Se requieren al menos cuatro cuentas medidas en pulsos distintos y un rango
+de al menos tres pulsos. El ajuste es la mediana de sus residuos respecto del
+pulso más próximo, con magnitud máxima de `min(40 ms, duración del pulso / 4)`.
+Deben concordar al menos cuatro cuentas y un 75 % de las observaciones dentro
+de 12 ms de esa mediana; la desviación absoluta mediana no puede superar 8 ms.
+Los márgenes se acotan también para pulsos muy cortos. El primer conteo puede
+ser un valor atípico: no obliga por sí solo a conservar una fase incorrecta.
+Un cambio de tempo o métrica durante el conteo, tiempos irregulares o consenso
+insuficiente conservan el candidato inicial. No se impone un origen cero a
+todas las canciones ni se deducen números ausentes.
+
+Este ajuste afecta sólo a la cuadrícula, nunca a los tiempos medidos de las
+cuentas. El origen es el pulso 1 del compás 1 y sigue siendo revisable. Moverlo
+manualmente reconstruye el borrador a partir de la voz original, sin volver a
+refinar esa elección.
 
 La cuadrícula usa BPM original y `SongTempoMapSnapshot` en segundos fuente.
 Cada pulso dura `(60 / BPM) * 4 / denominador` y cada compás contiene el
@@ -301,8 +324,10 @@ hasta la duración. Admite hasta 250000 marcas; exceder el límite devuelve un
 error y elimina la cuadrícula parcial. Un mapa inválido, desordenado o
 superpuesto se rechaza. No se sustituyen metadatos inválidos por tempo supuesto.
 
-La propuesta automática se ubica siempre en el compás siguiente al que contiene
-el anuncio. No hay selector de cero/dos compases; los ajustes explícitos de
+La propuesta automática de una sección principal o indicación reconocida se
+ubica en el compás siguiente al que contiene el anuncio. No equivale a sumar
+una duración completa de compás a una voz que empieza a mitad del compás.
+No hay selector de cero/dos compases; los ajustes explícitos de
 origen y arrastre de una marca siguen disponibles en la revisión visual.
 Antes de clasificarlo se ajusta únicamente el ancla de cálculo a la frontera
 de compás más cercana si está a un máximo de 20 ms: el detector de voz trabaja
@@ -310,10 +335,23 @@ con ventanas de 20 ms y Whisper entrega ticks de 10 ms. El tiempo hablado
 original no cambia. Así, un anuncio situado 10 ms antes de una línea se
 considera sobre esa línea y la anticipación de uno propone la siguiente. Esto
 es una elección revisable, no una medición de la anticipación real de la voz.
-Un destino fuera del rango o que no deje al menos 0,25 s produce un error de
-revisión; no se retrocede automáticamente a un compás anterior. El resto del
+Una sección fuera del rango o que no deje al menos 0,25 s produce un error de
+revisión; una indicación requiere un punto posterior dentro de la duración
+fuente. No se retrocede a un compás anterior ni se recorta el destino para
+hacerlo caber. El error impide confirmar la revisión completa. El resto del
 borrador permanece visible para ajustar el origen. El inicio hablado original,
 desplazamiento y anticipación resultante permanecen en la propuesta.
+
+Los destinos ausentes se identifican por anuncio en
+`GuideAlignmentDraft::timingIssues`, un vector de `GuideEntryTimingIssue`
+con `id`, `rawText`, `rawTimeSeconds` y `secondary`. `canReviewGuideAlignment`
+distingue esos problemas corregibles de los errores estructurales del
+borrador. Una indicación tardía puede moverse con `moveGuideSecondaryCue` o
+descartarse con `discardGuideSecondaryCue`: cada operación resuelve sólo el
+problema de ese ID y conserva los restantes. La UI reaplica movimientos y
+descartes por ID al reconstruir, antes de validar el error final. La aceptación
+atómica rechaza cualquier `timingIssues` pendiente aunque se haya vaciado
+manualmente el texto de `error`; borrar el aviso no valida un destino ausente.
 
 `data/GuideVocabulary.h` reúne las 17 familias de sección, aliases ES/EN y
 utilidades usadas por la detección, el editor y la clasificación de Guía Dyn.
@@ -357,8 +395,9 @@ Las correcciones confirmadas de anuncios completos son `Base`→Bass,
 `Enterlude`→Interlude y `Wrap`/`Prab`→Rap. No sustituyen palabras dentro de
 frases largas ni cambian el texto, tiempos, confianza o identidad ASR.
 La revisión de MI TESTIMONIO añade `Balsa`→Break (Pausa) y
-`Entra a batería`→Drums In como anuncios completos; conservan su instante como
-indicaciones secundarias y no crean un límite musical.
+`Entra a batería`→Drums In como anuncios completos; conservan su instante
+hablado como evidencia y no crean un límite musical. Su destino propuesto
+sigue la política de entrada de las indicaciones secundarias.
 `Adlib`, `Subetono`, `Teclados`, `Pulsos` y `Coros` se resuelven como variantes
 ordinarias del catálogo; las vocales acentuadas mayúsculas y descompuestas se
 normalizan también, incluido `Última vez`. La frase errónea que enumeraba
@@ -378,7 +417,9 @@ sus alias en inglés. No se deducen Intro o Final de silencios o de la posición
 Las indicaciones reconocidas se conservan además como `secondaryCues` en el
 borrador. `normalizeGuideUtilityCue` devuelve su nombre canónico de guía
 (`Drums In`, `All In`, `Build`, `Breakdown`, etc.), el texto original, su
-tiempo hablado y la confianza ASR opcional. No equivale a convertirlas en
+tiempo hablado y la confianza ASR opcional. `rawTimeSeconds` retiene ese
+tiempo; `timeSeconds` es la entrada musical propuesta en el compás siguiente,
+o su corrección visual explícita. No equivale a convertirlas en
 secciones musicales: cada una es un punto independiente y no cambia los
 límites ni la numeración de las propuestas principales. Los conteos se
 distinguen con `isGuideCountCue` y también se conservan en `secondaryCues`.
@@ -405,9 +446,10 @@ inicio vocal exacto. Cambiar el origen puede recalcular esta propuesta dentro
 de la evidencia; los cambios manuales y descartes se reaplican por ID estable.
 Renombrar la etiqueta recuperada nunca enseña el compuesto entero como alias.
 
-Su posición inicial es el comienzo hablado en segundos fuente. No se aplica
-el desplazamiento de un compás ni una cuantización automática a estas instrucciones;
-mover el origen de las secciones no desplaza los puntos.
+Los conteos individuales conservan el comienzo hablado en segundos fuente.
+Las instrucciones reconocidas usan el destino de compás posterior: cambiar
+el origen recalcula sus posiciones propuestas, conservando el tiempo hablado
+original. Las correcciones manuales de posición se reaplican por ID estable.
 `moveGuideSecondaryCue` permite ajustar una sola indicación al pulso más cercano
 de la cuadrícula o libremente con Alt. Conserva el tiempo ASR original y rechaza
 tiempos no finitos o fuera de la duración fuente. Los nombres y posiciones
@@ -993,3 +1035,64 @@ se reanalizaron completas; sus cinco cuentas iniciales por guía conservan
 fronteras principales ni arreglos del usuario. Véase
 [GuideRapidRecognition.md](GuideRapidRecognition.md) para procedencia, revisión
 humana del informe anterior, reproducción y límites de las voces conocidas.
+
+### Alineación revisada tras Glorioso Día
+
+El arreglo guardado de Glorioso Día (110 BPM, 4/4) permitió reproducir los
+19 destinos principales con el origen inicial ASR de 0,020 s. Los inicios
+hablados estaban entre 21,818 y 40,000 ms antes de la frontera más cercana,
+fuera de la tolerancia de 20 ms; por ello la propuesta quedaba en esa misma
+frontera. Guía Dyn anticipaba después un compás desde esa entrada ya
+adelantada. Las seis cuentas mantenían sus tiempos correctos.
+
+El refinamiento de fase inicial conserva el margen de frontera de 20 ms y usa
+consenso temporal de las cuentas, sin moverlas. Las cuatro indicaciones
+reconocidas tienen ahora un destino musical posterior independiente del
+instante hablado; siguen siendo cues y no dividen la canción. El scheduler
+existente anuncia las principales una sola vez un compás antes de su entrada
+y reproduce cada cue en su punto confirmado.
+
+Las cifras históricas de 54/54 casos y 205/205 marcas describen la política
+anterior, con origen suministrado por el manifiesto e instrucciones situadas
+en el tiempo hablado. No acreditan por sí mismas este refinamiento del origen
+en el flujo real ni el nuevo destino musical de las instrucciones. Las
+referencias anteriores deben conservarse como evidencia de aquel contrato;
+la validación del ajuste requiere referencias explícitas para las entradas
+nuevas y para los casos ambiguos o sin consenso.
+
+El probe admite `--require-cache-hit 1` para comprobar la alineación sin una
+nueva inferencia. Esta opción exige una entrada válida de la caché y rechaza
+su ausencia antes de llamar al decoder; no basta con comprobar `cacheHit`
+después de ejecutar Whisper. El replay de los 54 audios debe conservar sus
+referencias históricas y producir una evaluación separada del contrato nuevo,
+en el que 43 indicaciones usan la entrada musical posterior. Ese replay
+evalúa alineación a partir del ASR guardado; no acredita reconocimiento de voz
+nuevo ni sustituye la evidencia histórica de inferencia con caché vacía.
+
+#### Evidencia final del ajuste
+
+La compilación final de app y probes terminó con código 0
+(`/tmp/pw-glorioso-musical-entry-final-build.log`),
+la firma estricta del bundle se verificó y las **8/8 suites nativas** pasaron
+en **11,88 s**. La comprobación nativa de Glorioso Día exigió caché válida
+antes del decoder: **19/19 principales, 4/4 indicaciones y 6/6 cuentas**
+coincidieron con referencias fijadas antes de ejecutar el probe. El consenso
+refinó el origen de 0,020 s a 0 s; las seis posiciones de cuenta y el JSON ASR
+permanecieron idénticos. No hubo escrituras al arreglo guardado. El informe,
+salida nativa y verificación están en
+`output/glorioso-dia-entry-fix-20261104/`.
+
+El replay nativo de los dos conjuntos conserva **54/54 casos, 205/205 marcas
+y cero extras** bajo el contrato nuevo de entrada musical. Las 43 referencias
+de instrucciones se congelaron en su nueva versión antes de ejecutar; las
+**77 cuentas y 85 principales** conservan exactamente sus eventos y posiciones
+anteriores con los orígenes explícitos de cada escenario. Se reutilizó la
+caché del proveedor 10 y no se ejecutó ASR nuevo. Esta comprobación de
+alineación se conserva separada de las evaluaciones históricas en
+`output/guide-musical-entry-20261104/Informe.md` y en
+`event-preservation-verification.json` de esa carpeta.
+
+La captura `secondary-entry-native.png` de la comprobación del componente
+nativo usa una fixture de VI LA LUZ para mostrar la indicación en su entrada
+propuesta. No representa una confirmación ni un guardado de Glorioso Día
+en la app del usuario.

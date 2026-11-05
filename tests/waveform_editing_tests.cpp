@@ -3847,7 +3847,8 @@ void testViLaLuzSecondaryAlongsideSectionDuringPlayback() {
   const auto &allIn = draft.secondaryCues.front();
   expect(allIn.name == "All In", "Toda la banda resolves to the existing native All In instruction");
   expectNear(allIn.rawTimeSeconds, 50.71, "All In retains its own observed voice onset");
-  expectNear(allIn.timeSeconds, 50.71, "All In does not inherit the main section's one-bar anticipation");
+  expectNear(allIn.timeSeconds, .02 + 25 * 240.0 / 116,
+             "All In uses the next musical bar independently of its spoken onset");
   const auto interlude = std::find_if(draft.suggestions.begin(), draft.suggestions.end(),
       [](const auto &suggestion) { return suggestion.type == SectionType::interlude; });
   expect(interlude != draft.suggestions.end(), "the Interlude proposal remains present beside All In");
@@ -3874,7 +3875,7 @@ void testViLaLuzSecondaryAlongsideSectionDuringPlayback() {
     expect(WaveformEditingTestAccess::guideMarkerCount(wave) == 4 &&
                body.contains(point) && body.contains(label) && body.contains(sectionLabel),
            "All In remains visible in the screenshot's bar range alongside Interlude and the other sections");
-    expectNear(point.x, expectedX(50.71), "the secondary point uses its own source-time coordinate");
+    expectNear(point.x, expectedX(allIn.timeSeconds), "the secondary point uses its proposed musical entry coordinate");
     expect(WaveformEditingTestAccess::guideHitId(wave, point) == allIn.id &&
                WaveformEditingTestAccess::guideHitId(wave, label.getCentre()) == allIn.id,
            "the All In point and label both retain their independent editable target");
@@ -3902,9 +3903,9 @@ void testViLaLuzSecondaryAlongsideSectionDuringPlayback() {
   const auto &saved = accepted.cues.front();
   expect(saved.id == allIn.id && saved.name == "All In" && saved.partId.isNotEmpty(),
          "the saved secondary retains its identity and anchors to the containing section");
-  expectNear(resolveArrangementCueSeconds(accepted, saved), 50.71,
+  expectNear(resolveArrangementCueSeconds(accepted, saved), allIn.timeSeconds,
              "resolving a confirmed secondary's section-relative offset preserves its absolute source time");
-  expectNear(WaveformEditingTestAccess::cuePoint(wave, saved.id).x, expectedX(50.71),
+  expectNear(WaveformEditingTestAccess::cuePoint(wave, saved.id).x, expectedX(allIn.timeSeconds),
              "saved editing renders All In at the same temporal coordinate as the provisional review");
   WaveformEditingTestAccess::nativeCueButton(wave, saved.id);
   expect(fixture.command('Z') && wave.getArrangementSnapshot().cues.empty() &&

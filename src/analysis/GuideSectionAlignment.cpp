@@ -242,8 +242,41 @@ TimedCountExpansion expandTimedCounts(const GuideTranscript &transcript,
   return result;
 }
 
-bool validDraftAnnotations(const GuideAlignmentDraft &draft, juce::String &error) {
-  if (draft.error.isNotEmpty() || !std::isfinite(draft.durationSeconds) ||
+juce::String timingIssuesError(const std::vector<GuideEntryTimingIssue> &issues) {
+  if (issues.empty()) return {};
+  juce::StringArray entries;
+  for (const auto &issue : issues)
+    entries.add(juce::String::fromUTF8("«") + issue.rawText.trim() + juce::String::fromUTF8("» (") +
+                juce::String(issue.rawTimeSeconds, 3) + " s)");
+  return juce::String::fromUTF8("No hay un compás siguiente válido para ") + entries.joinIntoString(", ") +
+      juce::String::fromUTF8(". Revisa el origen o ajusta/descarta la indicación pendiente; no se ha desplazado ninguna entrada hacia atrás para hacerla caber. Las demás propuestas siguen visibles.");
+}
+
+void addTimingIssue(GuideAlignmentDraft &draft, const juce::String &id,
+                    const GuideTranscriptSegment &segment, bool secondary) {
+  if (std::none_of(draft.timingIssues.begin(), draft.timingIssues.end(),
+        [&](const auto &issue) { return issue.id == id; }))
+    draft.timingIssues.push_back({id, segment.text.trim(), segment.startSeconds, secondary});
+}
+
+bool validReviewGrid(const GuideAlignmentDraft &draft, juce::String &error) {
+  double previous = -1.0;
+  for (const auto &mark : draft.grid) {
+    if (!std::isfinite(mark.timeSeconds) || mark.timeSeconds < 0.0 || mark.timeSeconds > draft.durationSeconds ||
+        mark.timeSeconds <= previous || mark.barNumber < 1 || mark.pulseNumber < 1) {
+      error = juce::String::fromUTF8("La cuadrícula de la propuesta no es válida."); return false;
+    }
+    previous = mark.timeSeconds;
+  }
+  return true;
+}
+
+bool validDraftAnnotations(const GuideAlignmentDraft &draft, juce::String &error,
+                           bool allowTimingIssues = false) {
+  if ((!allowTimingIssues && !draft.timingIssues.empty()) ||
+      (!draft.timingIssues.empty() && draft.error != timingIssuesError(draft.timingIssues)) ||
+      (draft.error.isNotEmpty() && (!allowTimingIssues || draft.error != timingIssuesError(draft.timingIssues))) ||
+      !std::isfinite(draft.durationSeconds) ||
       draft.durationSeconds < minimumAcceptedSectionDurationSeconds || draft.durationSeconds > maximumDuration) {
     error = juce::String::fromUTF8("La propuesta tiene una duración inválida o un error pendiente."); return false;
   }
@@ -271,9 +304,135 @@ bool validDraftAnnotations(const GuideAlignmentDraft &draft, juce::String &error
       error = juce::String::fromUTF8("Las indicaciones propuestas tienen IDs, tiempos o nombres inválidos."); return false;
     }
   }
+  std::unordered_set<std::string> issueIds;
+  for (const auto &issue : draft.timingIssues) {
+    const auto cue = std::find_if(draft.secondaryCues.begin(), draft.secondaryCues.end(),
+        [&](const auto &candidate) { return candidate.id == issue.id; });
+    if (issue.id.trim().isEmpty() || !issueIds.insert(issue.id.toStdString()).second ||
+        issue.rawText.trim().isEmpty() || !std::isfinite(issue.rawTimeSeconds) ||
+        issue.rawTimeSeconds < 0.0 || issue.rawTimeSeconds >= draft.durationSeconds ||
+        (issue.secondary && (cue == draft.secondaryCues.end() ||
+            std::abs(cue->rawTimeSeconds - issue.rawTimeSeconds) > epsilon)) ||
+        (!issue.secondary && ids.count(issue.id.toStdString()))) {
+      error = juce::String::fromUTF8("Los anuncios pendientes de la propuesta tienen IDs o tiempos inválidos."); return false;
+    }
+  }
   return true;
 }
 } // namespace
+
+GuideAlignmentOptions makeInitialGuideAlignmentOptions(
+    const GuideTranscript &transcript, GuideAlignmentOptions options) {
+  options.originSeconds = transcript.segments.empty() ? 0.0 : transcript.segments.front().startSeconds;
+  const auto original = options;
+  if (transcript.segments.empty() || transcript.segments.size() > 65536 ||
+      !std::isfinite(options.originSeconds) || options.originSeconds < 0.0 ||
+      !std::isfinite(transcript.durationSeconds) || transcript.durationSeconds <= options.originSeconds ||
+      transcript.durationSeconds > maximumDuration) return original;
+  Rhythm initial{};
+  if (!rhythm(options.bpm, options.timeSignature, initial)) return original;
+  for (const auto &region : options.tempoMap.regions)
+    if (region.startSec <= options.originSeconds && region.endSec > options.originSeconds &&
+        !rhythm(region.bpm, region.timeSignature.trim().isEmpty() ? options.timeSignature : region.timeSignature, initial))
+      return original;
+  const double pulseSeconds = 60.0 / initial.bpm * 4.0 / initial.denominator;
+  const double windowEnd = std::min(transcript.durationSeconds,
+      options.originSeconds + std::min(16.0, 8.0 * initial.numerator * pulseSeconds));
+  std::vector<double> measured;
+  bool startsWithCounts = false;
+  for (size_t i = 0; i < transcript.segments.size(); ++i) {
+    const auto &segment = transcript.segments[i];
+    if (!std::isfinite(segment.startSeconds) || !std::isfinite(segment.endSeconds) ||
+        segment.startSeconds < 0.0 || segment.endSeconds <= segment.startSeconds ||
+        segment.endSeconds > transcript.durationSeconds + epsilon) return original;
+    if (segment.startSeconds >= windowEnd) continue;
+    const auto addCount = [&](double seconds, const juce::String &text) {
+      const auto count = normalizeGuideCountCue(seconds, text);
+      if (!count || count->name.length() != 1 || !count->name.containsOnly("1234567") ||
+          seconds < options.originSeconds - epsilon || seconds >= windowEnd) return;
+      if (i == 0) startsWithCounts = true;
+      measured.push_back(seconds);
+    };
+    if (!segment.acousticAnnouncements.empty() && guideAcousticAnnouncementsMatchParent(segment)) {
+      for (const auto &announcement : segment.acousticAnnouncements) {
+        if (announcement.startSeconds < 0.0 || announcement.endSeconds > transcript.durationSeconds + epsilon)
+          return original;
+        addCount(announcement.startSeconds, announcement.text);
+      }
+    } else {
+      // A compound word interval can already depend on the draft grid; only
+      // atomic spoken counts or independently measured template onsets vote.
+      addCount(segment.startSeconds, segment.text);
+    }
+    if (measured.size() > 64) return original;
+  }
+  if (!startsWithCounts || measured.size() < 4) return original;
+  std::sort(measured.begin(), measured.end());
+  measured.erase(std::unique(measured.begin(), measured.end(), [](double a, double b) {
+    return std::abs(a - b) <= epsilon;
+  }), measured.end());
+  if (measured.size() < 4) return original;
+  // Do not translate a changing tempo map as though it had a constant pulse.
+  const auto sameRhythm = [&](double seconds) {
+    Rhythm current{};
+    if (!rhythm(options.bpm, options.timeSignature, current)) return false;
+    for (const auto &region : options.tempoMap.regions)
+      if (region.startSec <= seconds && region.endSec > seconds &&
+          !rhythm(region.bpm, region.timeSignature.trim().isEmpty() ? options.timeSignature : region.timeSignature, current))
+        return false;
+    return std::abs(current.bpm - initial.bpm) <= epsilon &&
+        current.numerator == initial.numerator && current.denominator == initial.denominator;
+  };
+  for (const auto &region : options.tempoMap.regions)
+    for (double boundary : {region.startSec, region.endSec})
+      if (boundary > options.originSeconds && boundary <= measured.back() &&
+          (!sameRhythm(boundary) || !sameRhythm(std::nextafter(boundary, 0.0)))) return original;
+  // Preserve already supported word-count positions as well as atomic counts.
+  // They use the original grid to resolve an interval, so they cannot be used
+  // as independent phase evidence or silently moved by this initial default.
+  GuideAlignmentDraft countGrid;
+  countGrid.options = options;
+  countGrid.durationSeconds = transcript.durationSeconds;
+  if (!buildGrid(countGrid) || countGrid.grid.empty()) return original;
+  for (const auto &segment : transcript.segments)
+    if (!segment.words.empty() &&
+        !(!segment.acousticAnnouncements.empty() && guideAcousticAnnouncementsMatchParent(segment)) &&
+        expandTimedCounts(transcript, segment, countGrid.grid).expanded) return original;
+  std::vector<double> residuals;
+  long long previousPulse = -1, firstPulse = -1;
+  for (double time : measured) {
+    const double position = (time - options.originSeconds) / pulseSeconds;
+    const auto pulse = std::llround(position);
+    if (pulse <= previousPulse || std::abs(std::abs(position - double(pulse)) - 0.5) <= epsilon)
+      return original;
+    if (firstPulse < 0) firstPulse = pulse;
+    previousPulse = pulse;
+    residuals.push_back(time - (options.originSeconds + double(pulse) * pulseSeconds));
+  }
+  if (previousPulse - firstPulse < 3) return original;
+  const auto median = [](std::vector<double> values) {
+    std::sort(values.begin(), values.end());
+    const size_t half = values.size() / 2;
+    return values.size() % 2 ? values[half] : (values[half - 1] + values[half]) * 0.5;
+  };
+  const double delta = median(residuals);
+  const double maxCorrection = std::min(0.040, pulseSeconds * 0.25);
+  const double inlierTolerance = std::min(0.012, pulseSeconds * 0.10);
+  const double maxDeviation = std::min(0.008, pulseSeconds * 0.05);
+  if (std::abs(delta) > maxCorrection + epsilon) return original;
+  std::vector<double> deviations;
+  for (double residual : residuals) deviations.push_back(std::abs(residual - delta));
+  if (median(deviations) > maxDeviation + epsilon) return original;
+  const double candidate = std::max(0.0, options.originSeconds + delta);
+  const double applied = candidate - options.originSeconds;
+  const auto inliers = std::count_if(residuals.begin(), residuals.end(), [&](double residual) {
+    return std::abs(residual - applied) <= inlierTolerance + epsilon;
+  });
+  if (inliers < 4 || size_t(inliers) * 4 < residuals.size() * 3 ||
+      std::abs(applied) > maxCorrection + epsilon) return original;
+  options.originSeconds = candidate;
+  return options;
+}
 
 GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const GuideAlignmentOptions &options) {
   GuideAlignmentDraft draft;
@@ -340,7 +499,6 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     return a.text < b.text;
   });
   std::vector<Candidate> candidates;
-  juce::StringArray unavailableEntries;
   std::unordered_set<std::string> secondaryIds;
   for (const auto &segment : segments) {
     const auto text = segment.text.trim();
@@ -359,11 +517,22 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     if (announcement.kind == GuideAnnouncementKind::count ||
         announcement.kind == GuideAnnouncementKind::instruction) {
       const auto id = "guide-secondary-" + segmentIdentityHash(transcript, segment, text);
+      double entrySeconds = segment.startSeconds;
+      if (announcement.kind == GuideAnnouncementKind::instruction) {
+        const auto anchor = musicalOnsetAnchor(gridBars, segment.startSeconds);
+        const auto entry = std::upper_bound(gridBars.begin(), gridBars.end(), anchor.seconds + epsilon,
+            [](double time, const auto &mark) { return time < mark.timeSeconds; });
+        if (entry == gridBars.end() || entry->timeSeconds >= draft.durationSeconds - epsilon) {
+          // Keep the spoken point visible for review, while rejecting the
+          // unresolved draft atomically instead of clamping to an earlier bar.
+          addTimingIssue(draft, id, segment, true);
+        } else entrySeconds = entry->timeSeconds;
+      }
       // Repeated copies of precisely the same source evidence represent one
       // point. Repeated announcements at different source times remain separate.
       if (secondaryIds.insert(id.toStdString()).second)
         draft.secondaryCues.push_back({id, announcement.secondaryName, segment.text,
-            segment.startSeconds, segment.startSeconds, segment.confidence, false});
+            segment.startSeconds, entrySeconds, segment.confidence, false});
       continue;
     }
     const auto &interpretation = announcement.section;
@@ -375,8 +544,7 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     const int containing = int(nextBar - gridBars.begin()) - 1;
     const int requested = containing + 1;
     if (requested < 0 || requested > lastBarIndex) {
-      unavailableEntries.add(juce::String::fromUTF8("«") + text + juce::String::fromUTF8("» (") +
-                             juce::String(segment.startSeconds, 3) + " s)");
+      addTimingIssue(draft, guideSectionSuggestionId(transcript, segment), segment, false);
       continue;
     }
     const int target = requested;
@@ -445,11 +613,7 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
       suggestion.displayName += " " + juce::String(suggestion.occurrence);
     draft.suggestions.push_back(std::move(suggestion));
   }
-  if (!unavailableEntries.isEmpty()) {
-    draft.error = juce::String::fromUTF8("No hay un compás siguiente válido para ") +
-        unavailableEntries.joinIntoString(", ") +
-        juce::String::fromUTF8(". Revisa el origen; no se ha desplazado ninguna entrada hacia atrás para hacerla caber. Las demás propuestas siguen visibles.");
-  }
+  draft.error = timingIssuesError(draft.timingIssues);
   return draft;
 }
 
@@ -521,18 +685,11 @@ bool moveGuideSectionBoundary(GuideAlignmentDraft &draft, const juce::String &id
 bool moveGuideSecondaryCue(GuideAlignmentDraft &draft, const juce::String &id,
                             double seconds, bool snapToBeats, juce::String &error) {
   error.clear();
-  if (id.isEmpty() || !std::isfinite(seconds) || !validDraftAnnotations(draft, error)) {
+  if (id.isEmpty() || !std::isfinite(seconds) || !validDraftAnnotations(draft, error, true)) {
     if (error.isEmpty()) error = juce::String::fromUTF8("No se puede mover esta indicación.");
     return false;
   }
-  double previousMark = -1.0;
-  for (const auto &mark : draft.grid) {
-    if (!std::isfinite(mark.timeSeconds) || mark.timeSeconds < 0.0 || mark.timeSeconds > draft.durationSeconds ||
-        mark.timeSeconds <= previousMark || mark.barNumber < 1 || mark.pulseNumber < 1) {
-      error = juce::String::fromUTF8("La cuadrícula de la propuesta no es válida."); return false;
-    }
-    previousMark = mark.timeSeconds;
-  }
+  if (!validReviewGrid(draft, error)) return false;
   const auto found = std::find_if(draft.secondaryCues.begin(), draft.secondaryCues.end(),
       [&](const auto &cue) { return cue.id == id; });
   if (found == draft.secondaryCues.end()) {
@@ -552,10 +709,42 @@ bool moveGuideSecondaryCue(GuideAlignmentDraft &draft, const juce::String &id,
     }
     target = nearest;
   }
-  if (std::abs(found->timeSeconds - target) > epsilon) {
+  const auto issue = std::find_if(draft.timingIssues.begin(), draft.timingIssues.end(),
+      [&](const auto &pending) { return pending.secondary && pending.id == id; });
+  if (std::abs(found->timeSeconds - target) > epsilon || issue != draft.timingIssues.end()) {
     found->timeSeconds = target;
     found->userEdited = true;
   }
+  if (issue != draft.timingIssues.end()) {
+    draft.timingIssues.erase(issue);
+    draft.error = timingIssuesError(draft.timingIssues);
+  }
+  return true;
+}
+
+bool canReviewGuideAlignment(const GuideAlignmentDraft &draft) {
+  juce::String error;
+  return validDraftAnnotations(draft, error, true) && validReviewGrid(draft, error);
+}
+
+bool discardGuideSecondaryCue(GuideAlignmentDraft &draft, const juce::String &id,
+                              juce::String &error) {
+  error.clear();
+  if (id.isEmpty() || !validDraftAnnotations(draft, error, true) || !validReviewGrid(draft, error)) {
+    if (error.isEmpty()) error = juce::String::fromUTF8("No se puede descartar esta indicación.");
+    return false;
+  }
+  const auto cue = std::find_if(draft.secondaryCues.begin(), draft.secondaryCues.end(),
+      [&](const auto &candidate) { return candidate.id == id; });
+  if (cue == draft.secondaryCues.end()) {
+    error = juce::String::fromUTF8("La indicación propuesta ya no existe."); return false;
+  }
+  const auto sourceId = cue->id;
+  draft.secondaryCues.erase(cue);
+  const auto before = draft.timingIssues.size();
+  draft.timingIssues.erase(std::remove_if(draft.timingIssues.begin(), draft.timingIssues.end(),
+      [&](const auto &issue) { return issue.secondary && issue.id == sourceId; }), draft.timingIssues.end());
+  if (draft.timingIssues.size() != before) draft.error = timingIssuesError(draft.timingIssues);
   return true;
 }
 

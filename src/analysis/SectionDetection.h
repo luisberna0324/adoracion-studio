@@ -8,7 +8,7 @@
 namespace playworship::analysis {
 
 inline constexpr int sectionDetectionSchemaVersion = 1;
-inline constexpr const char *sectionDetectionAlgorithmVersion = "sections-mvp-7-compound-directives";
+inline constexpr const char *sectionDetectionAlgorithmVersion = "sections-mvp-8-musical-entry-timing";
 inline constexpr std::size_t maximumSectionSuggestions = 256;
 inline constexpr double minimumAcceptedSectionDurationSeconds = 0.25;
 

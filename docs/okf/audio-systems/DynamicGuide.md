@@ -342,7 +342,18 @@ sección; `positionSec` sirve de ubicación absoluta si no existe un padre váli
 incluyendo el alias `acapella`. La migración legacy aplica las mismas
 condiciones de continuidad y preservación de acciones que las demás utilidades.
 Los cues son inmediatos en su punto; los anuncios de secciones musicales
-conservan el adelanto de un compás. Un conteo agrupado tiene `name` numérico,
+conservan el adelanto de un compás. En la detección asistida, el punto de una
+indicación reconocida representa su entrada musical propuesta en el compás
+siguiente al aviso hablado. El tiempo original de voz permanece en el
+borrador. Los conteos conservan sus instantes y no reciben ese desplazamiento.
+El scheduler no resta otro compás a las indicaciones: reproduce el cue en su
+posición confirmada y anticipa las principales una sola vez desde su entrada.
+La detección revisa las propuestas; no modifica los eventos de un arreglo
+guardado al cargarlo. El ajuste de Glorioso Día se comprobó mediante
+alineación nativa desde caché, manteniendo las seis cuentas y sin cambiar el
+scheduler. La evidencia valida los puntos calculados; no es una nueva escucha
+humana ni un guardado del arreglo en la app. Un conteo agrupado tiene `name`
+numérico,
 `countEnd` (hasta 7) y offsets fuente `countOffsetsSec` relativos al primer
 pulso. Esos offsets permiten atravesar cambios de BPM/métrica; el intervalo
 fuente `countIntervalSec` se conserva como fallback legacy. Se expande en
