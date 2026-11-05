@@ -166,7 +166,7 @@ bool renderMix(std::vector<AudioSource> &sources, double duration, double rate,
   return true;
 }
 
-constexpr int guideCacheSchema = 1;
+constexpr int guideCacheSchema = 2;
 constexpr juce::int64 maximumGuideCacheBytes = 8 * 1024 * 1024;
 
 // A bounded-memory content fingerprint, with cancellation between reads. The
@@ -200,13 +200,83 @@ bool validGuideTranscript(const GuideTranscript &transcript, double offset,
   }
   double previousEnd = offset;
   size_t textBytes = 0;
+  const auto validLanguage = [](const juce::String &language) {
+    return language.length() <= 32 && language.containsOnly("abcdefghijklmnopqrstuvwxyz-");
+  };
+  const auto validTemplateIdentity = [](const juce::String &identity) {
+    if (identity.trim().isEmpty() || identity.length() > 128) return false;
+    for (auto character : identity)
+      if (character < 0x20 || (character >= 0x7f && character <= 0x9f)) return false;
+    return true;
+  };
   for (const auto &segment : transcript.segments) {
     textBytes += size_t(segment.text.getNumBytesAsUTF8());
     if (!std::isfinite(segment.startSeconds) || !std::isfinite(segment.endSeconds) ||
         segment.startSeconds < offset - 0.000001 || segment.startSeconds < previousEnd - 0.000001 ||
         segment.endSeconds <= segment.startSeconds || segment.endSeconds > duration + 0.000001 ||
-        segment.text.trim().isEmpty() || segment.text.length() > 16384 || textBytes > 4 * 1024 * 1024) {
+        segment.text.trim().isEmpty() || segment.text.length() > 16384 || !validLanguage(segment.language) ||
+        (segment.confidence && (!std::isfinite(*segment.confidence) || *segment.confidence < 0 || *segment.confidence > 1)) ||
+        segment.alternatives.size() > 2 || segment.words.size() > 128 ||
+        segment.acousticAnnouncements.size() > 8) {
       error = juce::String::fromUTF8("La transcripción contiene frases o tiempos inválidos."); return false;
+    }
+    for (const auto &alternative : segment.alternatives) {
+      textBytes += size_t(alternative.text.getNumBytesAsUTF8());
+      if (alternative.text.trim().isEmpty() || alternative.text.length() > 16384 ||
+          alternative.language.isEmpty() || !validLanguage(alternative.language) ||
+          !std::isfinite(alternative.avgLogProbability) || alternative.avgLogProbability > 0 ||
+          !std::isfinite(alternative.noSpeechProbability) || alternative.noSpeechProbability < 0 ||
+          alternative.noSpeechProbability > 1) {
+        error = juce::String::fromUTF8("La transcripción contiene alternativas inválidas."); return false;
+      }
+    }
+    double previousWordStart = -1.0;
+    for (const auto &word : segment.words) {
+      textBytes += size_t(word.text.getNumBytesAsUTF8());
+      if (word.text.trim().isEmpty() || word.text.length() > 256 ||
+          !std::isfinite(word.startSeconds) || !std::isfinite(word.endSeconds) ||
+          word.startSeconds < segment.startSeconds - 0.000001 ||
+          word.startSeconds <= previousWordStart || word.endSeconds <= word.startSeconds ||
+          word.endSeconds > segment.endSeconds + 0.000001 ||
+          word.startSeconds < offset - 0.000001 || word.endSeconds > duration + 0.000001 ||
+          (word.confidence && (!std::isfinite(*word.confidence) ||
+              *word.confidence < 0.0 || *word.confidence > 1.0))) {
+        error = juce::String::fromUTF8("La transcripción contiene intervalos de palabras inválidos."); return false;
+      }
+      previousWordStart = word.startSeconds;
+    }
+    // The measured recording may start before the ASR parent's approximate
+    // onset or end after its last timestamp. Keep that bounded context inside
+    // real source audio; overlapping voices retain their independent ends.
+    const double acousticBegin = std::max(offset, segment.startSeconds - 0.2);
+    const double acousticEnd = std::min(duration, segment.endSeconds + 0.3);
+    if ((segment.acousticAnnouncements.empty() && segment.acousticResidualRatio) ||
+        (!segment.acousticAnnouncements.empty() &&
+         (!segment.acousticResidualRatio || !std::isfinite(*segment.acousticResidualRatio) ||
+          *segment.acousticResidualRatio < 0.0 || *segment.acousticResidualRatio > 1.0))) {
+      error = juce::String::fromUTF8("La transcripción contiene una reconstrucción acústica inválida."); return false;
+    }
+    double previousAcousticStart = -1.0;
+    for (const auto &announcement : segment.acousticAnnouncements) {
+      textBytes += size_t(announcement.text.getNumBytesAsUTF8()) +
+          size_t(announcement.language.getNumBytesAsUTF8()) +
+          size_t(announcement.templateIdentity.getNumBytesAsUTF8());
+      if (announcement.text.trim().isEmpty() || announcement.text.length() > 512 ||
+          (announcement.language != "es" && announcement.language != "en") ||
+          !validTemplateIdentity(announcement.templateIdentity) ||
+          !std::isfinite(announcement.startSeconds) || !std::isfinite(announcement.endSeconds) ||
+          announcement.startSeconds < acousticBegin - 0.000001 ||
+          announcement.startSeconds <= previousAcousticStart ||
+          announcement.endSeconds <= announcement.startSeconds ||
+          announcement.endSeconds > acousticEnd + 0.000001 ||
+          !std::isfinite(announcement.correlation) ||
+          announcement.correlation < 0.0 || announcement.correlation > 1.0) {
+        error = juce::String::fromUTF8("La transcripción contiene evidencia acústica inválida."); return false;
+      }
+      previousAcousticStart = announcement.startSeconds;
+    }
+    if (textBytes > 4 * 1024 * 1024) {
+      error = juce::String::fromUTF8("La transcripción excede el límite de texto."); return false;
     }
     previousEnd = segment.endSeconds;
   }
@@ -230,6 +300,46 @@ juce::var guideTranscriptToVar(const GuideTranscript &transcript, double offset)
     item.getDynamicObject()->setProperty("startSeconds", segment.startSeconds);
     item.getDynamicObject()->setProperty("endSeconds", segment.endSeconds);
     item.getDynamicObject()->setProperty("text", segment.text);
+    item.getDynamicObject()->setProperty("language", segment.language);
+    if (segment.confidence) item.getDynamicObject()->setProperty("confidence", *segment.confidence);
+    juce::Array<juce::var> alternatives;
+    for (const auto &alternative : segment.alternatives) {
+      auto candidate = juce::var(new juce::DynamicObject());
+      candidate.getDynamicObject()->setProperty("text", alternative.text);
+      candidate.getDynamicObject()->setProperty("language", alternative.language);
+      candidate.getDynamicObject()->setProperty("avgLogProbability", alternative.avgLogProbability);
+      candidate.getDynamicObject()->setProperty("noSpeechProbability", alternative.noSpeechProbability);
+      alternatives.add(std::move(candidate));
+    }
+    item.getDynamicObject()->setProperty("alternatives", std::move(alternatives));
+    if (!segment.words.empty()) {
+      juce::Array<juce::var> words;
+      for (const auto &word : segment.words) {
+        auto entry = juce::var(new juce::DynamicObject());
+        entry.getDynamicObject()->setProperty("text", word.text);
+        entry.getDynamicObject()->setProperty("startSeconds", word.startSeconds);
+        entry.getDynamicObject()->setProperty("endSeconds", word.endSeconds);
+        if (word.confidence) entry.getDynamicObject()->setProperty("confidence", *word.confidence);
+        words.add(std::move(entry));
+      }
+      item.getDynamicObject()->setProperty("words", std::move(words));
+    }
+    if (!segment.acousticAnnouncements.empty()) {
+      juce::Array<juce::var> announcements;
+      for (const auto &announcement : segment.acousticAnnouncements) {
+        auto entry = juce::var(new juce::DynamicObject());
+        entry.getDynamicObject()->setProperty("text", announcement.text);
+        entry.getDynamicObject()->setProperty("language", announcement.language);
+        entry.getDynamicObject()->setProperty("templateIdentity", announcement.templateIdentity);
+        entry.getDynamicObject()->setProperty("startSeconds", announcement.startSeconds);
+        entry.getDynamicObject()->setProperty("endSeconds", announcement.endSeconds);
+        entry.getDynamicObject()->setProperty("correlation", announcement.correlation);
+        announcements.add(std::move(entry));
+      }
+      item.getDynamicObject()->setProperty("acousticAnnouncements", std::move(announcements));
+      if (segment.acousticResidualRatio)
+        item.getDynamicObject()->setProperty("acousticResidualRatio", *segment.acousticResidualRatio);
+    }
     segments.add(std::move(item));
   }
   object.setProperty("segments", std::move(segments));
@@ -262,24 +372,84 @@ bool readGuideCache(const juce::File &file, const GuideTranscript &identity,
     const auto *segment = item.getDynamicObject();
     if (!segment || !numeric(segment->getProperty("startSeconds")) ||
         !numeric(segment->getProperty("endSeconds")) || !segment->getProperty("text").isString()) return false;
-    transcript.segments.push_back({double(segment->getProperty("startSeconds")),
-                                  double(segment->getProperty("endSeconds")), segment->getProperty("text").toString()});
+    GuideTranscriptSegment decoded{double(segment->getProperty("startSeconds")),
+                                   double(segment->getProperty("endSeconds")), segment->getProperty("text").toString()};
+    if (!segment->getProperty("language").isString()) return false;
+    decoded.language = segment->getProperty("language").toString();
+    if (segment->hasProperty("confidence")) {
+      if (!numeric(segment->getProperty("confidence"))) return false;
+      decoded.confidence = double(segment->getProperty("confidence"));
+    }
+    const auto *alternatives = segment->getProperty("alternatives").getArray();
+    if (!alternatives || alternatives->size() > 2) return false;
+    for (const auto &candidate : *alternatives) {
+      const auto *alternative = candidate.getDynamicObject();
+      if (!alternative || !alternative->getProperty("text").isString() ||
+          !alternative->getProperty("language").isString() ||
+          !numeric(alternative->getProperty("avgLogProbability")) ||
+          !numeric(alternative->getProperty("noSpeechProbability"))) return false;
+      decoded.alternatives.push_back({alternative->getProperty("text").toString(),
+          alternative->getProperty("language").toString(), double(alternative->getProperty("avgLogProbability")),
+          double(alternative->getProperty("noSpeechProbability"))});
+    }
+    if (segment->hasProperty("words")) {
+      const auto *words = segment->getProperty("words").getArray();
+      if (!words || words->size() > 128) return false;
+      for (const auto &entry : *words) {
+        const auto *word = entry.getDynamicObject();
+        if (!word || !word->getProperty("text").isString() ||
+            !numeric(word->getProperty("startSeconds")) ||
+            !numeric(word->getProperty("endSeconds"))) return false;
+        GuideTranscriptWord decodedWord{word->getProperty("text").toString(),
+            double(word->getProperty("startSeconds")), double(word->getProperty("endSeconds"))};
+        if (word->hasProperty("confidence")) {
+          if (!numeric(word->getProperty("confidence"))) return false;
+          decodedWord.confidence = double(word->getProperty("confidence"));
+        }
+        decoded.words.push_back(std::move(decodedWord));
+      }
+    }
+    if (segment->hasProperty("acousticAnnouncements")) {
+      const auto *announcements = segment->getProperty("acousticAnnouncements").getArray();
+      if (!announcements || announcements->size() > 8) return false;
+      for (const auto &entry : *announcements) {
+        const auto *announcement = entry.getDynamicObject();
+        if (!announcement || !announcement->getProperty("text").isString() ||
+            !announcement->getProperty("language").isString() ||
+            !announcement->getProperty("templateIdentity").isString() ||
+            !numeric(announcement->getProperty("startSeconds")) ||
+            !numeric(announcement->getProperty("endSeconds")) ||
+            !numeric(announcement->getProperty("correlation"))) return false;
+        decoded.acousticAnnouncements.push_back({announcement->getProperty("text").toString(),
+            announcement->getProperty("language").toString(),
+            announcement->getProperty("templateIdentity").toString(),
+            double(announcement->getProperty("startSeconds")),
+            double(announcement->getProperty("endSeconds")),
+            double(announcement->getProperty("correlation"))});
+      }
+    }
+    if (segment->hasProperty("acousticResidualRatio")) {
+      if (!numeric(segment->getProperty("acousticResidualRatio"))) return false;
+      decoded.acousticResidualRatio = double(segment->getProperty("acousticResidualRatio"));
+    }
+    transcript.segments.push_back(std::move(decoded));
   }
   juce::String ignored;
   return validGuideTranscript(transcript, offset, identity.durationSeconds, ignored);
 }
 
-void writeGuideCache(const juce::File &file, const GuideTranscript &transcript,
+bool writeGuideCache(const juce::File &file, const GuideTranscript &transcript,
                      double offset, const CancellationCheck &cancelled) {
-  if (cancelled() || !file.getParentDirectory().createDirectory()) return;
+  if (cancelled() || !file.getParentDirectory().createDirectory()) return false;
   const auto json = juce::JSON::toString(guideTranscriptToVar(transcript, offset));
-  if (json.getNumBytesAsUTF8() >= maximumGuideCacheBytes) return;
+  if (json.getNumBytesAsUTF8() >= maximumGuideCacheBytes) return false;
   juce::TemporaryFile temporary(file);
-  if (temporary.getFile().replaceWithText(json) && !cancelled())
-    temporary.overwriteTargetFileWithTemporary();
+  if (!temporary.getFile().replaceWithText(json) || cancelled() ||
+      !temporary.overwriteTargetFileWithTemporary()) return false;
   auto files = file.getParentDirectory().findChildFiles(juce::File::findFiles, false, "*.json");
   std::sort(files.begin(), files.end(), [](const auto &a, const auto &b) { return a.getLastModificationTime() < b.getLastModificationTime(); });
   while (files.size() > 64) { files.getReference(0).deleteFile(); files.remove(0); }
+  return true;
 }
 
 void transcribeGuide(const std::shared_ptr<IGuideTranscriber> &provider,
@@ -323,12 +493,12 @@ void transcribeGuide(const std::shared_ptr<IGuideTranscriber> &provider,
   if (!contentFingerprint(guide->file, cancelled, identity.audioFingerprint, outcome.error) ||
       !contentFingerprint(model, cancelled, identity.modelFingerprint, outcome.error)) return;
   juce::MemoryOutputStream key;
-  key.writeString("guide-transcript-cache-1"); key.writeString(identity.provider); key.writeString(identity.providerVersion);
+  key.writeString("guide-transcript-cache-2"); key.writeString(identity.provider); key.writeString(identity.providerVersion);
   key.writeString(identity.audioFingerprint); key.writeString(identity.modelFingerprint); key.writeString(language);
   key.writeDouble(guide->offsetSeconds); key.writeDouble(duration);
   const auto filename = juce::SHA256(key.getData(), key.getDataSize()).toHexString() + ".json";
   const auto cacheFile = request.cacheDirectory == juce::File{} ? juce::File{} :
-      request.cacheDirectory.getChildFile("guide-transcripts-v1").getChildFile(filename);
+      request.cacheDirectory.getChildFile("guide-transcripts-v2").getChildFile(filename);
   GuideTranscript transcript;
   if (cancelled()) return;
   outcome.cacheHit = cacheFile != juce::File{} && readGuideCache(cacheFile, identity, guide->offsetSeconds, transcript);
@@ -341,7 +511,8 @@ void transcribeGuide(const std::shared_ptr<IGuideTranscriber> &provider,
         numericProgress(lastProgress);
       }
     };
-    const GuideTranscriptionRequest transcriptionRequest{guide->file, model, language, guide->offsetSeconds};
+    const GuideTranscriptionRequest transcriptionRequest{guide->file, model, language,
+        guide->offsetSeconds, identity.providerVersion};
     if (!provider->transcribe(transcriptionRequest, cancelled, progress, transcript, outcome.error)) {
       if (outcome.error.isEmpty() && !cancelled()) outcome.error = juce::String::fromUTF8("No se pudo transcribir la guía.");
       return;
@@ -358,15 +529,31 @@ void transcribeGuide(const std::shared_ptr<IGuideTranscriber> &provider,
     transcript.provider = identity.provider; transcript.providerVersion = identity.providerVersion;
     transcript.audioFingerprint = identity.audioFingerprint; transcript.modelFingerprint = identity.modelFingerprint;
     transcript.language = identity.language; transcript.durationSeconds = duration;
-    if (cacheFile != juce::File{}) writeGuideCache(cacheFile, transcript, guide->offsetSeconds, cancelled);
   }
   if (cancelled()) return;
-  auto &result = outcome.result;
+  SectionDetectionResult result;
   result.songId = request.songId; result.durationSeconds = duration;
   result.analysisProvider = identity.provider; result.analyzedAudioFingerprint = identity.audioFingerprint;
   for (const auto &segment : transcript.segments)
-    if (const auto cue = normalizeGuideCue(segment.startSeconds, segment.text)) result.guideCues.push_back(*cue);
+    if (const auto cue = normalizeGuideCue(segment.startSeconds, segment.text, segment.confidence)) result.guideCues.push_back(*cue);
+  const auto providerUnchanged = [&] {
+    if (provider->version() == identity.providerVersion) return true;
+    outcome.error = juce::String::fromUTF8("El reconocedor local o su catálogo de voces cambió durante el análisis; vuelve a analizar.");
+    outcome.cacheHit = false;
+    return false;
+  };
+  // Revalidate both freshly inferred evidence and cache hits. The expected
+  // version sent into the provider also protects its own initial capture from
+  // an old -> new -> old pack change that these final checks cannot observe.
+  if (!providerUnchanged()) return;
+  const bool wroteCache = !outcome.cacheHit && cacheFile != juce::File{} &&
+      writeGuideCache(cacheFile, transcript, guide->offsetSeconds, cancelled);
+  if (cancelled() || !providerUnchanged()) {
+    if (wroteCache) cacheFile.deleteFile();
+    return;
+  }
   // Spoken cue times are not musical starts. Alignment is deliberately absent.
+  outcome.result = std::move(result);
   outcome.guideTranscript = std::move(transcript);
   if (numericProgress) numericProgress(1);
 }

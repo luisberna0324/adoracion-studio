@@ -112,18 +112,35 @@ Referencias: [Music Understanding](https://developer.apple.com/documentation/mus
 ## Sugerir secciones sobre la onda
 
 La entrada principal es **Sugerir secciones** en el modo Editar de la onda.
-El editor abre la preparación y llama explícitamente
+El editor presenta un modal centrado que cubre la aplicación y llama explícitamente
 `SectionDetectionPanel::beginSuggestionFlow()`: si hay una única pista Guía,
 backend y modelo locales, empieza el análisis sin otro clic. Construir el
 componente no inicia trabajo ni descargas. Si falta o hay más de una guía, el
-panel conserva los selectores de rol y explica cómo elegir una sola. Esta ruta
+modal conserva los selectores de rol y explica cómo elegir una sola. Esta ruta
 no exige stems musicales ni los decodifica. **Analizar** mantiene por separado
 el flujo de estructura Apple para diagnóstico; su disponibilidad es independiente.
 
+`SectionDetectionPanel::showModal(source)` se adjunta al componente superior,
+mantiene su cobertura al redimensionar y usa la superficie compartida de
+`AppModal`. No se aloja un panel inferior. Durante preparación, descarga o
+transcripción, la tarjeta compacta muestra únicamente título, fase actual,
+barra horizontal de progreso y **Cancelar**; los selectores y listas se ocultan.
+El progreso numérico corresponde al worker real. Sin una fracción disponible,
+la barra es indeterminada. El fondo atenuado bloquea acciones sobre el editor.
+Escape solicita la misma cancelación que el botón; **Cancelando…** conserva
+el modal hasta que el worker responde, sin bloquear el message thread.
+Ante error o cancelación vuelve a la configuración de la tarjeta para corregir
+y reintentar o cerrar. Descargar sigue requiriendo una acción explícita.
+
 **Modelo de voz…** selecciona un archivo local. Inicialmente se propone
 `defaultWhisperGuideModelFile()`; en macOS corresponde a
-`~/Library/MTControls/models/ggml-base-q5_1.bin`. El selector de idioma permite
-elegir el idioma de reconocimiento antes de comenzar. Tener un archivo en esa
+`~/Library/MTControls/models/ggml-base-q5_1.bin`. El selector de idioma presenta
+primero **Español e inglés**, seleccionado por defecto (`es-en`, ID 3). El inicio
+automático de `beginSuggestionFlow()` conserva esta selección. Compara ambos
+idiomas en cada anuncio de la guía usando el mismo modelo local, por lo que una
+canción puede contener indicaciones en ambos idiomas. Las opciones explícitas
+**Español** (ID 1, `es`) e **Inglés** (ID 2, `en`) siguen disponibles y se respetan
+al iniciar el reconocimiento manualmente. Tener un archivo en esa
 ruta no prueba su validez: el proveedor valida al ejecutar y los errores se
 muestran sin modificar el arreglo. El selector manual se conserva como opción
 avanzada; no hace falta buscar un archivo para comenzar con el modelo habitual.
@@ -144,11 +161,12 @@ Al terminar, `Actions::reviewGuide(const GuideTranscript&)` entrega al editor
 el texto literal, las huellas y todos los tiempos hablados; no los reemplaza
 por nombres esperados. El editor prepara un `GuideAlignmentDraft` transitorio
 y muestra sus sugerencias sobre la onda existente.
-Al recibir el resultado, el editor vuelve a **Onda** y recalcula el layout para
-mantener accesibles Confirmar/Cancelar aunque el usuario haya abierto Letras
-durante el análisis. Las canciones en blanco no reciben propuestas de audio.
-El cierre de configuración
-se encola después de instalar esa revisión, con `SafePointer`, conservando el
+Antes de entregar el resultado a `reviewGuide`, el componente libera su estado
+modal para que las marcas sobre la onda sean interactivas. El editor vuelve a
+**Onda** y recalcula el layout para mantener accesibles Confirmar/Cancelar ante
+cambios programáticos de vista. Las canciones en blanco no reciben propuestas
+de audio. El cierre de configuración se encola después de instalar esa revisión,
+con `SafePointer`, conservando el
 preview del editor. El callback puede destruir el panel sin un segundo cierre
 ni acceso posterior a sus miembros. La cancelación de UI prevalece incluso si
 el worker ya había encolado un éxito: no entrega `reviewGuide` ni confirma nada.
@@ -159,7 +177,76 @@ El flujo principal no muestra un panel con todas las secciones para confirmarlas
 una por una. El servicio ASR sigue devolviendo tiempos del anuncio hablado,
 incluidos silencios iniciales y offset; la hipótesis musical pertenece al borrador
 revisable. Conteos sin nombre no identifican secciones y los errores de voz
-permanecen revisables. No se aplica ningún resultado automáticamente.
+permanecen revisables. Las indicaciones de utilidad y los conteos no crean
+límites musicales. Los alias de secciones e indicaciones usan el catálogo común
+de español e inglés, sin corregir el texto para ajustarlo a una canción concreta.
+No se aplica ningún resultado automáticamente.
+
+La revisión interpreta correcciones conocidas de reconocimiento, como
+«For a frame»→Refrain, y conserva el texto original en la evidencia del análisis.
+Los nombres corregidos se guardan como equivalencias locales al confirmar
+el arreglo y se reutilizan al volver a analizar; cancelar no enseña cambios.
+Renombrar a una sección del catálogo actualiza su significado y número de
+aparición, además de la etiqueta. El catálogo común incluye también
+Turnaround, Exhortation y Rap y conserva las secciones personalizadas.
+Repetir un anuncio sin número conserva `Intro` o `Interludio`, sin añadir un
+número de aparición a su etiqueta. Las familias con variantes numeradas del
+catálogo y los Refrain repetidos mantienen la numeración habitual. Un ordinal
+que realmente forme parte del anuncio se conserva independientemente de esa
+numeración automática; una cuenta independiente no es un ordinal de sección.
+Una variante nueva próxima a una única familia se etiqueta `Posible <sección>`
+para revisión. Al confirmar se recuerda la equivalencia, mientras que descartar
+esa marca o cancelar la revisión no la incorpora al vocabulario local.
+
+Las entradas de instrumentos y cambios de intensidad se presentan como
+**sugerencias secundarias**: puntos y etiquetas compactas en ámbar en la zona
+inferior de la misma onda. Siguen el estilo de las indicaciones nativas y no
+dividen Verso/Coro ni ocupan el espacio de una sección completa. Se pueden
+arrastrar al pulso (Alt para posición libre), renombrar con doble clic y
+descartar desde el menú contextual. Su punto inicial coincide con la marca de
+voz, sin el adelanto de compases de las secciones principales.
+Si la guía agrupa `Interludio, toda la banda`, ambos anuncios se separan por
+sus pausas y se reconocen individualmente antes de pintar las marcas.
+Interludio mantiene su entrada en el compás siguiente y Toda la banda es un
+punto independiente en su instante hablado. Si la separación no tiene
+evidencia suficiente, el texto completo queda para revisión en lugar de
+absorber la instrucción dentro del nombre musical.
+
+Los conteos reconocidos aparecen igualmente como sugerencias de punto, en
+**azul**, conservando su instante hablado. Los números individuales usan una
+etiqueta compacta para distinguirlos cuando varios se concentran al inicio.
+La revisión y la vista de edición de marcas guardadas comparten la distribución
+de etiquetas en filas. Si falta espacio horizontal, desplazan sólo la etiqueta;
+el punto azul conserva exactamente su coordenada temporal, incluido el borde
+del viewport. Un conector une la etiqueta desplazada a ese punto real.
+Esto mantiene seleccionables los conteos próximos al inicio también después
+de confirmar y reabrir, sin cambiar sus tiempos ni agruparlos en una secuencia.
+Se pueden ajustar, renombrar o descartar con los mismos gestos. Las frases
+compuestas sin evidencia suficiente siguen visibles como una marca literal
+revisable. Si los intervalos ASR por palabra contienen cada uno un único pulso
+de la cuadrícula, se proponen sólo los números reconocidos en esos pulsos.
+Los intervalos son aproximados; no se usan sus inicios como ataques de voz
+exactos ni se completan números ausentes. Si un intervalo contiene cero o
+varios pulsos se conserva el compuesto para revisión.
+
+Cambiar el origen recalcula las secciones principales y las propuestas que
+dependen de intervalos de palabra; los conteos individuales medidos conservan
+su instante. Se reaplican las correcciones de nombre/posición y los descartes
+de las secundarias.
+**Confirmar** incorpora ambas clases de sugerencia en una sola operación de
+arrange, con un solo Deshacer; **Cancelar** no aplica ninguna. También puede
+confirmarse una revisión que contenga únicamente indicaciones secundarias.
+Las secciones y marcas guardadas previamente permanecen protegidas. No se
+añade un panel inferior ni se modifica el motor de reproducción para representar
+estas sugerencias: al confirmar se utiliza el formato existente de cues.
+
+El resultado incluye las alternativas por idioma y la confianza heurística del
+texto elegido; sirven para revisar la decisión, no como una medida validada de
+exactitud. El modo bilingüe y la versión v3 del algoritmo forman parte de la
+identidad de caché (esquema 2, directorio `guide-transcripts-v2`). Las inferencias
+anteriores se conservan aparte y no se
+reutilizan como resultados de la versión nueva. No cambia el modelo preparado,
+no requiere otra descarga y todo el reconocimiento continúa en este equipo.
 
 Cambiar de canción o cerrar el panel cancela el trabajo y descarta callbacks
 obsoletos mediante identidad/generación y `SafePointer`. Cancelar no espera en
@@ -172,8 +259,10 @@ Prueba manual de esta ruta, independiente del análisis Apple:
    Con modelo preparado y una guía, verificar inicio inmediato. Sin modelo,
    comprobar que espera el clic **Descargar y continuar**, informa el tamaño y
    permite cancelar; tras descargar, continúa sin otro clic de análisis.
-2. Comprobar respuesta de UI, progreso y cancelación. Repetir cambiando de
-   canción durante el trabajo; no aceptar resultados sobre la canción nueva.
+2. Comprobar modal centrado, barra, fase y cancelación por botón/Escape. Los
+   controles de fondo deben quedar bloqueados; redimensionar conserva la
+   cobertura. Un cambio programático de canción cancela el trabajo; no aceptar
+   resultados sobre la canción nueva.
 3. Comprobar que cierra la preparación y lleva la revisión a la onda, sin lista
    de transcripción. Mover origen y límites, descartar y confirmar por separado.
    Antes de confirmar, arreglo, BPM/compás y archivos fuente deben seguir iguales.
@@ -203,22 +292,38 @@ filas anterior se mantiene para resultados estructurales/diagnóstico Apple.
 ### Cuadrícula, origen y anticipación
 
 `GuideAlignmentDraft` contiene la cuadrícula y propuestas, junto con BPM,
-compás, mapa de tempo, origen del primer compás y anticipación de la guía en
-compases. La cuadrícula se muestra con marcas pequeñas de pulsos y compases,
+compás, mapa de tempo y origen del primer compás. La propuesta automática de
+una sección principal siempre usa el compás siguiente al que contiene su
+anuncio: no se ofrece un selector de cero o dos compases. La cuadrícula se
+muestra con marcas pequeñas de pulsos y compases,
 integradas en el estilo y controles de la onda. Su regla reutiliza
 `drawMusicalTimelineRuler`: misma fuente de 10 puntos, números centrados y
 separación mínima de 72 puntos, con pulsos desde 10 puntos de separación.
 El playhead sigue visible en la regla durante la revisión. El origen del primer compás es
 ajustable visualmente: moverlo reconstruye **todo** el borrador con ese origen,
-manteniendo los textos hablados originales. Cambiar la anticipación también
-recalcula las hipótesis; un aviso de voz no se convierte por sí solo en el
-inicio musical real.
+manteniendo los textos hablados originales. Un aviso de voz no se convierte
+por sí solo en el inicio musical real; la propuesta sigue siendo revisable.
+
+Antes de escoger el compás del anuncio, el cálculo tolera una separación de
+hasta 20 ms respecto de una línea, acotada además por la separación local entre
+compases para evitar que dos ventanas se solapen. Propone la línea siguiente
+a esa referencia; mantiene visible y disponible el tiempo de voz original.
+Así, a 120 BPM en 4/4, un anuncio en 3,985 s se considera en la línea de 4 s
+y propone la entrada en 6 s. Fuera de esa tolerancia se conserva el compás
+que contiene realmente el inicio hablado. Se usa el mapa de tempo y métrica,
+no una duración global de compás. Las secundarias y los conteos conservan sus
+propios tiempos, incluidas las correcciones de reconocimiento como
+«Thor»→4, «Base»→Bass y «Swin»→Swell.
+Si no existe una entrada posterior válida al final del audio, se indica un
+error para revisar el origen, conservando las demás sugerencias. No se vuelve
+al compás del anuncio para hacer caber una sección al final del audio.
 
 Arrastrar un límite de sección ajusta esa frontera y su vecina para conservar
 intervalos contiguos; no desplaza globalmente las demás secciones. Cuando se
 elige ajuste a compases, usa la cuadrícula del borrador. Esta operación es
 distinta de mover el origen, que recalcula todas las posiciones. La revisión
-debe respetar IDs de ocurrencia, límites válidos, duración mínima y secciones
+conserva el ajuste manual al confirmar, sin volver a imponer el compás siguiente.
+Debe respetar IDs de ocurrencia, límites válidos, duración mínima y secciones
 existentes protegidas. No altera el mapa de tempo persistido para hacer encajar
 las propuestas ni acredita sincronización de click sin compararla con el audio.
 
@@ -472,3 +577,27 @@ reproducción: regla con estilo compartido, playhead claro con punta, marcas
 de sugerencias y Confirmar/Cancelar visibles. Esta observación de la app en
 uso no sustituye una validación musical contra click/stems ni acredita todas
 las secuencias manuales de cambio de vista durante inferencia.
+
+## Modal de procesamiento — 4 de noviembre de 2026
+
+La aplicación macOS arm64 Release compila con el análisis presentado como
+modal. La suite `waveform_editing` aprobó en 5,04 s y la suite
+`section_detection_panel` en 2,67 s. Los tests del modal recorren progreso
+del proveedor por el servicio y el message thread (23 %, 45 % y 71 %), resize
+del host, área segura, Escape, cancelación pendiente de respuesta del worker,
+error/reintento, destrucción del propietario y liberación del bloqueo modal
+antes de entregar las sugerencias. La descarga continúa hacia transcripción
+sin exponer la configuración entre ambas operaciones.
+
+`output/section-detection-fixtures/guide-processing-modal.png` muestra el
+componente de producción con un proveedor controlado de prueba al 45 %.
+Se inspeccionaron tarjeta, texto, barra y Cancelar; no es una captura de
+inferencia de una canción real. Logs: `/tmp/pw-section-modal-build.log`,
+`/tmp/pw-section-modal-ctest.log` (resultado waveform) y
+`/tmp/pw-section-modal-panel-ctest.log` (resultado final del modal).
+
+Tras autorización para descartar el borrador abierto, se reinició la app
+actualizada y se ejercitó **Editar → Sugerir secciones**. La transcripción
+existente se recuperó rápidamente de caché y entregó la revisión a la onda
+sin dejar un bloqueo modal. Se canceló ese preview de QA y se dejó el editor
+abierto. Esa comprobación no repite la inferencia ni la descarga real.

@@ -3,7 +3,7 @@ type: Analysis Contract
 title: Assisted Section Detection
 description: Propuestas locales revisables sin reemplazar el arreglo existente
 resource: src/analysis/SectionDetectionService.h
-timestamp: 2026-11-03T00:00:00-03:00
+timestamp: 2026-11-04T00:00:00-03:00
 ---
 
 # Detectar secciones
@@ -79,7 +79,7 @@ no son inicios musicales, compases ni límites de sección. El resultado conserv
 proveedor/versión, huellas de audio y modelo, idioma y duración.
 
 Una petición con `transcribeGuideOnly=true`, `guideModelFile` y
-`guideLanguage` (español `es` inicialmente) exige exactamente un stem confirmado
+`guideLanguage` (`es-en` inicialmente) exige exactamente un stem confirmado
 como Guía. El servicio lee esa pista; no abre ni decodifica las pistas musicales,
 click o excluidas y no exige que existan. `guideAvailable()` y
 `guideUnavailableReason()` consultan el backend de voz, sin depender de
@@ -101,10 +101,144 @@ de 20 s sin retener el PCM completo de una canción. Conserva límites de entrad
 de 12 horas y 384 kHz y limita inicialmente el archivo de modelo a 256 MiB.
 La lectura, hash, preparación e inferencia están fuera del callback de audio.
 
-La caché de esta ruta vive en `guide-transcripts-v1/` dentro del directorio de
-análisis. La clave incluye contenido completo de audio/modelo, offset, idioma,
-proveedor y versión. Guarda JSON de transcripción/metadatos, nunca PCM ni audio
-enviado a una red; no se incorpora a Biblioteca o Play Cloud. Se comprueban de
+### Español e inglés por anuncio
+
+El modo predeterminado **Español e inglés** (`es-en`) compara reconocimiento
+en ambos idiomas para cada fragmento de voz de la guía. Usa el mismo modelo
+multilingüe local y los mismos tiempos de la fuente; no elige un único idioma
+para toda la canción. Las opciones manuales **Español** (`es`) e **Inglés**
+(`en`) mantienen una sola pasada en el idioma elegido.
+
+Cada `GuideTranscriptSegment` conserva el texto literal elegido, su idioma
+(`language`, `es` o `en`), una confianza opcional y las alternativas evaluadas.
+`GuideTranscriptAlternative` contiene texto, idioma, `avgLogProbability` y
+`noSpeechProbability`; incluye la hipótesis elegida para poder revisar la
+decisión. `GuideTranscript::language` conserva el modo solicitado (`es-en`).
+La confianza deriva de probabilidades de tokens y sirve como evidencia
+heurística: no representa un porcentaje de exactitud ni demuestra que el
+anuncio coincida con un límite musical. El catálogo compartido de nombres e
+indicaciones en español e inglés ayuda a interpretar el texto; no sustituye
+una transcripción por una secuencia esperada de una canción particular.
+Los casos desconocidos continúan revisables.
+
+La versión actual usa `1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-10-acoustic-compounds`
+y añade `:pack-<SHA256>` (o `:pack-unavailable`) a su identidad. La versión
+del proveedor distingue este reconocimiento de las inferencias anteriores en
+la identidad de caché. Cambiar de modo o de versión no reutiliza un resultado
+calculado con otros parámetros. La ampliación del catálogo invalida la pasada
+anterior porque el selector bilingüe utiliza ese vocabulario como prior, aunque
+el prompt y el modelo sean los mismos. No requiere otro
+modelo ni una descarga adicional si el modelo local ya está preparado.
+Ambas pasadas se ejecutan en el worker local y respetan cancelación y progreso;
+ninguna guía, alternativa o muestra de audio se sube a un servicio.
+
+El gate primario conserva sus 300 ms de silencio para no cortar nombres de
+varias palabras. Si el fragmento elegido no es una directiva individual del
+catálogo, `GuideSpeechSegmentation.h` puede proponer un reintento sobre pausas
+reales de al menos 80 ms, medidas en ventanas de 10 ms del mismo PCM fuente.
+Se admiten de dos a ocho hijos, cada uno con al menos 80 ms de actividad, y su
+contexto sólo puede incluir silencio del vecino. Cada ventana vuelve a pasar
+por Whisper en los idiomas elegidos. Se reemplaza el padre únicamente si
+todos los hijos tienen una directiva individual reconocida, confianza al
+menos `exp(-1.2)` y probabilidad de no voz de hasta 0,4 en su alternativa
+elegida. Un fallo conserva el resultado completo original para revisión.
+No se reparten palabras por intervalos iguales ni por BPM. La cancelación,
+progreso monótono y límites del proveedor abarcan también este reintento.
+
+Los anuncios explícitos separados por coma o punto y coma también activan
+el reintento aunque el parser de etiquetas admita un sufijo de utilidad.
+`guideCompoundDirectives` exige de dos a ocho partes exactas del catálogo,
+al menos una indicación y como máximo una sección musical. Puede reagrupar
+un ordinal, como `Verso, uno`, antes de clasificar las partes. Se conservan
+como anuncios únicos las instrucciones completas, por ejemplo `solo, bajo`,
+y atributos con conector, como `Coro con toda la banda`.
+Para aceptar la separación, las ventanas medidas deben coincidir en número
+con las partes y cada hijo debe reconocer la misma familia/ordinal o clave
+de instrucción de su parte, permitiendo equivalentes ES/EN. Si falla algo,
+el padre se conserva completo como `compound-announcements` para revisión:
+no se reduce a la sección y no se pierde silenciosamente su indicación.
+El aprendizaje local tampoco puede convertir un compuesto entero en alias
+de una sola familia.
+
+La versión 9 añade un segundo reintento acotado sólo para esos compuestos
+explícitos. Mide pausas de al menos 60 ms y enumera agrupaciones contiguas de
+sus regiones acústicas: así la pausa interna de `All In` no obliga a crear
+otra indicación. Cada grupo completo vuelve a reconocerse y debe corresponder
+a su parte del padre con los mismos umbrales. Se acepta **una sola partición
+válida**, después de comprobar las candidatas; dos particiones válidas son
+ambiguas. Ocho regiones permiten como máximo 35 particiones; se reutilizan
+decodificaciones del mismo intervalo y se admiten hasta 16 ventanas adicionales.
+Agotar ese presupuesto conserva el padre, incluso si ya apareció una candidata
+provisional. Sin pausa real no se propone una frontera a partir del número de
+palabras, del BPM ni de los tiempos esperados de una prueba.
+
+Si esa separación falla para una cuenta o directiva compuesta reconocida, una última
+pasada puede conservar `words`: texto, intervalo y confianza por palabra. Sólo
+se adjuntan si el idioma y el texto normalizado coinciden con el padre original;
+no se sustituyen su texto, tiempos, alternativas ni confianza. Son intervalos
+ASR aproximados, **no ataques de voz exactos**. La caché de esquema 2 admite
+esta evidencia opcional (hasta 128 palabras, rangos positivos dentro del padre,
+inicios crecientes y confianza válida); entradas anteriores sin `words` siguen
+siendo legibles, sin inventar la información ausente.
+Esta pasada usa directamente el idioma elegido para el padre. El recolector
+agrupa subtokens antes de validar cada palabra: un subtoken de duración cero
+puede aportar texto y confianza si la palabra completa tiene algún intervalo
+positivo. No extiende ese intervalo; una palabra entera con tiempos colapsados
+invalida la evidencia completa y mantiene el anuncio revisable.
+
+### Tiempos independientes con las grabaciones conocidas
+
+`GuideAcousticTemplateMatcher` lee el ZIP de voces distribuido con la app,
+sin extraerlo, descargarlo ni modificar los assets de playback. Sólo se activa
+en compuestos elegibles de la guía, después de la transcripción inicial. Las
+grabaciones se decodifican y convierten al mismo mono de 16 kHz; la búsqueda
+FFT considera todos los desplazamientos de muestras y confirma los candidatos
+mediante correlación directa. No recibe BPM, compases, guiones de pruebas ni
+tiempos esperados. Una voz distinta conserva las rutas de ASR y revisión
+anteriores cuando no hay coincidencia física suficiente.
+
+Se valida una reconstrucción conjunta del PCM, con correlación normalizada
+condicional de cada componente de al menos 0,94 y proporción de energía
+residual de hasta 0,12. Esas medidas no son probabilidades de tokens ni de
+exactitud. Los significados observados por ASR deben mantener su orden; el
+audio puede aportar una cuenta o indicación omitida únicamente mediante su
+grabación física. Se consideran los roles de cuentas/utilidades ya presentes
+en los anchors, y no se descubren nuevas principales omitidas. Una directiva
+atómica como Verso 2 sigue siendo una sola sección. Intro seguido de un único
+Dos sólo cambia a dos marcas si se demuestran ambas grabaciones independientes.
+Hay un máximo de ocho anuncios, márgenes entre candidatos competidores y
+rechazo de silencio, energía constante, ruido no coincidente, datos no finitos,
+ambigüedad o límites agotados.
+
+El padre ASR conserva exactamente su texto, rango, idioma, alternativas,
+confianza y palabras. La evidencia adicional se guarda en
+`acousticAnnouncements` con texto, idioma del asset, identidad de grabación,
+inicio/final fuente y correlación; `acousticResidualRatio` conserva el residuo
+conjunto. Los finales pueden solaparse realmente aunque los comienzos sean
+estrictamente crecientes. Esos hijos no se insertan en `transcript.segments`,
+cuyo contrato conserva frases sin solapamiento. La alineación expande una copia
+revalidada, deja las cuentas/indicaciones en sus tiempos medidos y aplica el
+compás siguiente a las principales. No presenta correlación como confianza ASR
+de los hijos. Las sugerencias musicales añaden la fuente
+`known-guide-recording`; el padre permanece disponible para revisión.
+
+La evidencia es opcional en la caché de esquema 2 y está acotada a ocho puntos,
+fuente real y contexto del padre de 200 ms previos/300 ms posteriores. Tipos,
+rangos, correlación y residuo deben ser finitos y coherentes; un residuo sin
+anuncios se rechaza. El SHA del ZIP participa en la versión antes de consultar
+la caché. El servicio envía `expectedProviderVersion`, el proveedor compara su
+captura y el servicio revalida antes de escribir/publicar, incluidos cache hits.
+Un cambio del pack invalida la entrega; si ocurre tras escribir se retira sólo
+el JSON recién generado. No se publican cues parciales ni se normaliza bajo una
+identidad antigua una inferencia calculada con otras voces.
+
+La caché de esta ruta usa esquema **2** y vive en `guide-transcripts-v2/` dentro
+del directorio de análisis. Conserva las entradas v1 existentes sin reutilizarlas
+para el reconocimiento nuevo. La clave incluye contenido completo de
+audio/modelo, offset, modo de idioma, proveedor y versión. Guarda JSON de
+transcripción/metadatos, incluidas alternativas e idioma/confianza por fragmento,
+nunca PCM ni audio enviado a una red; no se incorpora a Biblioteca o Play Cloud.
+Se comprueban de
 nuevo identidad y rangos antes de reutilizarla. Cancelar o cambiar de canción
 invalida la entrega al panel; no confirma secciones.
 
@@ -167,17 +301,135 @@ hasta la duración. Admite hasta 250000 marcas; exceder el límite devuelve un
 error y elimina la cuadrícula parcial. Un mapa inválido, desordenado o
 superpuesto se rechaza. No se sustituyen metadatos inválidos por tempo supuesto.
 
-`anticipationBars` admite 0, 1 y 2, con 1 como propuesta inicial. La entrada se
-ubica en el compás que contiene el anuncio más esa cantidad de compases. Esto
+La propuesta automática se ubica siempre en el compás siguiente al que contiene
+el anuncio. No hay selector de cero/dos compases; los ajustes explícitos de
+origen y arrastre de una marca siguen disponibles en la revisión visual.
+Antes de clasificarlo se ajusta únicamente el ancla de cálculo a la frontera
+de compás más cercana si está a un máximo de 20 ms: el detector de voz trabaja
+con ventanas de 20 ms y Whisper entrega ticks de 10 ms. El tiempo hablado
+original no cambia. Así, un anuncio situado 10 ms antes de una línea se
+considera sobre esa línea y la anticipación de uno propone la siguiente. Esto
 es una elección revisable, no una medición de la anticipación real de la voz.
-Un destino fuera del rango se limita a un compás que deje al menos 0,25 s de
-sección y queda señalado con confianza baja. El inicio hablado original,
+Un destino fuera del rango o que no deje al menos 0,25 s produce un error de
+revisión; no se retrocede automáticamente a un compás anterior. El resto del
+borrador permanece visible para ajustar el origen. El inicio hablado original,
 desplazamiento y anticipación resultante permanecen en la propuesta.
 
-Los nombres reconocidos usan `normalizeGuideCue`, incluidos sus ordinales.
+`data/GuideVocabulary.h` reúne las 17 familias de sección, aliases ES/EN y
+utilidades usadas por la detección, el editor y la clasificación de Guía Dyn.
+Incluye Turnaround, Exhortation y Rap, además de Repetir→Tag y Pre→Pre-Chorus.
+Los valores serializados de las 14 familias previas permanecen estables;
+los tres tipos nuevos se añaden después. Tener una entrada de vocabulario no
+garantiza una grabación en todos los idiomas del pack instalado.
+
+Los nombres reconocidos usan `normalizeGuideCue`, incluidos sus ordinales,
+y la capa `GuideSectionInterpretation` resuelve correcciones de reconocimiento.
+Una secuencia de cuentas después de una etiqueta no se interpreta como ordinal
+y sufijo: `Intro, dos, tres, cuatro` no es `Intro 2`. Cuando se vuelve a
+reconocer desde sus pausas, la etiqueta y las cuentas reciben tiempos propios.
+La repetición de Intro, Interludio u otras familias sin variantes numeradas
+no añade un número a la etiqueta; los ordinales realmente hablados siguen
+siendo válidos. Se conserva la convención de numeración de los Refrain.
+La equivalencia confirmada «For a frame»→Refrain se aplica a anuncios completos
+normalizados, conservando el texto ASR y su identidad. Renombrar una propuesta
+actualiza también su tipo y ordinal cuando el nombre pertenece al catálogo.
+Las correcciones aceptadas se guardan localmente en
+`MTControls/analysis/guide-section-corrections-v1.json`, fuera de la caché ASR
+y de Play Cloud. El archivo guarda la familia, no el ordinal de una aparición:
+los siguientes Refrain se numeran al reconstruir la canción. Sólo se aprende
+después de aplicar una confirmación válida; cancelar no escribe correcciones.
+El store usa formato versionado y reemplazo atómico; un archivo inválido o de
+versión desconocida no se sobrescribe. Las anotaciones fusionadas ambiguas
+no enseñan equivalencias a partir de una única corrección de nombre.
+Las variantes nuevas de una sola palabra pueden proponer una familia con
+distancia de edición uno y separación suficiente respecto de las demás.
+Se presentan como `Posible <sección>`, con confianza baja; los empates y las
+frases largas permanecen desconocidos. Confirmar esa propuesta enseña la
+equivalencia local; descartarla o cancelarla no escribe nada. Las alternativas
+ASR se conservan y las reparaciones acústicas de la interpretación no modifican
+el selector acústico. Los alias ordinarios del catálogo sí participan en su
+prior léxico acotado y requieren una nueva versión del proveedor al cambiar.
+
+`interpretGuideAnnouncement` clasifica primero conteos e indicaciones y luego
+secciones, con la misma ruta en la alineación nativa y la evaluación del corpus.
+Las correcciones confirmadas de anuncios completos son `Base`→Bass,
+`Thor`→4, `Swin`→Swell, `Course 2`→Chorus 2, `Exotación`→Exhortation,
+`Enterlude`→Interlude y `Wrap`/`Prab`→Rap. No sustituyen palabras dentro de
+frases largas ni cambian el texto, tiempos, confianza o identidad ASR.
+La revisión de MI TESTIMONIO añade `Balsa`→Break (Pausa) y
+`Entra a batería`→Drums In como anuncios completos; conservan su instante como
+indicaciones secundarias y no crean un límite musical.
+`Adlib`, `Subetono`, `Teclados`, `Pulsos` y `Coros` se resuelven como variantes
+ordinarias del catálogo; las vocales acentuadas mayúsculas y descompuestas se
+normalizan también, incluido `Última vez`. La frase errónea que enumeraba
+varios coros no tiene una equivalencia codificada: se recupera Chorus 2 cuando
+su alternativa real `Coros 2` satisface los umbrales acústicos existentes.
+Sin esa evidencia, queda pendiente de revisión. Estas adaptaciones proceden
+del informe humano; la aplicación no importa el HTML ni sus respuestas al
+almacén de aprendizaje local.
+
 Un texto desconocido se conserva como `Revisar: <texto>` para poder corregirlo;
-no se descarta por un error de reconocimiento. Los conteos puros se excluyen
-como secciones. No se deducen Intro o Final de silencios o de la posición.
+no se descarta por un error de reconocimiento. Los conteos puros y las
+indicaciones de utilidad se excluyen como límites de sección: por ejemplo,
+una entrada de instrumento o una indicación de intensidad no divide la canción.
+Su clasificación usa `isGuideUtilityCue` y el catálogo compartido, también para
+sus alias en inglés. No se deducen Intro o Final de silencios o de la posición.
+
+Las indicaciones reconocidas se conservan además como `secondaryCues` en el
+borrador. `normalizeGuideUtilityCue` devuelve su nombre canónico de guía
+(`Drums In`, `All In`, `Build`, `Breakdown`, etc.), el texto original, su
+tiempo hablado y la confianza ASR opcional. No equivale a convertirlas en
+secciones musicales: cada una es un punto independiente y no cambia los
+límites ni la numeración de las propuestas principales. Los conteos se
+distinguen con `isGuideCountCue` y también se conservan en `secondaryCues`.
+`normalizeGuideCountCue` convierte un número individual reconocido en español,
+inglés o dígitos del 1 al 7 en su clave numérica nativa. Conserva exactamente
+el texto, tiempo y confianza originales. Cada anuncio es un punto individual:
+dos «dos» en tiempos distintos son dos marcas, sin añadir un «uno» ausente.
+Una frase de conteo compuesta o genérica, o fuera del rango de grabaciones,
+permanece como una sola marca con su texto literal para revisión. Sin tiempos
+por palabra no se inventan subdivisiones de esa frase.
+
+Una cuenta compuesta con intervalos de palabras admite propuestas individuales
+sólo para los números explícitos del 1 al 7, mínimo dos y máximo ocho. Puede
+precederla una etiqueta exacta sin variantes numeradas, como Intro. El texto
+por palabra debe reproducir todo el padre y cada cuenta necesita suficiente
+evidencia y **un único pulso de la cuadrícula dentro de su intervalo**; los
+pulsos deben avanzar y quedar antes del final de la fuente. Si falta un pulso,
+hay más de uno, o falla cualquier palabra, se conserva todo el compuesto para
+revisión. No se completan secuencias ni se reparten palabras uniformemente.
+El padre permanece en la transcripción; su etiqueta usa el instante y la
+identidad originales. `rawTimeSeconds` de estas cuentas es el límite inferior
+del intervalo ASR y `timeSeconds` es el pulso propuesto, sin presentarlo como
+inicio vocal exacto. Cambiar el origen puede recalcular esta propuesta dentro
+de la evidencia; los cambios manuales y descartes se reaplican por ID estable.
+Renombrar la etiqueta recuperada nunca enseña el compuesto entero como alias.
+
+Su posición inicial es el comienzo hablado en segundos fuente. No se aplica
+el desplazamiento de un compás ni una cuantización automática a estas instrucciones;
+mover el origen de las secciones no desplaza los puntos.
+`moveGuideSecondaryCue` permite ajustar una sola indicación al pulso más cercano
+de la cuadrícula o libremente con Alt. Conserva el tiempo ASR original y rechaza
+tiempos no finitos o fuera de la duración fuente. Los nombres y posiciones
+corregidos y los descartes se reaplican por ID al recalcular el borrador.
+
+`appendConfirmedGuideSuggestions` prepara una única aceptación aditiva de
+secciones y puntos. Las secundarias se guardan como
+`SongArrangementSnapshot::cues`, con nombre canónico cuando existe una
+instrucción equivalente para resolver la grabación de Guía Dyn. Los conteos
+individuales se guardan con `name` numérico y `countEnd=0`; no se infiere una
+secuencia de pulsos ni se rellenan huecos de la transcripción. Las
+instrucciones conocidas sin equivalente exacto y los nombres manuales libres
+conservan su texto para revisión; no se garantiza una grabación para esos
+nombres. El texto ASR continúa en la transcripción. Se anclan por
+`partId+offsetSec` a la sección final que contiene el punto en `[startSec,endSec)`;
+fuera de una sección conservan una posición absoluta. Se preservan todas las
+secciones y cues previos. Se permiten propuestas sólo secundarias y se respeta
+el límite nativo de 512 eventos de cue, incluidos conteos expandidos existentes.
+Un conflicto invalida toda la aceptación. El editor sigue usando una sola
+transacción, un Deshacer y la persistencia de arrange existente; analizar,
+arrastrar, renombrar o cancelar el borrador no publica instrucciones al motor.
+
 Anuncios iguales que llegan a una entrada se fusionan; anuncios diferentes
 o límites separados por menos de 0,25 s producen un bloque de revisión que
 conserva todos los textos y su explicación, con confianza baja. Ninguna entrada
@@ -343,7 +595,7 @@ en Verso.
   guía de aproximadamente 04:46, con sus tiempos de voz. La salida no crea
   secciones ni certifica comienzos musicales.
 - La primera pasada tenía el prompt deshabilitado por `n_max_text_ctx=0`.
-  La versión final `guide-energy-sinc16k-beam5-prompt128-2` habilita contexto de
+  La versión evaluada entonces `guide-energy-sinc16k-beam5-prompt128-2` habilita contexto de
   vocabulario genérico, beam search 5 y normalización de la ventana de voz.
   Todavía se observan dos errores léxicos (`Cordo`, `Perso, dos`); no se
   corrigieron mediante aliases ni etiquetas esperadas de esta fixture.
@@ -370,3 +622,374 @@ Resultados privados y logs reproducibles locales:
 builds en `/tmp/pw-whisper-*-build.log`. El audio y sus transcripciones no se
 incorporan a Git. Las suites con proveedores sintéticos siguen siendo pruebas
 de contratos; la inferencia anterior es la evidencia independiente de ASR real.
+
+## Evidencia del incremento bilingüe — 4 de noviembre de 2026
+
+- Build nativo macOS arm64 Release de app, proveedor, probe y pruebas completo:
+  `/tmp/pw-bilingual-build.log`. La app actualizada se reinició y se observó su
+  revisión de propuestas sobre la onda de **IMPRESIONANTE**, conservando el tema.
+- CTest: **5/5** suites (`section_detection`, `section_detection_service`,
+  `section_detection_panel`, `guide_recognition_selection`, `waveform_editing`)
+  en 5,24 s; dominio 285 comprobaciones y selector 22. Evidencia:
+  `/tmp/pw-bilingual-ctest.log`. Los proveedores falsos validan contratos,
+  no certifican exactitud de reconocimiento.
+- Se ejecutó de nuevo la guía local de IMPRESIONANTE con el modelo multilingüe
+  instalado y `es-en`, versión `bilingual-3`, mediante el mismo servicio que la
+  app. El proceso se ejecutó bajo `sandbox-exec` con `(deny network*)`:
+  **47,97 s**, `cacheHit=false`, **27 anuncios**, cada uno con las dos
+  hipótesis originales ES/EN y sus valores del decoder. Estos idiomas identifican
+  la pasada de reconocimiento elegida, no una detección lingüística certificada.
+- A 69 BPM, 4/4, origen en el primer anuncio (0 s) y anticipación de un compás,
+  el borrador tiene **14 propuestas: 11 reconocidas y 3 para revisar**. Cinco
+  conteos y ocho indicaciones conocidas permanecen en la transcripción, sin
+  introducir límites musicales. Las tres frases de 219,12; 233,04 y 246,96 s
+  siguen como `Revisar: For a frame.`; no se convirtió ese error en un alias
+  de Refrain ni se atribuyó una exactitud musical a las probabilidades ASR.
+- Una segunda petición idéntica devolvió `cacheHit=true` en 0,42 s, con los
+  mismos fragmentos y alternativas. La app mostró esa revisión con
+  Confirmar/Cancelar; las secciones no se confirmaron. Las huellas de los bytes
+  originales de guía/modelo, el arreglo guardado, BPM y métrica permanecieron
+  iguales. La caché anterior v1 se conservó.
+- Cancelación nativa del reconocimiento bilingüe: salida 2, `cancelled=true`,
+  1,82 s y ningún fragmento parcial publicado. Este chequeo no escribió caché.
+
+Los artefactos privados de esta ejecución viven en
+`output/section-detection-fixtures/impresionante-bilingual-20261104.json`,
+`impresionante-bilingual-cache-20261104.json` y
+`impresionante-bilingual-cancel-20261104.json` (excluidos de Git).
+Los logs están en `/tmp/pw-impresionante-bilingual*.log`.
+El probe acepta `--cache-directory` para ejecutar el servicio real y
+`--bpm`/`--meter` para exportar su propuesta. Su origen coincide con la primera
+marca hablada; su alcance es la duración de la guía y tempo constante, sin el
+mapa de tempo ni la posible cola musical del proyecto. La UI sí usa esos datos
+del proyecto. La cuantización y la anticipación requieren revisión visual;
+este incremento de idiomas y vocabulario no valida sus límites contra la música.
+
+## Evidencia de indicaciones secundarias — 4 de noviembre de 2026
+
+- Build nativo macOS arm64 Release de app/probe y cinco suites completo;
+  cierre con el ajuste de filas en `/tmp/pw-secondary-layout-build.log`.
+  CTest final **5/5** en 5,19 s:
+  `/tmp/pw-secondary-layout-ctest.log`. Dominio: **363 comprobaciones**.
+- El probe ejecutó el servicio real con la red bloqueada y reutilizó la
+  transcripción bilingüe validada de IMPRESIONANTE (`cacheHit=true`, 0,38 s).
+  Sus 27 segmentos y las 14 propuestas principales son idénticos a la evidencia
+  anterior. Ahora añade **8 secundarias**: Drums In ×1 (74,78 s), Breakdown ×2
+  (100,86 y 293,90 s), All In ×3 (109,56; 165,22 y 266,08 s) y Build ×2
+  (151,30 y 262,60 s). No se ejecutó una nueva inferencia de voz para este chequeo.
+  Resultado privado: `output/section-detection-fixtures/impresionante-secondary-cues-20261104.json`.
+- Se reinició la app compilada y se observó la revisión de IMPRESIONANTE con
+  14 marcas principales y 8 secundarias ámbar sobre la misma onda. Se restauraron
+  mediante el menú de renombrar las tres correcciones manuales Refrain 1/2/3,
+  tras confirmar el usuario que eran los únicos cambios del borrador. Quedó
+  abierta sin confirmar; el arreglo guardado, audio y modelo permanecieron intactos.
+- La regresión de filas comprueba tres etiquetas largas y ocho indicaciones
+  en un cuerpo de onda de 130 puntos, sin solapamientos entre ambos grupos.
+  La revisión nativa confirmó la separación. Las pruebas adicionales cubren
+  arrastre con pulso/Alt sin seek ni publicación, nombres y descarte, Cancelar,
+  aceptación conjunta y sólo cues, Undo/Redo, anclas, límites, IDs y preservación
+  de conteos existentes dentro del máximo de 512 eventos expandidos.
+- La captura `output/section-detection-fixtures/secondary-cues-preview.png`
+  pertenece a un fixture sintético del componente de producción (tres Refrain
+  y ocho indicaciones), no al audio real de IMPRESIONANTE. Se genera con
+  `PW_GUIDE_SECONDARY_CAPTURE_PATH` en la suite waveform.
+
+## Evidencia de conteos visibles — 4 de noviembre de 2026
+
+- Build final macOS arm64 Release de app, probe y cinco suites correcto:
+  `/tmp/pw-count-final-build.log`. CTest final **5/5** en 7,92 s:
+  `/tmp/pw-count-final-ctest.log`. Incluye el color azul de conteos literales
+  al confirmar, sin dividirlos ni generar tiempos para sus palabras.
+- El servicio real, ejecutado con la red bloqueada, reutilizó la transcripción
+  bilingüe de IMPRESIONANTE (`cacheHit=true`, 2,32 s). Sus 27 segmentos y las
+  14 propuestas principales son idénticos al resultado de secundarias anterior;
+  no se repitió la inferencia ASR. El borrador incorpora ahora **13 puntos**:
+  las ocho indicaciones y cinco conteos individuales: `1` a 0,00 s, `2` a
+  1,74 s, otro `2` a 4,34 s, `3` a 5,20 s y `4` a 6,08 s. Se conserva el
+  segundo `DOS` reconocido; no se completó una secuencia esperada.
+- Resultado privado:
+  `output/section-detection-fixtures/impresionante-count-suggestions-20261104.json`;
+  log `/tmp/pw-impresionante-count-suggestions.log`. El probe distingue los
+  puntos con `kind=count` o `kind=instruction` sin modificar el texto crudo.
+- La app nativa actualizada mostró los cinco conteos azules y las ocho
+  indicaciones ámbar sobre la misma onda. A petición del usuario se deshizo
+  la confirmación mediante el historial nativo y se volvió a la revisión.
+  Se restauraron Refrain 1/2/3 en el borrador; la biblioteca quedó con cero
+  secciones y cero cues guardadas, pendiente de confirmar.
+- La suite `waveform_editing` aprobó la regresión de cuerpo de 130 puntos:
+  cinco conteos y ocho instrucciones seleccionables en revisión y después
+  de confirmar/reabrir, etiquetas accesibles completas, tiempos y campos
+  originales intactos, arrastre de una cuenta y Deshacer/Rehacer. Esa
+  confirmación/reapertura se ejecutó en el fixture del componente nativo;
+  la revisión real de IMPRESIONANTE permanece sin confirmar.
+
+## Catálogo, correcciones y prueba de voces — 4 de noviembre de 2026
+
+- Build nativo macOS arm64 Release de app, probes y siete suites correcto:
+  `/tmp/pw-learned-catalog-build-final.log`. CTest final **7/7** en 7,54 s:
+  `/tmp/pw-learned-catalog-ctest-final.log`. Incluye catálogo compartido,
+  aprendizaje local tras aceptar, no escritura al cancelar, archivos inválidos,
+  tipos/ordinales, tolerancia de compás, candidatos tentativos y nombres nativos
+  al confirmar. Los fixtures no certifican alineación musical por escucha.
+- Se reinició la app compilada y se ejecutó de nuevo Sugerir secciones para
+  IMPRESIONANTE: se observó el modal de progreso y después el borrador con
+  **14 secciones reconocidas**, Refrain 1/2/3 automáticos y **13 puntos**.
+  La biblioteca permanece con cero partes/cues guardadas y 69 BPM. El probe
+  posterior reutilizó la nueva caché en 0,40 s con la red bloqueada:
+  `impresionante-learned-catalog-20261104.json`. Sus 27 segmentos crudos son
+  idénticos a la evidencia anterior; cambian nueve entradas por la tolerancia.
+  Verso 1 queda en compás 7 (20,869565 s), Coro 1 en 23 (76,521739 s) y los
+  tres Refrain en 65/69/73 (222,608696; 236,521739; 250,434783 s).
+  La revisión queda abierta sin confirmar; estos límites requieren escucha.
+- `scripts/build_guide_recognition_corpus.py` prepara primero un plan con
+  `--dry-run --output-dir <directorio>` y luego lo ejecuta con `--execute`.
+  Usa el ZIP distribuido y el catálogo compartido, FFprobe para cada entrada y
+  FFmpeg para decodificar a mono PCM16/16 kHz. Deduplica únicamente bytes MP3
+  idénticos; conserva todos sus aliases en el manifiesto. No genera voces.
+- El ZIP contiene **230 MP3 y 121 fuentes únicas**: EN 62 y ES 59, con 69
+  anuncios principales (17 familias y variantes), 38 utilidades y 14 conteos.
+  El WAV único dura **396,6875 s** (6.347.000 frames), con dos segundos exactos
+  entre clips y un segundo inicial/final. Las 121 regiones PCM y los silencios
+  se verificaron por bytes; el ZIP original quedó intacto. Las grabaciones
+  ausentes por idioma, incluido Turnaround ES, constan en `missingLanguageClips`.
+- Se ejecutó `MTControlsGuideTranscriptionProbe` con el modelo instalado,
+  `--language es-en`, una caché nueva y `(deny network*)`. Proveedor
+  `1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-4-catalog17`:
+  **202,60 s**, `cacheHit=false`, **121 segmentos**, sin cancelación. Los nombres
+  esperados y el orden de referencias no se suministraron al transcriptor.
+- `MTControlsGuideCorpusEvaluationProbe --manifest <manifest.json>
+  --transcript <whisper.json> --output <evaluation.json>` compara después por
+  solapamiento temporal, familia y ordinal. Exige al menos 30 ms y el 50 % del
+  segmento dentro de un solo clip. Candidatos tentativos, omisiones, divisiones,
+  referencias desconocidas y segmentos ambiguos no se acreditan como aciertos.
+  El resultado fue **106/121 coincidencias directas con el catálogo** y
+  **107/121 con interpretación**, incluyendo «For a frame»→Refrain.
+  EN: 56/62 en ambas; ES: 50/59 directas y 51/59 interpretadas. Quedan **14**
+  casos pendientes, uno tentativo; no hubo omisiones, divisiones ni segmentos
+  fuera de las referencias. Esto mide esas voces aisladas, no exactitud sobre
+  canciones con música o voces distintas.
+- Entre los pendientes hay errores ASR como `Course 2`, `Thor` y `Wrap`, y
+  lagunas de interpretación como el texto correcto `Última vez`. No se
+  añadieron correcciones derivadas del corpus para inflar esta medición.
+- Artefactos locales excluidos de Git en
+  `output/guide-recognition-corpus-20261104/`: WAV, plan/manifiesto, hashes,
+  índice CSV/SRT, transcripción cruda, evaluación, verificaciones y reporte HTML.
+  `scripts/report_guide_recognition.py --evaluation <evaluation.json>
+  --audio <all-guide-clips.wav> --output-dir <directorio>` genera HTML y CSV
+  completos, con escucha de cada región y filtros. Log ASR:
+  `/tmp/pw-guide-corpus-whisper.log`. El check genérico de medios tuvo cero
+  fallos y avisos esperados por 16 kHz y subtítulos externos; la verificación
+  específica del corpus comprueba el formato requerido y cada frame.
+
+### Revisión humana como insumo de código
+
+`scripts/review_guide_recognition.py --evaluation <evaluation.json> --manifest
+<manifest.json> --catalogue <catalogue.json>` genera
+`guide-recognition-review.html`. Permite revisar los 121 clips, filtrar los 14
+pendientes, escuchar cada región, elegir entre las 17 familias, 26 indicaciones
+y 7 conteos, separar un ordinal, añadir notas y solicitar una entrada ausente.
+Cada decisión requiere selección y validación explícitas; ninguna comienza
+validada. La referencia del archivo y la transcripción ASR siguen separadas.
+
+Este formulario recopila respuestas para adaptar posteriormente el catálogo,
+los aliases y las reglas **en el código**. No importa reglas al vocabulario
+runtime ni cambia el arreglo o el modelo de voz. «Falta en catálogo» registra
+una solicitud de desarrollo, no una definición nueva aplicada automáticamente.
+
+`scripts/serve_guide_review.py --directory <carpeta-del-html-y-wav> --manifest
+<manifest.json> --evaluation <evaluation.json> --catalogue <catalogue.json>
+--port 0` sirve la revisión sólo en loopback. `POST /api/review` guarda un
+snapshot atómico en `guide-review-decisions.json`, ligado al SHA del corpus y
+a sus IDs. Incluye decisiones, validación humana, ordinales y notas; no acepta
+rutas de almacenamiento desde el cliente. El servidor valida origen/Host,
+tipos, tamaños e IDs y permite Range/HEAD para el audio. No hay endpoint de
+aplicación de reglas. En modo archivo, la página conserva el borrador en el
+navegador y permite exportar/importar JSON para continuar la revisión.
+
+Verificación: 36 comprobaciones HTTP aisladas aprobadas con Python 3.12
+(`/tmp/pw-guide-feedback-server-test.log`). En Chrome se eligió una referencia,
+se validó y guardó una respuesta temporal; al recargar se recuperó exactamente
+esa decisión. La carpeta de QA está separada de las respuestas del usuario.
+Las suites de dominio e interpretación previas volvieron a pasar (2/2 en
+0,84 s; `/tmp/pw-guide-feedback-regression-ctest.log`).
+
+### Aplicación de las 14 respuestas y nueva inferencia — 4 de noviembre de 2026
+
+Se validaron los 14 IDs confirmados de `guide-feedback-8e0e3fe399be.json`
+contra el manifiesto y el SHA-256 del WAV. Las decisiones se convirtieron en
+alias ordinarios, reparaciones completas de ASR y pruebas de regresión del
+código; el JSON del informe no se carga en ejecución ni escribe el store local.
+La interpretación usa `sections-mvp-4-reviewed-cues-next-bar`. El proveedor
+Whisper pasa a `1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-5-catalog17`
+porque los alias ordinarios afectan el prior léxico del selector bilingüe.
+
+- Sobre el JSON anterior sin modificar, el nuevo intérprete resuelve **121/121**
+  casos (111 con el catálogo directo). Las 14 respuestas se verificaron por ID,
+  clase, clave y ordinal. La lista alucinada se recupera desde la alternativa
+  real `Coros 2`; sin una alternativa válida se mantiene para revisión.
+- Se ejecutó nuevamente el WAV original con el servicio de producción, mismo
+  modelo, caché nueva y red bloqueada: **201,40 s**, `cacheHit=false`, 121
+  segmentos. Resultado: **112/121** con el catálogo directo y **121/121** con
+  interpretación; nueve emplean equivalencias confirmadas. EN: 62/62; ES: 59/59.
+  No hay omisiones, segmentos extra, divisiones ni tentativas pendientes.
+  La única diferencia de texto frente a la ejecución anterior es la selección
+  de `Coros 2.` en lugar de la lista alucinada, conservando ambas alternativas.
+- Es una prueba sobre el corpus que se revisó para adaptar el código, no una
+  estimación independiente de precisión sobre canciones o voces nuevas.
+  `output/guide-recognition-reviewed-20261104/` conserva transcripción nueva,
+  evaluación, comparación por ID, informe HTML/CSV y logs de compilación/pruebas.
+- La alineación automática fija el compás siguiente; desaparece el selector
+  0/1/2, manteniendo origen y arrastre manual. La tolerancia máxima de 20 ms
+  sigue acotada por la separación local de compases. Se comprobaron las 17
+  familias en varias métricas y BPM, fronteras tempranas/tardías, mapas variables,
+  finales sin espacio y la permanencia de indicaciones/cuentas en su instante.
+- App macOS y probes compilados; **7/7 suites aprobadas en 11,27 s**.
+  `next-bar-preview.png` muestra el componente nativo de prueba con su regla,
+  origen, marcas y Confirmar/Cancelar. Esta comprobación no reinicia ni confirma
+  el borrador de la app que el usuario tenga abierto.
+- También se retranscribió **IMPRESIONANTE** sin caché en **47,51 s**:
+  27 anuncios, 14 principales y 13 puntos secundarios. Con 69 BPM, 4/4 y
+  origen cero, se verificaron las 14 entradas contra la fórmula de compás
+  siguiente y la tolerancia; las 13 secundarias conservan el tiempo hablado.
+  Coro 1: anuncio 73,04 s → compás 23 a 76,521739 s. Refrain 1/2/3:
+  compases 65/69/73. `impresionante-verification.json` registra la comprobación.
+  Es análisis local de la guía: no confirma secciones ni sustituye la revisión
+  auditiva de la entrada musical en la app.
+
+### MI TESTIMONIO: cuentas y anuncios agrupados — 4 de noviembre de 2026
+
+Se inspeccionó la caché real de la guía a 97 BPM y 4/4. La pasada anterior
+tenía 26 fragmentos: `intro, dos, tres, cuatro` se interpretaba erróneamente
+como Intro 2, al aceptar las cuentas restantes como sufijo de utilidad.
+También agrupaba `Entra batería, puente` y `Subir intensidad, coro`.
+La medición local del archivo original encontró pausas de 123/162/164 ms
+entre Intro y las cuentas, 210 ms entre batería y puente y 92 ms entre
+intensidad y coro: todas quedaban dentro del gate primario de 300 ms.
+
+El nuevo proveedor ejecutado sin caché y con red bloqueada produjo **31
+fragmentos en 59,48 s**, **18 secciones y 13 puntos secundarios**, sin etiquetas
+principales pendientes de reconocimiento. Las cuentas reales son:
+**1 a 0 s, 2 a 1,22 s, 2 a 3,09 s, 3 a 3,71 s y 4 a 4,33 s**. No se añaden
+otras cuentas a partir del tempo. Intro se reconoce por separado a 2,47 s;
+ambos Interludios conservan su nombre sin sufijo numérico.
+
+`Balsa.` permanece como salida literal de Whisper y se interpreta como Break
+(Pausa), punto a 75,46 s. Entra batería a 144,75 s y Puente a 145,98 s son
+anuncios independientes; el Puente se propone a 148,453608 s. Subir intensidad
+a 209,08 s y Coro a 210,31 s son independientes; el Coro se propone a
+212,783505 s. La variante `Entra a batería` a 201,64 s también es Drums In.
+Las 18 entradas cumplen el compás siguiente con tolerancia; los 13 puntos
+conservan su tiempo hablado. La separación usa PCM y nueva inferencia, no
+un reparto artificial de palabras del JSON anterior.
+
+`output/mi-testimonio-20261104/` conserva la caché anterior, ambas salidas,
+mediciones de silencio, `verification.json` y un informe HTML con la guía
+original. La inferencia y los probes no cambian ni confirman el arreglo
+de la app abierta.
+
+La app y los probes macOS compilaron y las siete suites quedaron aprobadas.
+Se corrigió una cadena UTF-8 de la nueva prueba de segmentación y se repitió
+esa suite; las otras seis ya estaban aprobadas. La nueva inferencia completa
+del corpus anterior tardó **201,34 s**, sin caché: conserva **121/121**
+interpretados (112 directos), sin omisiones, divisiones, extras o tentativas.
+La verificación independiente encontró que los 23 anuncios ajenos a las tres
+separaciones conservan exactamente texto, tiempos, idioma y confianza, y que
+los 31 anuncios del resultado nuevo aparecen una sola vez entre principales
+y secundarios.
+
+### VI LA LUZ: puntos temporales y cuentas sin silencio — 4 de noviembre de 2026
+
+La captura mostró dos problemas diferentes. El primer punto azul se desplazaba
+horizontalmente al distribuir su etiqueta, pese a conservar 0,02 s en el
+borrador. La distribución compartida de revisión y edición guardada ahora
+fija siempre el punto en `sourceX`; sólo desplaza la etiqueta y dibuja su
+conector. La selección, el arrastre, la confirmación y Deshacer se comprobaron
+en el componente nativo, incluido el borde izquierdo de la ventana.
+
+La guía original, 116 BPM y 4/4, conserva `intro, dos, tres, cuatro.` como un
+fragmento de 2,16–4,12 s: Intro y Dos se solapan, y las otras pausas son de
+60/63 ms. Los timestamps simples de Whisper adelantan algunas palabras unos
+200 ms; DTW y `split_on_word` no dieron ataques válidos en el diagnóstico y
+no se usan como posiciones exactas. La pasada adicional conserva intervalos
+ES de Dos 2,53–2,78, Tres 2,93–3,27 y Cuatro 3,43–3,96 s. Cada uno contiene
+un solo pulso de la cuadrícula con origen 0,02 s.
+
+La nueva inferencia local sin caché tardó **48,37 s**: conserva los 25
+fragmentos, textos y tiempos anteriores y añade evidencia al compuesto.
+Las propuestas son **1 a 0,020 s, 2 a 1,060 s, 2 a 2,606207 s,
+3 a 3,123448 s y 4 a 3,640690 s**. Las tres recuperadas quedan a 4,79/7,55/7,31
+ms de los ataques del click medidos por umbral. La primera marca conserva el
+inicio vocal detectado, 20 ms después del comienzo del archivo de click.
+Intro se propone independientemente a 4,157931 s, compás 3. No se modifica
+el mapa ni se inventa un número ausente.
+
+App/probes macOS compilados; **7/7 suites en 10,48 s**. La recuperación real
+de caché conserva exactamente `words` y las propuestas. MI TESTIMONIO volvió
+a pasar por el modelo sin caché y conservó sus 31 fragmentos, 18 secciones,
+13 puntos y todos sus nombres/posiciones. La interpretación del corpus previo
+permanece en 121/121; para esa comprobación se reutilizó su ASR real anterior,
+sin afirmar una inferencia nueva del corpus. Diagnósticos, caché aislada, JSON,
+comparación con click, captura del componente e informe HTML están en
+`output/vi-la-luz-20261104/`. La app abierta no se reinició ni se confirmó su
+borrador durante estas pruebas.
+
+### VI LA LUZ: Toda la banda independiente — 4 de noviembre de 2026
+
+La guía contenía tres `Interludio, toda la banda.`. El parser permitía el
+sufijo de utilidad, por lo que el proveedor consideraba cada frase un anuncio
+musical único y no intentaba separarla. El resultado tenía 19 secciones y
+nueve secundarios (cinco cuentas y cuatro instrucciones), sin ningún All In.
+No era un filtro de reproducción ni una marca guardada perdida: biblioteca y
+ajustes del proyecto seguían con el arreglo vacío.
+
+La nueva inferencia completa con proveedor 8, sin caché y con red bloqueada,
+tardó **55,70 s** y produjo **28 fragmentos**, conservando las **19 secciones**
+y sus entradas. Las pausas reales de 200/201 ms permiten reconocer All In
+independientemente a **50,71 / 106,57 / 189,33 s**. El borrador tiene ahora
+**12 secundarios: cinco cuentas y siete instrucciones**; todas las marcas
+anteriores conservan nombres y posiciones. Estas indicaciones mantienen el
+instante hablado y no heredan la anticipación del Interludio.
+
+App/probes compilados y **7/7 suites en 10,41 s**. Una nueva prueba del
+componente nativo cubre el intervalo 35–62 s, etiqueta/punto de Toda la banda,
+selección, reproducción, confirmación mediante la transacción habitual,
+anclaje persistido y un solo Deshacer. La captura usa una onda de prueba y
+no representa una confirmación en la canción del usuario. La lectura real de
+caché conserva exactamente los nuevos anuncios y puntos. La interpretación
+del corpus ASR anterior permanece en 121/121 (sin nueva inferencia del corpus).
+`output/vi-la-luz-secondary-20261104/` conserva el antes/después, verificación,
+logs y `all-in-native.png`. No se reinició la app ni se modificó el arreglo
+del usuario durante estas comprobaciones.
+
+### Conjunto reproducible de escenarios
+
+[GuideDetectionTestSet.md](GuideDetectionTestSet.md) documenta el set de 24
+audios compuestos, sus referencias congeladas y el procedimiento de inferencia,
+comparación y revisión humana. Complementa el corpus de palabras aisladas con
+cuentas, anuncios consecutivos, idiomas mezclados, métricas, fronteras de
+compás y controles sin voz. Su primer resultado fue 19/24 casos y 74/89 marcas;
+los cinco casos con diferencias quedan como insumo para futuras correcciones.
+
+La primera adaptación guiada por esos casos usa el proveedor 9: pausas reales
+de 60 ms, reagrupación contigua y aceptación de una única descomposición
+reconocida. La nueva inferencia completa conserva las referencias y el modelo:
+**21/24 casos y 79/89 marcas**, cinco marcas recuperadas y cero regresiones.
+Las dos cuentas rápidas y el compuesto sin pausa siguen revisables. El
+comparador documentado en [GuideScenarioComparison.md](GuideScenarioComparison.md)
+conserva sus omisiones y los tiempos antes/después por evento.
+La inferencia nueva del corpus aislado conserva **121/121 interpretados**
+(112 directos), sin omisiones ni extras. Su cobertura de voces es 17 familias,
+21/26 utilidades y cuentas 1–7; los faltantes están declarados en el contrato
+del conjunto. No equivale a resolver los tres casos de tiempo pendientes.
+
+El cierre posterior con proveedor 10 y evidencia de voces conocidas sí resuelve
+los tres casos temporales: **24/24 casos originales, 89/89 marcas**. La nueva
+matriz rápida añade **30/30 casos y 116/116 marcas**, a 120–180 BPM y pausas de
+200 a 0 ms, incluidos solapamientos. Total: **54/54 y 205/205**, tolerancia
+±40 ms sin cambios, máximo observado 17,125 ms, cero extras y regresiones.
+App/probes compilados y 8/8 suites nativas aprobadas. MI TESTIMONIO y VI LA LUZ
+se reanalizaron completas; sus cinco cuentas iniciales por guía conservan
+1, 2, 2, 3, 4 dentro de ±40 ms frente a correlación independiente, sin cambiar
+fronteras principales ni arreglos del usuario. Véase
+[GuideRapidRecognition.md](GuideRapidRecognition.md) para procedencia, revisión
+humana del informe anterior, reproducción y límites de las voces conocidas.

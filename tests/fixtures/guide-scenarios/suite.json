@@ -1,0 +1,1163 @@
+{
+  "schemaVersion": 1,
+  "title": "PlayWorship · escenarios reproducibles de detección de secciones",
+  "sourceArchiveSha256": "cc3c26dbc40e10a6c2fbc7ab518ffe1a4728a592f568a38b318f832f2014506b",
+  "cases": [
+    {
+      "id": "catalogo-es-a",
+      "title": "Catálogo ES: Intro, Verso, Pre-Coro y Coro",
+      "group": "catalogo",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 9,
+      "tags": [
+        "catalogo",
+        "es",
+        "ordinales"
+      ],
+      "description": "Cuatro familias en español, con entradas separadas y ordinales realmente pronunciados.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "verse-1",
+          "kind": "section",
+          "key": "Verse",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "pre-1",
+          "kind": "section",
+          "key": "Pre-Chorus",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "chorus-1",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 6,
+          "floatOffsetSeconds": 0.12
+        }
+      ]
+    },
+    {
+      "id": "catalogo-en-b",
+      "title": "Catálogo EN: Refrain, Post-Chorus, Bridge e Instrumental",
+      "group": "catalogo",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 9,
+      "tags": [
+        "catalogo",
+        "en"
+      ],
+      "description": "Cuatro familias en inglés; la familia y el ordinal se evalúan independientemente del texto literal ASR.",
+      "events": [
+        {
+          "id": "refrain",
+          "kind": "section",
+          "key": "Refrain",
+          "language": "en",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "post-chorus",
+          "kind": "section",
+          "key": "Post-Chorus",
+          "language": "en",
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "bridge-1",
+          "kind": "section",
+          "key": "Bridge",
+          "language": "en",
+          "ordinal": 1,
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "instrumental",
+          "kind": "section",
+          "key": "Instrumental",
+          "language": "en",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12
+        }
+      ]
+    },
+    {
+      "id": "catalogo-es-c",
+      "title": "Catálogo ES: Solo, Interludio, Tag y Vamp",
+      "group": "catalogo",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 9,
+      "tags": [
+        "catalogo",
+        "es",
+        "sin-numeracion"
+      ],
+      "description": "Las grabaciones españolas de Solo, Interludio, Repetir y Vamp conservan su familia y no reciben ordinales inventados.",
+      "events": [
+        {
+          "id": "solo",
+          "kind": "section",
+          "key": "Solo",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "bar": 2,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "tag",
+          "kind": "section",
+          "key": "Tag",
+          "language": "es",
+          "bar": 4,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "vamp",
+          "kind": "section",
+          "key": "Vamp",
+          "language": "es",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ]
+    },
+    {
+      "id": "catalogo-mixto-d",
+      "title": "Catálogo mixto: Salida, Final, Turnaround, Exhortación y Rap",
+      "group": "catalogo",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 11,
+      "tags": [
+        "catalogo",
+        "es-en"
+      ],
+      "description": "Completa las 17 familias. Turnaround usa la grabación EN existente; no se sustituye por una supuesta voz ES ausente.",
+      "events": [
+        {
+          "id": "outro",
+          "kind": "section",
+          "key": "Outro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "ending",
+          "kind": "section",
+          "key": "Ending",
+          "language": "es",
+          "bar": 2,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "turnaround",
+          "kind": "section",
+          "key": "Turnaround",
+          "language": "en",
+          "bar": 4,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "exhortation",
+          "kind": "section",
+          "key": "Exhortation",
+          "language": "es",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "rap",
+          "kind": "section",
+          "key": "Rap",
+          "language": "en",
+          "bar": 8,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ]
+    },
+    {
+      "id": "interludio-all-in-200",
+      "title": "Interludio + Toda la banda: 200 ms",
+      "group": "anuncios-compuestos",
+      "bpm": 116,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 4,
+      "tags": [
+        "secundarias",
+        "pausa-200",
+        "es"
+      ],
+      "description": "La pausa se mide desde el final ACTIVO de Interludio, no desde el final del archivo MP3. Deben conservarse una sección y una indicación independiente; si queda un compuesto revisable se documenta como fallo de reconocimiento separado, no como acierto.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.2
+        }
+      ]
+    },
+    {
+      "id": "interludio-all-in-060",
+      "title": "Interludio + Toda la banda: 060 ms",
+      "group": "anuncios-compuestos",
+      "bpm": 116,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 4,
+      "tags": [
+        "secundarias",
+        "pausa-060",
+        "es"
+      ],
+      "description": "La pausa se mide desde el final ACTIVO de Interludio, no desde el final del archivo MP3. Deben conservarse una sección y una indicación independiente; si queda un compuesto revisable se documenta como fallo de reconocimiento separado, no como acierto.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.06
+        }
+      ]
+    },
+    {
+      "id": "interludio-all-in-000",
+      "title": "Interludio + Toda la banda: 000 ms",
+      "group": "anuncios-compuestos",
+      "bpm": 116,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 4,
+      "tags": [
+        "secundarias",
+        "pausa-000",
+        "es"
+      ],
+      "description": "La pausa se mide desde el final ACTIVO de Interludio, no desde el final del archivo MP3. Deben conservarse una sección y una indicación independiente; si queda un compuesto revisable se documenta como fallo de reconocimiento separado, no como acierto.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.0
+        }
+      ]
+    },
+    {
+      "id": "cuenta-es-97",
+      "title": "Cuenta 1, 2, Intro, 2, 3, 4 · 97 BPM · ES",
+      "group": "conteos",
+      "bpm": 97,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 5,
+      "tags": [
+        "conteo-completo",
+        "ordinal-falso",
+        "es"
+      ],
+      "description": "Cinco cuentas realmente incluidas: 1, 2, 2, 3, 4. Intro es una etiqueta independiente. Al componer sobre pulsos pueden tocarse o solaparse colas de voz; esos límites y el solapamiento deben constar en el manifiesto, sin cortar palabras para aparentar una pausa.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 1.7371134020618557
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 2.9742268041237114,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 3.5927835051546393
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 4.211340206185567
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 4.8298969072164954
+        }
+      ]
+    },
+    {
+      "id": "cuenta-es-116",
+      "title": "Cuenta 1, 2, Intro, 2, 3, 4 · 116 BPM · ES",
+      "group": "conteos",
+      "bpm": 116,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 5,
+      "tags": [
+        "conteo-completo",
+        "ordinal-falso",
+        "es"
+      ],
+      "description": "Cinco cuentas realmente incluidas: 1, 2, 2, 3, 4. Intro es una etiqueta independiente. Al componer sobre pulsos pueden tocarse o solaparse colas de voz; esos límites y el solapamiento deben constar en el manifiesto, sin cortar palabras para aparentar una pausa.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 1.5344827586206897
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 2.5689655172413794,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 3.086206896551724
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 3.6034482758620694
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 4.120689655172415
+        }
+      ]
+    },
+    {
+      "id": "cuenta-en-120",
+      "title": "Cuenta 1, 2, Intro, 2, 3, 4 · 120 BPM · EN",
+      "group": "conteos",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 5,
+      "tags": [
+        "conteo-completo",
+        "ordinal-falso",
+        "en"
+      ],
+      "description": "Cinco cuentas realmente incluidas: 1, 2, 2, 3, 4. Intro es una etiqueta independiente. Al componer sobre pulsos pueden tocarse o solaparse colas de voz; esos límites y el solapamiento deben constar en el manifiesto, sin cortar palabras para aparentar una pausa.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "en",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 1.5
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "onsetSeconds": 2.5,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 3.0
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "en",
+          "onsetSeconds": 3.5
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "en",
+          "onsetSeconds": 4.0
+        }
+      ]
+    },
+    {
+      "id": "ordinales-y-intro",
+      "title": "Ordinales pronunciados y dos Intro sin número",
+      "group": "nombres",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 9,
+      "tags": [
+        "ordinales",
+        "intro",
+        "es-en"
+      ],
+      "description": "Verso 1 y Verse 2 mantienen sus ordinales. Los dos Intro no se convierten en Intro 1/Intro 2 por repetición.",
+      "events": [
+        {
+          "id": "verse-1",
+          "kind": "section",
+          "key": "Verse",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 0,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "verse-2",
+          "kind": "section",
+          "key": "Verse",
+          "language": "en",
+          "ordinal": 2,
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "intro-a",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 4,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "intro-b",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ]
+    },
+    {
+      "id": "indicaciones-consecutivas",
+      "title": "Subir intensidad, Toda la banda y Entra batería",
+      "group": "anuncios-compuestos",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 4,
+      "tags": [
+        "secundarias",
+        "solo-indicaciones",
+        "es-en"
+      ],
+      "description": "Tres instrucciones con pausas ACTIVAS de 200 ms. Ninguna crea una sección musical ni recibe un compás de anticipación.",
+      "events": [
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "gapSeconds": 0.2
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "gapSeconds": 0.2
+        }
+      ]
+    },
+    {
+      "id": "idiomas-alternados",
+      "title": "Una guía con español e inglés alternados",
+      "group": "idiomas",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 11,
+      "tags": [
+        "es-en",
+        "por-anuncio",
+        "secundarias"
+      ],
+      "description": "El idioma se decide por anuncio; la referencia no exige que toda la canción elija un único idioma.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "verse-1",
+          "kind": "section",
+          "key": "Verse",
+          "language": "en",
+          "ordinal": 1,
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "bar": 3,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "chorus",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "en",
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "bar": 5,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "bridge",
+          "kind": "section",
+          "key": "Bridge",
+          "language": "en",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "es",
+          "bar": 7,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "ending",
+          "kind": "section",
+          "key": "Ending",
+          "language": "en",
+          "bar": 8,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ]
+    },
+    {
+      "id": "repetidos-sin-ordinal",
+      "title": "Intro e Interludio repetidos; Refrain con apariciones",
+      "group": "nombres",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 13,
+      "tags": [
+        "sin-numeracion",
+        "refrain",
+        "es-en"
+      ],
+      "description": "Separa ordinal hablado de número de aparición visual: Intro/Interludio quedan sin sufijo, y la convención existente puede mostrar Refrain 1/2 sin que el audio pronuncie esos números.",
+      "events": [
+        {
+          "id": "intro-a",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "intro-b",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "bar": 2,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "interlude-a",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "bar": 4,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "interlude-b",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "en",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "refrain-a",
+          "kind": "section",
+          "key": "Refrain",
+          "language": "es",
+          "bar": 8,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "refrain-b",
+          "kind": "section",
+          "key": "Refrain",
+          "language": "en",
+          "bar": 10,
+          "floatOffsetSeconds": 0.12
+        }
+      ]
+    },
+    {
+      "id": "tempo-69-origen",
+      "title": "69 BPM, 4/4 y origen a 1,25 s",
+      "group": "cuadricula",
+      "bpm": 69,
+      "meter": "4/4",
+      "originSeconds": 1.25,
+      "durationBars": 9,
+      "tags": [
+        "69-bpm",
+        "4/4",
+        "origen-no-cero"
+      ],
+      "description": "El origen explícito se fija en la referencia antes de ASR. Cada sección usa el compás siguiente; Hold conserva su instante hablado.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "verse-1",
+          "kind": "section",
+          "key": "Verse",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "hold",
+          "kind": "instruction",
+          "key": "Hold",
+          "language": "en",
+          "bar": 3,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "chorus-1",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "ending",
+          "kind": "section",
+          "key": "Ending",
+          "language": "es",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ]
+    },
+    {
+      "id": "metrica-90-3-4",
+      "title": "90 BPM, 3/4 y origen a 0,375 s",
+      "group": "cuadricula",
+      "bpm": 90,
+      "meter": "3/4",
+      "originSeconds": 0.375,
+      "durationBars": 9,
+      "tags": [
+        "90-bpm",
+        "3/4",
+        "origen-no-cero"
+      ],
+      "description": "Comprueba compases de tres negras, no una multiplicación fija por cuatro; la indicación no divide el arreglo.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "verse",
+          "kind": "section",
+          "key": "Verse",
+          "language": "en",
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "bridge",
+          "kind": "section",
+          "key": "Bridge",
+          "language": "es",
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "bar": 5,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "ending",
+          "kind": "section",
+          "key": "Ending",
+          "language": "es",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ]
+    },
+    {
+      "id": "metrica-116-6-8",
+      "title": "116 BPM, 6/8 y origen a 0,75 s",
+      "group": "cuadricula",
+      "bpm": 116,
+      "meter": "6/8",
+      "originSeconds": 0.75,
+      "durationBars": 9,
+      "tags": [
+        "116-bpm",
+        "6/8",
+        "origen-no-cero"
+      ],
+      "description": "El BPM sigue siendo por negra: cada pulso de corchea dura 60/BPM×4/8; un compás tiene seis pulsos.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "verse",
+          "kind": "section",
+          "key": "Verse",
+          "language": "en",
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "chorus",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "en",
+          "bar": 5,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "ending",
+          "kind": "section",
+          "key": "Ending",
+          "language": "es",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ]
+    },
+    {
+      "id": "final-sin-compas",
+      "title": "Final anunciado sin compás posterior disponible",
+      "group": "limites",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 4,
+      "tags": [
+        "fin-de-audio",
+        "error-explicito"
+      ],
+      "description": "El audio ES de Final cabe antes del final de 8,50 s, pero su siguiente compás empieza precisamente al final del archivo. Debe notificarse el límite; nunca retroceder la marca para hacerla caber.",
+      "events": [
+        {
+          "id": "ending-late",
+          "kind": "section",
+          "key": "Ending",
+          "language": "es",
+          "onsetSeconds": 8.0,
+          "expectReview": true
+        }
+      ],
+      "expectedPolicy": {
+        "alignmentError": true
+      }
+    },
+    {
+      "id": "silencio-sin-voz",
+      "title": "Silencio sin anuncios",
+      "group": "negativos",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 3,
+      "tags": [
+        "negativo",
+        "sin-voz"
+      ],
+      "description": "No hay secciones, cuentas ni instrucciones esperadas. Un texto alucinado o una marca extra se registra como falso positivo.",
+      "events": []
+    },
+    {
+      "id": "click-sin-voz",
+      "title": "Click sin voz",
+      "group": "negativos",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 3,
+      "tags": [
+        "negativo",
+        "click",
+        "sin-voz"
+      ],
+      "description": "Click determinista sin anuncios hablados. No se debe convertir un pulso de click en una palabra, un conteo ni un límite musical.",
+      "events": [],
+      "background": "click"
+    },
+    {
+      "id": "guia-volumen-bajo",
+      "title": "Guía con ganancia reducida 18 dB",
+      "group": "condiciones",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 9,
+      "tags": [
+        "ganancia",
+        "es"
+      ],
+      "description": "Mismas voces con ganancia global de −18 dB. La referencia temporal y semántica no cambia; cualquier omisión queda visible en el informe.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "verse-1",
+          "kind": "section",
+          "key": "Verse",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "chorus-1",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "ordinal": 1,
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "es",
+          "bar": 5,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "ending",
+          "kind": "section",
+          "key": "Ending",
+          "language": "es",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ],
+      "effects": {
+        "gainDb": -18
+      }
+    },
+    {
+      "id": "guia-ruido-suave",
+      "title": "Guía con ruido de fondo determinista",
+      "group": "condiciones",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 9,
+      "tags": [
+        "ruido",
+        "en",
+        "semilla-fija"
+      ],
+      "description": "Ruido sintético de RMS −54 dBFS con semilla fija del generador. Se documenta la condición añadida; no equivale a música real ni a otra voz.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "bar": 0,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "verse-1",
+          "kind": "section",
+          "key": "Verse",
+          "language": "en",
+          "ordinal": 1,
+          "bar": 2,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "chorus-1",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "en",
+          "ordinal": 1,
+          "bar": 4,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "bar": 5,
+          "floatOffsetSeconds": 0.12
+        },
+        {
+          "id": "ending",
+          "kind": "section",
+          "key": "Ending",
+          "language": "en",
+          "bar": 6,
+          "floatOffsetSeconds": 0.12,
+          "requireUnnumbered": true
+        }
+      ],
+      "effects": {
+        "gainDb": 0,
+        "noiseDbfs": -54
+      }
+    },
+    {
+      "id": "frontera-15ms",
+      "title": "Anuncio 15 ms antes de la línea de compás",
+      "group": "fronteras",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 5,
+      "tags": [
+        "frontera",
+        "20-ms",
+        "dentro-tolerancia"
+      ],
+      "description": "La referencia de voz queda 15 ms antes de una frontera: la política vigente ajusta el ancla dentro de 20 ms y propone el compás posterior a esa línea. El informe conserva el error ASR de inicio por separado.",
+      "events": [
+        {
+          "id": "chorus-near",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "bar": 2,
+          "floatOffsetSeconds": -0.015
+        }
+      ]
+    },
+    {
+      "id": "frontera-35ms",
+      "title": "Anuncio 35 ms antes de la línea de compás",
+      "group": "fronteras",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 5,
+      "tags": [
+        "frontera",
+        "20-ms",
+        "fuera-tolerancia"
+      ],
+      "description": "La voz queda 35 ms antes de la frontera: fuera de la tolerancia, se propone esa próxima línea. Un salto de un compás se registra aunque el nombre se reconozca.",
+      "events": [
+        {
+          "id": "chorus-before",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "bar": 2,
+          "floatOffsetSeconds": -0.035
+        }
+      ]
+    }
+  ]
+}

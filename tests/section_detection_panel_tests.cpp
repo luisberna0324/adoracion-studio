@@ -97,6 +97,7 @@ public:
 class FakeGuideTranscriber final : public IGuideTranscriber {
 public:
   std::atomic<bool> entered{false}, release{false};
+  juce::String requestedLanguage;
   bool available() const override { return true; }
   juce::String unavailableReason() const override { return {}; }
   juce::String providerId() const override { return "injected-guide-ui"; }
@@ -104,14 +105,65 @@ public:
   bool transcribe(const GuideTranscriptionRequest &request, const CancellationCheck &cancelled,
                   const GuideTranscriptionProgress &progress, GuideTranscript &out,
                   juce::String &error) override {
+    requestedLanguage = request.language;
     entered = true;
     while (!release && !cancelled()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
     if (cancelled()) { error = "Cancelado"; return false; }
     out.provider = providerId(); out.providerVersion = version();
     out.language = request.language; out.durationSeconds = 6;
     out.segments = {{1.25, 1.75, "Coro"}, {3.0, 3.7, "Verso uno"}};
+    for (auto &segment : out.segments)
+      segment.language = request.language == "es-en" ? "es" : request.language;
     if (progress) progress(1.0);
     return true;
+  }
+};
+
+// Keep the real worker alive until the test explicitly releases it. Progress
+// still travels through SectionDetectionService and the panel's message queue.
+class ControlledGuideTranscriber final : public IGuideTranscriber {
+public:
+  std::atomic<int> calls{0};
+  std::atomic<bool> entered{false}, release{false}, finished{false};
+  std::atomic<bool> observedCancellation{false}, holdCancellation{false}, failNext{false};
+  std::atomic<double> requestedProgress{-1.0};
+  bool available() const override { return true; }
+  juce::String unavailableReason() const override { return {}; }
+  juce::String providerId() const override { return "controlled-modal-guide"; }
+  juce::String version() const override { return "1"; }
+  bool transcribe(const GuideTranscriptionRequest &request,
+                  const CancellationCheck &cancelled,
+                  const GuideTranscriptionProgress &progress,
+                  GuideTranscript &out, juce::String &error) override {
+    ++calls; finished = false; entered = true;
+    double lastProgress = -1.0;
+    for (;;) {
+      if (cancelled()) {
+        observedCancellation = true;
+        if (!holdCancellation || release) {
+          error = "Cancelado"; finished = true; return false;
+        }
+      } else {
+        const double next = requestedProgress.load();
+        if (next >= 0.0 && next != lastProgress) {
+          lastProgress = next;
+          if (progress) progress(next);
+        }
+        if (release) break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (failNext.exchange(false)) {
+      error = juce::String::fromUTF8("Fallo de transcripción inyectado");
+      finished = true; return false;
+    }
+    out.provider = providerId(); out.providerVersion = version();
+    out.language = request.language; out.durationSeconds = 6;
+    out.segments = {{1.25, 1.75, "Coro"}, {3.0, 3.7, "Verso uno"}};
+    for (auto &segment : out.segments)
+      segment.language = request.language == "es-en" ? "es" : request.language;
+    if (progress) progress(1.0);
+    finished = true; return true;
   }
 };
 
@@ -148,6 +200,7 @@ struct SectionDetectionPanelTestAccess {
   static auto &accept(SectionDetectionPanel &p) { return p.acceptSelected; }
   static auto &all(SectionDetectionPanel &p) { return p.selectAll; }
   static auto &transcribe(SectionDetectionPanel &p) { return p.transcribe; }
+  static auto &language(SectionDetectionPanel &p) { return p.guideLanguage; }
   static auto &tracks(SectionDetectionPanel &p) { return p.showTracks; }
   static auto transcript(const SectionDetectionPanel &p) { return p.transcript.getText(); }
   static bool transcriptVisible(const SectionDetectionPanel &p) { return p.transcript.isVisible(); }
@@ -170,6 +223,21 @@ struct SectionDetectionPanelTestAccess {
     });
   }
   static bool busy(const SectionDetectionPanel &p) { return p.busy; }
+  static bool modal(const SectionDetectionPanel &p) { return p.modalPresented; }
+  static auto card(const SectionDetectionPanel &p) { return p.cardBounds; }
+  static auto &progressBar(SectionDetectionPanel &p) { return p.spinner; }
+  static double progress(const SectionDetectionPanel &p) { return p.progress; }
+  static bool setupHidden(const SectionDetectionPanel &p) {
+    return !p.viewport.isVisible() && !p.chooseModel.isVisible() &&
+        !p.guideLanguage.isVisible() && !p.modelStatus.isVisible() && !p.transcribe.isVisible();
+  }
+  static bool setupReady(const SectionDetectionPanel &p) {
+    return p.viewport.isVisible() && p.chooseModel.isVisible() &&
+        p.guideLanguage.isVisible() && p.transcribe.isVisible() && p.transcribe.isEnabled();
+  }
+  static bool busyDetailsVisible(const SectionDetectionPanel &p) {
+    return p.title.isVisible() && p.status.isVisible() && p.spinner.isVisible() && p.cancel.isVisible();
+  }
   static bool reviewing(const SectionDetectionPanel &p) { return p.reviewing; }
   static bool spinner(const SectionDetectionPanel &p) { return p.spinner.isVisible(); }
   static auto state(const SectionDetectionPanel &p) { return p.status.getText(); }
@@ -386,6 +454,44 @@ void guideOnlyFlow(const juce::File &root, const ImportedSongData &song) {
       "returning to tracks preserves guide role selection");
 }
 
+void guideLanguageChoices(const juce::File &root, const ImportedSongData &song) {
+  const auto model = root.getChildFile("language-choice-model.bin");
+  expect(model.replaceWithText("synthetic language-choice model"),
+         "language selection fixture has an explicit local model");
+  struct Choice { int id; const char *code; bool automatic; };
+  for (const auto &choice : {Choice{3, "es-en", true}, Choice{1, "es", false},
+                              Choice{2, "en", false}}) {
+    auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
+    auto guide = std::make_shared<FakeGuideTranscriber>(); guide->release = true;
+    int reviewed = 0;
+    juce::String receivedLanguage;
+    SectionDetectionPanel::Actions actions;
+    actions.reviewGuide = [&](const GuideTranscript &transcript) {
+      ++reviewed; receivedLanguage = transcript.language;
+    };
+    SectionDetectionPanel panel(song, actions, unavailable, guide);
+    panel.setSize(1120, 540);
+    auto &language = SectionDetectionPanelTestAccess::language(panel);
+    expect(language.getNumItems() == 3 && language.getItemId(0) == 3 &&
+               language.getSelectedId() == 3 &&
+               language.getText() == juce::String::fromUTF8("Español e inglés"),
+           "the first selected language choice compares Spanish and English");
+    SectionDetectionPanelTestAccess::cache(panel,
+        root.getChildFile(juce::String("language-choice-") + choice.code));
+    SectionDetectionPanelTestAccess::model(panel, model);
+    if (choice.automatic) {
+      panel.beginSuggestionFlow();
+    } else {
+      language.setSelectedId(choice.id, juce::dontSendNotification);
+      click(SectionDetectionPanelTestAccess::transcribe(panel));
+    }
+    pumpUntil([&] { return reviewed == 1 && !SectionDetectionPanelTestAccess::busy(panel); },
+              "the selected language completes through the worker and waveform handoff");
+    expect(guide->requestedLanguage == choice.code && receivedLanguage == choice.code,
+           "automatic bilingual and explicit single-language choices reach the provider unchanged");
+  }
+}
+
 void guideWaveformHandoff(const juce::File &root, const ImportedSongData &song) {
   auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
   int reviewed = 0, closed = 0, accepted = 0, previews = 0;
@@ -497,22 +603,37 @@ void modelPreparationIntegrity(const juce::File &root) {
 void modelDownloadContinuesSuggestionFlow(const juce::File &root, const ImportedSongData &song) {
   auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
   auto guide = std::make_shared<FakeGuideTranscriber>(); guide->release = true;
-  auto source = std::make_shared<FakeModelSource>();
+  auto source = std::make_shared<FakeModelSource>(); source->waitBeforeOpen = true;
+  juce::Component host; host.setSize(1100, 760); host.setVisible(true);
   int reviewed = 0, closed = 0;
+  SectionDetectionPanel *address = nullptr;
   SectionDetectionPanel::Actions actions;
-  actions.reviewGuide = [&](const GuideTranscript &value) { ++reviewed; expect(value.segments.size() == 2, "prepared model continues to the guide provider"); };
+  actions.reviewGuide = [&](const GuideTranscript &value) {
+    expect(address && !address->isCurrentlyModal(false),
+           "download and inference release the modal before waveform review");
+    ++reviewed; expect(value.segments.size() == 2, "prepared model continues to the guide provider");
+    expect(value.language == "es-en", "download continuation retains the default bilingual mode");
+  };
   actions.close = [&] { ++closed; };
-  SectionDetectionPanel panel(song, actions, unavailable, guide);
+  SectionDetectionPanel panel(song, actions, unavailable, guide); address = &panel;
   SectionDetectionPanelTestAccess::cache(panel, root.getChildFile("download-flow-cache"));
   SectionDetectionPanelTestAccess::model(panel, root.getChildFile("download-flow-model.bin"));
   SectionDetectionPanelTestAccess::downloadSource(panel, source, source->asset());
+  panel.showModal(host);
   panel.beginSuggestionFlow();
   expect(!SectionDetectionPanelTestAccess::busy(panel) && source->calls == 0 && !guide->entered,
          "opening the suggestion flow never silently downloads a missing model");
+  expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::setupReady(panel),
+         "the missing model and guide controls are presented inside the same modal");
   expect(SectionDetectionPanelTestAccess::transcribe(panel).isEnabled() &&
              SectionDetectionPanelTestAccess::transcribe(panel).getButtonText() == "Descargar y continuar",
          "a missing model presents one explicit download-and-continue action");
   click(SectionDetectionPanelTestAccess::transcribe(panel));
+  pumpUntil([&] { return source->entered.load(); }, "explicit download reaches the local fake stream source");
+  expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::busy(panel) &&
+             SectionDetectionPanelTestAccess::setupHidden(panel),
+         "model downloading keeps the same modal blocker and hides configuration while busy");
+  source->release = true;
   pumpUntil([&] { return reviewed == 1 && closed == 1; }, "native download continues automatically into waveform review");
   expect(source->calls == 1 && guide->entered && !SectionDetectionPanelTestAccess::transcriptVisible(panel),
          "one model request is followed by local guide inference without a transcript list");
@@ -535,6 +656,216 @@ void guideHandoffOwnerCanClose(const ImportedSongData &song) {
          "an owner that destroys the panel during review is not accessed or closed a second time");
 }
 
+void expectCentredModal(const SectionDetectionPanel &panel, const juce::Component &host,
+                       bool compact) {
+  const auto card = SectionDetectionPanelTestAccess::card(panel);
+  expect(panel.getParentComponent() == &host && panel.getBounds() == host.getLocalBounds(),
+         "the modal covers the complete top-level host rather than the invoking child");
+  expect(SectionDetectionPanelTestAccess::modal(panel) && panel.isCurrentlyModal(false),
+         "the processing overlay owns JUCE modal input blocking");
+  // The documented centre is the unobscured area, not the raw window centre.
+  // Read the platform's reported insets independently of the panel's layout
+  // helper. A notch or docked keyboard can make that area asymmetric.
+  juce::BorderSize<int> safeInsets, keyboardInsets;
+  if (const auto *display = juce::Desktop::getInstance().getDisplays()
+                                .getDisplayForRect(host.getScreenBounds())) {
+    safeInsets = display->safeAreaInsets;
+    keyboardInsets = display->keyboardInsets;
+  }
+  const int bottom = std::max(safeInsets.getBottom(), keyboardInsets.getBottom());
+  const double expectedX = (host.getWidth() + safeInsets.getLeft() - safeInsets.getRight()) / 2.0;
+  const double expectedY = (host.getHeight() + safeInsets.getTop() - bottom) / 2.0;
+  const juce::Rectangle<int> usable{safeInsets.getLeft(), safeInsets.getTop(),
+      host.getWidth() - safeInsets.getLeft() - safeInsets.getRight(),
+      host.getHeight() - safeInsets.getTop() - bottom};
+  const bool centred = !card.isEmpty() && usable.contains(card) &&
+      std::abs(card.getCentreX() - expectedX) <= 1 && std::abs(card.getCentreY() - expectedY) <= 1;
+  static bool reportedPlatformInsets = false;
+  if (!centred || (!reportedPlatformInsets &&
+      (safeInsets.getTop() != bottom || safeInsets.getLeft() != safeInsets.getRight()))) {
+    std::cout << "Modal geometry: host=" << host.getLocalBounds().toString()
+              << ", card=" << card.toString() << ", safe="
+              << safeInsets.getTop() << ',' << safeInsets.getLeft() << ','
+              << safeInsets.getBottom() << ',' << safeInsets.getRight()
+              << ", keyboardBottom=" << keyboardInsets.getBottom()
+              << ", expectedCentre=" << expectedX << ',' << expectedY << '\n';
+    reportedPlatformInsets = true;
+  }
+  expect(centred, "the modal card stays centred inside the platform's safe and keyboard-free area");
+  if (compact) {
+    expect(card.getWidth() < host.getWidth() * 0.75 && card.getHeight() < host.getHeight() * 0.6,
+           "active processing occupies a compact card instead of a lower editor panel");
+  }
+}
+
+void captureProcessingModal(juce::Component &host, SectionDetectionPanel &panel) {
+  const auto requested = juce::SystemStats::getEnvironmentVariable(
+      "PW_SECTION_PROCESSING_CAPTURE_PATH", {});
+  if (requested.isEmpty()) return;
+  expect(juce::File::isAbsolutePath(requested), "processing modal capture path is absolute");
+  const juce::File file(requested);
+  expect(file.getParentDirectory().createDirectory().wasOk(), "processing modal capture directory opens");
+  // JUCE eases the painted fraction toward the worker value. Observe its real
+  // paint argument so an opt-in capture records 45%, not an intermediate frame.
+  struct ProgressPaintObservation final : juce::LookAndFeel_V4 {
+    explicit ProgressPaintObservation(juce::LookAndFeel &look) : original(look) {}
+    void drawProgressBar(juce::Graphics &graphics, juce::ProgressBar &bar,
+                         int width, int height, double value,
+                         const juce::String &text) override {
+      painted = value;
+      original.drawProgressBar(graphics, bar, width, height, value, text);
+    }
+    juce::LookAndFeel &original;
+    double painted = -1.0;
+  };
+  auto &bar = SectionDetectionPanelTestAccess::progressBar(panel);
+  auto *originalLook = &bar.getLookAndFeel();
+  ProgressPaintObservation observation(*originalLook);
+  struct RestoreLook {
+    juce::ProgressBar &bar;
+    juce::LookAndFeel *original;
+    ~RestoreLook() { bar.setLookAndFeel(original); }
+  } restore{bar, originalLook};
+  bar.setLookAndFeel(&observation);
+  juce::Image image;
+  pumpUntil([&] {
+    image = host.createComponentSnapshot(host.getLocalBounds(), true, 1.5f);
+    return std::abs(observation.painted - 0.45) < 0.00001;
+  }, "the processing modal paints the actual injected 45 percent before capture");
+  auto output = file.createOutputStream();
+  expect(output && output->setPosition(0) && output->truncate().wasOk() &&
+             juce::PNGImageFormat().writeImageToStream(image, *output),
+         "the real host and processing modal render to a complete PNG");
+}
+
+void modalGuideProgressCancellationAndRetry(const juce::File &root, const ImportedSongData &song) {
+  auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
+  auto guide = std::make_shared<ControlledGuideTranscriber>();
+  juce::Component host, invoker;
+  host.setSize(1200, 800); host.setVisible(true);
+  host.addAndMakeVisible(invoker); invoker.setBounds(90, 420, 500, 240);
+  int reviewed = 0, closed = 0;
+  SectionDetectionPanel *address = nullptr;
+  SectionDetectionPanel::Actions actions;
+  actions.reviewGuide = [&](const GuideTranscript &value) {
+    expect(address && !SectionDetectionPanelTestAccess::modal(*address) &&
+               !address->isCurrentlyModal(false),
+           "the modal releases input before the owner installs waveform review");
+    expect(closed == 0 && value.segments.size() == 2,
+           "successful retry hands off complete guide evidence before deferred owner close");
+    ++reviewed;
+  };
+  actions.close = [&] { ++closed; };
+  SectionDetectionPanel panel(song, actions, unavailable, guide); address = &panel;
+  SectionDetectionPanelTestAccess::cache(panel, root.getChildFile("modal-progress-cache"));
+  const auto model = root.getChildFile("modal-progress-model.bin");
+  expect(model.replaceWithText("synthetic modal model"), "modal guide fixture has a local model");
+  SectionDetectionPanelTestAccess::model(panel, model);
+  panel.showModal(invoker);
+  expectCentredModal(panel, host, false);
+  panel.beginSuggestionFlow();
+  pumpUntil([&] { return guide->entered.load(); }, "the modal starts inference on the real service worker");
+  expectCentredModal(panel, host, true);
+  expect(SectionDetectionPanelTestAccess::setupHidden(panel) &&
+             SectionDetectionPanelTestAccess::busyDetailsVisible(panel),
+         "processing shows its status, progress and Cancel while hiding track and model setup");
+  const auto card = SectionDetectionPanelTestAccess::card(panel);
+  auto &bar = SectionDetectionPanelTestAccess::progressBar(panel);
+  expect(card.contains(bar.getBounds()) && bar.getWidth() >= card.getWidth() * 0.8,
+         "numeric processing progress spans the compact card without escaping it");
+  guide->requestedProgress = 0.23;
+  pumpUntil([&] { return std::abs(SectionDetectionPanelTestAccess::progress(panel) - 0.23) < 0.00001; },
+            "provider progress reaches the visible production progress bar");
+  guide->requestedProgress = 0.45;
+  pumpUntil([&] { return std::abs(SectionDetectionPanelTestAccess::progress(panel) - 0.45) < 0.00001; },
+            "the modal advances to the provider's next numeric progress value");
+  captureProcessingModal(host, panel);
+  guide->requestedProgress = 0.71;
+  pumpUntil([&] { return std::abs(SectionDetectionPanelTestAccess::progress(panel) - 0.71) < 0.00001; },
+            "later inference progress advances without closing or rebuilding the modal");
+  host.setSize(900, 620);
+  pumpUntil([&] { return panel.getBounds() == host.getLocalBounds(); },
+            "resizing the host updates the complete modal overlay");
+  expectCentredModal(panel, host, true);
+  expect(SectionDetectionPanelTestAccess::card(panel).contains(bar.getBounds()),
+         "the progress control remains inside the resized card");
+
+  guide->holdCancellation = true;
+  expect(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)),
+         "Escape is handled by the production processing modal");
+  expect(SectionDetectionPanelTestAccess::busy(panel) && panel.isCurrentlyModal(false) &&
+             !SectionDetectionPanelTestAccess::cancel(panel).isEnabled() && closed == 0,
+         "Escape requests cancellation while retaining input blocking until worker acknowledgement");
+  pumpUntil([&] { return guide->observedCancellation.load(); },
+            "the worker observes the modal's cancellation request");
+  expect(SectionDetectionPanelTestAccess::busy(panel) && panel.isCurrentlyModal(false) &&
+             SectionDetectionPanelTestAccess::state(panel).contains("Cancelando"),
+         "an unacknowledged cancellation cannot expose the editor underneath");
+  guide->release = true;
+  pumpUntil([&] { return !SectionDetectionPanelTestAccess::busy(panel); },
+            "acknowledged cancellation returns to usable setup");
+  expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::setupReady(panel) &&
+             SectionDetectionPanelTestAccess::state(panel) == "Cancelado" && reviewed == 0 && closed == 0,
+         "cancellation preserves the modal for retry without applying or closing anything");
+  guide->release = false; guide->entered = false; guide->holdCancellation = false;
+  guide->requestedProgress = 0.41;
+  click(SectionDetectionPanelTestAccess::transcribe(panel));
+  pumpUntil([&] { return guide->calls == 2 && guide->entered.load(); },
+            "retry creates a fresh worker after the cancelled attempt");
+  guide->release = true;
+  pumpUntil([&] { return reviewed == 1 && closed == 1; },
+            "retry releases the modal and hands off to waveform review exactly once");
+  expect(!panel.isCurrentlyModal(false), "successful handoff leaves no stale modal input blocker");
+}
+
+void modalGuideErrorAndOwnerLifetime(const juce::File &root, const ImportedSongData &song) {
+  auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
+  auto guide = std::make_shared<ControlledGuideTranscriber>(); guide->failNext = true;
+  juce::Component host; host.setSize(1100, 760); host.setVisible(true);
+  int reviewed = 0, closed = 0;
+  SectionDetectionPanel::Actions actions;
+  actions.reviewGuide = [&](const GuideTranscript &) { ++reviewed; };
+  actions.close = [&] { ++closed; };
+  auto panel = std::make_unique<SectionDetectionPanel>(song, actions, unavailable, guide);
+  SectionDetectionPanelTestAccess::cache(*panel, root.getChildFile("modal-error-cache"));
+  const auto model = root.getChildFile("modal-error-model.bin");
+  expect(model.replaceWithText("synthetic modal error model"), "modal error fixture has a local model");
+  SectionDetectionPanelTestAccess::model(*panel, model);
+  panel->showModal(host); panel->beginSuggestionFlow();
+  pumpUntil([&] { return guide->entered.load(); }, "the modal error fixture starts its worker");
+  guide->release = true;
+  pumpUntil([&] { return !SectionDetectionPanelTestAccess::busy(*panel); },
+            "a provider error returns to configuration without closing the modal");
+  const auto expectedError = juce::String::fromUTF8("Fallo de transcripción");
+  if (!panel->isCurrentlyModal(false) || !SectionDetectionPanelTestAccess::setupReady(*panel) ||
+      !SectionDetectionPanelTestAccess::state(*panel).contains(expectedError) ||
+      reviewed != 0 || closed != 0)
+    std::cerr << "Modal error fixture: modal=" << panel->isCurrentlyModal(false)
+              << ", setup=" << SectionDetectionPanelTestAccess::setupReady(*panel)
+              << ", status=" << SectionDetectionPanelTestAccess::state(*panel)
+              << ", reviewed=" << reviewed << ", closed=" << closed << '\n';
+  expect(panel->isCurrentlyModal(false) && SectionDetectionPanelTestAccess::setupReady(*panel) &&
+             SectionDetectionPanelTestAccess::state(*panel).contains(expectedError) &&
+             reviewed == 0 && closed == 0,
+         "a real worker error remains visible with enabled retry and no waveform handoff");
+  guide->release = false; guide->entered = false; guide->finished = false;
+  click(SectionDetectionPanelTestAccess::transcribe(*panel));
+  pumpUntil([&] { return guide->calls == 2 && guide->entered.load(); },
+            "retry after a provider error starts a fresh inference attempt");
+  juce::Component::SafePointer<SectionDetectionPanel> safe(panel.get());
+  const auto before = std::chrono::steady_clock::now();
+  panel.reset();
+  expect(std::chrono::steady_clock::now() - before < std::chrono::milliseconds(100),
+         "destroying the modal owner never joins an active inference worker on the UI thread");
+  expect(!safe && !host.isCurrentlyBlockedByAnotherModalComponent(),
+         "tearing down the owner removes its modal input blocker immediately");
+  pumpUntil([&] { return guide->finished.load(); },
+            "the surviving worker acknowledges owner destruction without accessing the panel");
+  pump();
+  expect(guide->observedCancellation && reviewed == 0 && closed == 0,
+         "late worker completion after modal teardown cannot review or close the destroyed owner");
+}
+
 void guideCancellationAfterQueuedSuccess(const juce::File &root, const ImportedSongData &song) {
   auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
   auto guide = std::make_shared<FakeGuideTranscriber>();
@@ -544,12 +875,14 @@ void guideCancellationAfterQueuedSuccess(const juce::File &root, const ImportedS
   actions.accept = [&](const auto &, double, juce::String &) { ++accepted; return true; };
   actions.reviewGuide = [&](const GuideTranscript &) { ++reviewed; };
   actions.close = [&] { ++closed; };
+  juce::Component host; host.setSize(1200, 800); host.setVisible(true);
   SectionDetectionPanel panel(song, actions, unavailable, guide);
   panel.setSize(1120, 540);
   SectionDetectionPanelTestAccess::cache(panel, root.getChildFile("queued-guide-cancel-cache"));
   const auto model = root.getChildFile("queued-guide-cancel-model.bin");
   expect(model.replaceWithText("synthetic model identity"), "queued-cancel fixture has a local model");
   SectionDetectionPanelTestAccess::model(panel, model);
+  panel.showModal(host);
   click(SectionDetectionPanelTestAccess::transcribe(panel));
   pumpUntil([&] { return guide->entered.load(); }, "queued-cancel test reaches the guide worker");
 
@@ -564,6 +897,7 @@ void guideCancellationAfterQueuedSuccess(const juce::File &root, const ImportedS
   bool delivered = false;
   SectionDetectionPanelTestAccess::queueCompletion(panel, std::move(success), [&] { delivered = true; });
   SectionDetectionPanelTestAccess::cancel(panel).onClick();
+  expect(panel.isCurrentlyModal(false), "cancelling a queued success retains modal ownership until delivery");
   pumpUntil([&] { return delivered; }, "queued success reaches the real panel completion handler");
   expect(!SectionDetectionPanelTestAccess::busy(panel) &&
              !SectionDetectionPanelTestAccess::transcriptReview(panel) &&
@@ -571,6 +905,8 @@ void guideCancellationAfterQueuedSuccess(const juce::File &root, const ImportedS
              SectionDetectionPanelTestAccess::state(panel) == "Cancelado" && previews == 0 && accepted == 0 &&
              reviewed == 0 && closed == 0,
          "Cancel wins over an already queued success without review handoff, close or arrangement writes");
+  expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::setupReady(panel),
+         "the cancelled queued success leaves usable modal configuration rather than an input-blocked review");
 }
 
 void realGuideFlow(const juce::File &root) {
@@ -632,6 +968,8 @@ int main(int argc, char **argv) {
     std::cout << "PASS: asynchronous cancellation and unavailable provider UI\n";
     guideOnlyFlow(temporary.file, song);
     std::cout << "PASS: guide-only transcription UI, timestamps and protected arrangement\n";
+    guideLanguageChoices(temporary.file, song);
+    std::cout << "PASS: automatic bilingual mode and explicit Spanish or English selection\n";
     guideWaveformHandoff(temporary.file, song);
     guideHandoffOwnerCanClose(song);
     std::cout << "PASS: raw guide handoff to waveform review, deferred close and owner lifetime\n";
@@ -640,6 +978,9 @@ int main(int argc, char **argv) {
     std::cout << "PASS: model preparation integrity, offline reuse, cancellation and automatic suggestion continuation\n";
     guideCancellationAfterQueuedSuccess(temporary.file, song);
     std::cout << "PASS: cancelling discards guide success already queued for the UI\n";
+    modalGuideProgressCancellationAndRetry(temporary.file, song);
+    modalGuideErrorAndOwnerLifetime(temporary.file, song);
+    std::cout << "PASS: centred processing modal, provider progress, resize, cancellation, retry and owner lifetime\n";
     realGuideFlow(temporary.file);
     return 0;
   } catch (const std::exception &error) {

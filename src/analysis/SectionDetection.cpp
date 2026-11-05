@@ -43,18 +43,142 @@ std::optional<int> exactBar(const std::vector<double> &bars, double time) {
 }
 
 juce::String simplified(juce::String value) {
-  value = value.toLowerCase();
-  for (const auto *pair : {"áa", "ée", "íi", "óo", "úu", "üu"}) {
-    const auto chars = juce::String::fromUTF8(pair);
-    value = value.replaceCharacter(chars[0], chars[1]);
+  return playworship::guide::normalizedWords(std::move(value));
+}
+
+bool consumePhrase(juce::String &text, const juce::String &phrase) {
+  if (text == phrase) { text.clear(); return true; }
+  if (!text.startsWith(phrase + " ")) return false;
+  text = text.substring(phrase.length() + 1);
+  return true;
+}
+
+std::optional<int> spokenOrdinal(const juce::String &word) {
+  static const std::map<juce::String, int> ordinals{
+      {"uno",1},{"un",1},{"una",1},{"primero",1},{"primera",1},{"primer",1},{"one",1},{"first",1},
+      {"dos",2},{"segundo",2},{"segunda",2},{"two",2},{"second",2},
+      {"tres",3},{"tercero",3},{"tercera",3},{"tercer",3},{"three",3},{"third",3},
+      {"cuatro",4},{"cuarto",4},{"cuarta",4},{"four",4},{"fourth",4},
+      {"cinco",5},{"quinto",5},{"quinta",5},{"five",5},{"fifth",5},
+      {"seis",6},{"sexto",6},{"sexta",6},{"six",6},{"sixth",6},
+      {"siete",7},{"septimo",7},{"septima",7},{"seven",7},{"seventh",7},
+      {"ocho",8},{"octavo",8},{"octava",8},{"eight",8},{"eighth",8},
+      {"nueve",9},{"noveno",9},{"novena",9},{"nine",9},{"ninth",9},
+      {"diez",10},{"decimo",10},{"decima",10},{"ten",10},{"tenth",10},
+      {"once",11},{"eleven",11},{"eleventh",11},{"doce",12},{"twelve",12},{"twelfth",12},
+      {"trece",13},{"thirteen",13},{"thirteenth",13},{"catorce",14},{"fourteen",14},{"fourteenth",14},
+      {"quince",15},{"fifteen",15},{"fifteenth",15},{"dieciseis",16},{"sixteen",16},{"sixteenth",16},
+      {"diecisiete",17},{"seventeen",17},{"seventeenth",17},{"dieciocho",18},{"eighteen",18},{"eighteenth",18},
+      {"diecinueve",19},{"nineteen",19},{"nineteenth",19},{"veinte",20},{"twenty",20},{"twentieth",20}};
+  if (const auto found = ordinals.find(word); found != ordinals.end()) return found->second;
+  auto digits = word;
+  for (const auto *suffix : {"st", "nd", "rd", "th"}) {
+    if (digits.endsWith(suffix)) { digits = digits.dropLastCharacters(2); break; }
   }
-  juce::String output;
-  for (auto character : value)
-    output += juce::CharacterFunctions::isLetterOrDigit(character)
-                  ? character : static_cast<juce::juce_wchar>(' ');
-  auto tokens = juce::StringArray::fromTokens(output, " ", "");
-  tokens.removeEmptyStrings();
-  return tokens.joinIntoString(" ");
+  if (digits.isEmpty() || digits.length() > 3 || !digits.containsOnly("0123456789")) return {};
+  const auto value = digits.getIntValue();
+  return value > 0 && value <= 999 ? std::optional<int>{value} : std::optional<int>{};
+}
+
+std::optional<int> takeOrdinal(juce::String &text, bool &invalid) {
+  const bool numbered = consumePhrase(text, "numero") || consumePhrase(text, "number");
+  const auto first = text.upToFirstOccurrenceOf(" ", false, false);
+  if (const auto ordinal = spokenOrdinal(first)) {
+    consumePhrase(text, first);
+    return ordinal;
+  }
+  invalid = numbered;
+  return {};
+}
+
+bool countInstruction(const juce::String &text) {
+  const auto tokens = juce::StringArray::fromTokens(text, " ", "");
+  static const juce::StringArray counts{
+      "cero","un","uno","una","dos","tres","cuatro","cinco","seis","siete","ocho","nueve","diez",
+      "once","doce","trece","catorce","quince","dieciseis","diecisiete","dieciocho","diecinueve","veinte",
+      "zero","one","two","three","four","five","six","seven","eight","nine","ten",
+      "eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen","twenty"};
+  static const juce::StringArray connectors{"cuenta","conteo","count","in","y","and"};
+  bool numberFound = false;
+  for (const auto &token : tokens) {
+    if (counts.contains(token) || token.containsOnly("0123456789")) numberFound = true;
+    else if (!connectors.contains(token)) return false;
+  }
+  return numberFound;
+}
+
+bool countCueText(const juce::String &text) {
+  return text == "count in" || text == "countin" || text == "cuenta" || text == "conteo" ||
+      countInstruction(text);
+}
+
+juce::String canonicalUtilityName(const juce::String &text) {
+  return playworship::guide::canonicalUtilityName(text);
+}
+
+bool knownUtilityInstruction(const juce::String &text) {
+  return playworship::guide::isKnownUtilityInstruction(text) || countCueText(text);
+}
+
+struct ParsedGuideLabel {
+  SectionType type = SectionType::unknown;
+  std::optional<int> ordinal;
+};
+
+std::optional<ParsedGuideLabel> parseGuideLabel(juce::String text, bool allowUtilityTail) {
+  for (const auto *article : {"el", "la", "the"}) if (consumePhrase(text, article)) break;
+  for (const auto *prefix : {"vamos a la seccion", "vamos al", "vamos a", "going to", "go to",
+       "next section", "next is", "siguiente seccion", "ahora la seccion", "ahora", "next",
+       "section", "seccion", "parte"}) if (consumePhrase(text, prefix)) break;
+  for (const auto *article : {"el", "la", "the"}) if (consumePhrase(text, article)) break;
+  bool invalid = false;
+  auto ordinal = takeOrdinal(text, invalid);
+  if (invalid) return {};
+  const playworship::guide::SectionDefinition *definition = nullptr;
+  juce::String remaining;
+  int longestLabel = -1;
+  const auto consider = [&](const auto &entry, const juce::String &rawAlias) {
+    const auto alias = simplified(rawAlias);
+    auto tail = text;
+    if (alias.length() > longestLabel && consumePhrase(tail, alias)) {
+      definition = &entry;
+      remaining = std::move(tail);
+      longestLabel = alias.length();
+    }
+  };
+  for (const auto &entry : playworship::guide::sectionDefinitions()) {
+    consider(entry, entry.key);
+    for (const auto *alias : entry.aliases) consider(entry, alias);
+  }
+  if (definition == nullptr) return {};
+  const auto trailingOrdinal = takeOrdinal(remaining, invalid);
+  if (invalid || (ordinal && trailingOrdinal && ordinal != trailingOrdinal)) return {};
+  if (!ordinal) ordinal = trailingOrdinal;
+  if (remaining.isNotEmpty()) {
+    if (!allowUtilityTail) return {};
+    // A following sequence of counts is separate speech, not a utility suffix
+    // or a section ordinal. Keep it unresolved until source audio can separate
+    // the announcements instead of turning "Intro, dos, tres, cuatro" into Intro 2.
+    if (countCueText(remaining)) return {};
+    for (const auto *connector : {"con", "with", "y", "and"})
+      if (consumePhrase(remaining, connector)) break;
+    if (countCueText(remaining) || !knownUtilityInstruction(remaining)) return {};
+  }
+  return ParsedGuideLabel{definition->family, ordinal};
+}
+
+bool utilityInstruction(const juce::String &text) {
+  if (text.isEmpty()) return false;
+  if (knownUtilityInstruction(text)) return true;
+  // An instruction remains an instruction when its destination mentions a
+  // section: "subir intensidad en el coro" is not a new Chorus boundary.
+  for (const auto *separator : {" en ", " durante ", " para ", " al ",
+       " in ", " during ", " for ", " at ", " on "}) {
+    const auto split = text.indexOf(separator);
+    if (split > 0 && knownUtilityInstruction(text.substring(0, split)) &&
+        parseGuideLabel(text.substring(split + juce::String(separator).length()), false)) return true;
+  }
+  return false;
 }
 
 juce::var object() { return juce::var(new juce::DynamicObject()); }
@@ -105,20 +229,11 @@ template <typename Enum> bool readEnum(const juce::var &value, int maximum, Enum
 } // namespace
 
 juce::String sectionTypeName(SectionType type) {
-  switch (type) {
-  case SectionType::intro: return "Intro";
-  case SectionType::verse: return "Verso";
-  case SectionType::preChorus: return "Pre-coro";
-  case SectionType::chorus: return "Coro";
-  case SectionType::bridge: return "Puente";
-  case SectionType::instrumental: return "Instrumental";
-  case SectionType::outro: return "Salida";
-  case SectionType::ending: return "Final";
-  case SectionType::custom: return "Personalizada";
-  case SectionType::unknown: return juce::String::fromUTF8("Sección sugerida");
-  }
-  return juce::String::fromUTF8("Sección sugerida");
+  if (const auto *entry = playworship::guide::findSectionDefinition(type))
+    return juce::String::fromUTF8(entry->analysisLabel);
+  return type == SectionType::custom ? "Personalizada" : juce::String::fromUTF8("Sección sugerida");
 }
+
 juce::String confidenceName(ConfidenceLevel level) {
   switch (level) {
   case ConfidenceLevel::high: return "alta";
@@ -134,48 +249,93 @@ std::optional<GuideCue> normalizeGuideCue(double time, const juce::String &raw,
       (confidence && (!std::isfinite(*confidence) || *confidence < 0 || *confidence > 1)))
     return {};
   const auto text = simplified(raw);
-  auto tokens = juce::StringArray::fromTokens(text, " ", "");
-  if (tokens.isEmpty()) return {};
+  const auto tokens = juce::StringArray::fromTokens(text, " ", "");
+  if (tokens.isEmpty() || tokens.size() > 16 || utilityInstruction(text)) return {};
+  const auto label = parseGuideLabel(text, true);
+  if (!label) return {};
   GuideCue cue;
   cue.cueTimeSeconds = time;
   cue.rawText = raw;
   cue.asrConfidence = confidence;
-  // Long unconstrained text is not treated as a directive; the ASR provider must
-  // supply timed utterances rather than an entire song's transcription.
-  if (tokens.size() > 10) return {};
-  int nameIndex = -1;
-  for (int i = 0; i < tokens.size(); ++i) {
-    const auto &token = tokens[i];
-    if (token == "intro") cue.normalizedType = SectionType::intro;
-    else if (token == "verso" || token == "estrofa") cue.normalizedType = SectionType::verse;
-    else if (token == "precoro" || (token == "pre" && i + 1 < tokens.size() && tokens[i + 1] == "coro")) {
-      cue.normalizedType = SectionType::preChorus;
-      if (token == "pre") ++i;
-    } else if (token == "coro") cue.normalizedType = SectionType::chorus;
-    else if (token == "puente") cue.normalizedType = SectionType::bridge;
-    else if (token == "instrumental" || token == "solo" || token == "interludio")
-      cue.normalizedType = SectionType::instrumental;
-    else if (token == "salida" || token == "outro") cue.normalizedType = SectionType::outro;
-    else if (token == "final") cue.normalizedType = SectionType::ending;
-    else continue;
-    nameIndex = i;
-    break;
-  }
-  if (nameIndex < 0) return {};
-  static const std::map<juce::String, int> ordinals{
-      {"uno",1},{"un",1},{"una",1},{"primero",1},{"primera",1},
-      {"dos",2},{"segundo",2},{"segunda",2},{"tres",3},{"tercero",3},{"tercera",3},
-      {"cuatro",4},{"cuarto",4},{"cuarta",4},{"cinco",5},{"quinto",5},{"quinta",5},
-      {"seis",6},{"sexto",6},{"sexta",6},{"siete",7},{"septimo",7},{"septima",7},
-      {"ocho",8},{"octavo",8},{"octava",8},{"nueve",9},{"noveno",9},{"novena",9},
-      {"diez",10},{"decimo",10},{"decima",10}};
-  for (int i = juce::jmax(0, nameIndex - 1); i < tokens.size(); ++i) {
-    const auto found = ordinals.find(tokens[i]);
-    if (found != ordinals.end()) { cue.spokenOrdinal = found->second; break; }
-    if (tokens[i].containsOnly("0123456789")) {
-      const auto ordinal = tokens[i].getIntValue();
-      if (ordinal > 0 && ordinal <= 999) { cue.spokenOrdinal = ordinal; break; }
+  cue.normalizedType = label->type;
+  cue.spokenOrdinal = label->ordinal;
+  return cue;
+}
+
+bool isGuideUtilityCue(const juce::String &raw) {
+  const auto text = simplified(raw);
+  if (juce::StringArray::fromTokens(text, " ", "").size() > 16) return false;
+  return utilityInstruction(text);
+}
+
+std::optional<GuideUtilityCue> normalizeGuideUtilityCue(
+    double time, const juce::String &raw, std::optional<double> confidence) {
+  if (!std::isfinite(time) || time < 0.0 ||
+      (confidence && (!std::isfinite(*confidence) || *confidence < 0.0 || *confidence > 1.0)))
+    return {};
+  const auto text = simplified(raw);
+  const auto tokens = juce::StringArray::fromTokens(text, " ", "");
+  if (tokens.isEmpty() || tokens.size() > 16 || countCueText(text)) return {};
+  auto instruction = text;
+  if (!knownUtilityInstruction(instruction)) {
+    instruction.clear();
+    // Keep an instruction mentioning a musical destination as one point,
+    // without also proposing a new musical section for that destination.
+    for (const auto *separator : {" en ", " durante ", " para ", " al ",
+         " in ", " during ", " for ", " at ", " on "}) {
+      const auto split = text.indexOf(separator);
+      if (split <= 0) continue;
+      const auto before = text.substring(0, split);
+      if (!countCueText(before) && knownUtilityInstruction(before) &&
+          parseGuideLabel(text.substring(split + juce::String(separator).length()), false)) {
+        instruction = before;
+        break;
+      }
     }
+    if (instruction.isEmpty()) return {};
+  }
+  const auto canonical = canonicalUtilityName(instruction);
+  GuideUtilityCue cue;
+  cue.cueTimeSeconds = time;
+  cue.rawText = raw;
+  cue.name = canonical.isNotEmpty() ? canonical : raw;
+  cue.asrConfidence = confidence;
+  return cue;
+}
+
+bool isGuideCountCue(const juce::String &raw) {
+  const auto text = simplified(raw);
+  if (juce::StringArray::fromTokens(text, " ", "").size() > 16) return false;
+  return countCueText(text);
+}
+
+std::optional<GuideUtilityCue> normalizeGuideCountCue(
+    double time, const juce::String &raw, std::optional<double> confidence) {
+  if (!std::isfinite(time) || time < 0.0 ||
+      (confidence && (!std::isfinite(*confidence) || *confidence < 0.0 || *confidence > 1.0)) ||
+      !isGuideCountCue(raw))
+    return {};
+  GuideUtilityCue cue;
+  cue.cueTimeSeconds = time;
+  cue.rawText = cue.name = raw;
+  cue.asrConfidence = confidence;
+  const auto text = simplified(raw);
+  // Match one cardinal word/digit to the native 1..7 clips only. In
+  // particular, "one two three" has no per-word timing and is not expanded.
+  struct CountName { const char *text; const char *key; };
+  static const CountName individualCounts[]{
+      {"1", "1"}, {"uno", "1"}, {"un", "1"}, {"una", "1"}, {"one", "1"},
+      {"2", "2"}, {"dos", "2"}, {"two", "2"},
+      {"3", "3"}, {"tres", "3"}, {"three", "3"},
+      {"4", "4"}, {"cuatro", "4"}, {"four", "4"},
+      {"5", "5"}, {"cinco", "5"}, {"five", "5"},
+      {"6", "6"}, {"seis", "6"}, {"six", "6"},
+      {"7", "7"}, {"siete", "7"}, {"seven", "7"},
+  };
+  for (const auto &count : individualCounts) {
+    if (text != count.text) continue;
+    cue.name = count.key;
+    break;
   }
   return cue;
 }
@@ -494,7 +654,7 @@ bool sectionDetectionResultFromVar(const juce::var &value, SectionDetectionResul
   for (const auto &item : *value["guideCues"].getArray()) {
     GuideCue cue;
     if (!item.isObject() || !number(item["cueTimeSeconds"]) || !item["rawText"].isString() ||
-        !readEnum(item["normalizedType"],static_cast<int>(SectionType::custom),cue.normalizedType)) return false;
+        !readEnum(item["normalizedType"],static_cast<int>(SectionType::rap),cue.normalizedType)) return false;
     cue.cueTimeSeconds=static_cast<double>(item["cueTimeSeconds"]); cue.rawText=item["rawText"].toString();
     if (!validTime(cue.cueTimeSeconds,result.durationSeconds)) return false;
     if (item.hasProperty("spokenOrdinal")) {
@@ -514,7 +674,7 @@ bool sectionDetectionResultFromVar(const juce::var &value, SectionDetectionResul
   for (const auto &item : *value["suggestions"].getArray()) {
     SectionSuggestion suggestion;
     if (!item.isObject() || !item["id"].isString() || !item["displayName"].isString() ||
-        !readEnum(item["type"],static_cast<int>(SectionType::custom),suggestion.type) ||
+        !readEnum(item["type"],static_cast<int>(SectionType::rap),suggestion.type) ||
         !readEnum(item["confidenceLevel"],static_cast<int>(ConfidenceLevel::high),suggestion.confidenceLevel) ||
         !readEnum(item["status"],static_cast<int>(SuggestionStatus::rejected),suggestion.status) ||
         !number(item["rawStartSeconds"]) || !number(item["startSeconds"]) || !number(item["endSeconds"]) ||

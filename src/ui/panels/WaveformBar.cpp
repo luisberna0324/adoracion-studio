@@ -7,6 +7,7 @@
 #include "../../audio/DynamicGuideTiming.h"
 #include "../../data/ArrangementSourceMapping.h"
 #include "../../data/ArrangementIdentity.h"
+#include "../../data/GuideVocabulary.h"
 #include "../../data/Localization.h"
 #include "../../data/TempoValue.h"
 #include "../WaveformCacheWindow.h"
@@ -52,9 +53,13 @@ bool liveBorderReducedMotion() {
 // part of the same undo transaction as the rest of the editor.
 class CueMarkerButton final : public juce::Button {
 public:
-  explicit CueMarkerButton(WaveformBar &waveform)
-      : juce::Button(""), owner(waveform) {}
+  CueMarkerButton(WaveformBar &waveform,
+                  std::function<bool(juce::Point<float>)> markerHit)
+      : juce::Button(""), owner(waveform), ownsPoint(std::move(markerHit)) {}
   void paintButton(juce::Graphics &, bool, bool) override {}
+  bool hitTest(int x, int y) override {
+    return ownsPoint(owner.getLocalPoint(this, juce::Point<float>{float(x), float(y)}));
+  }
   void mouseDown(const juce::MouseEvent &e) override {
     owner.mouseDown(e.getEventRelativeTo(&owner));
   }
@@ -75,6 +80,7 @@ public:
   }
 private:
   WaveformBar &owner;
+  std::function<bool(juce::Point<float>)> ownsPoint;
 };
 
 class CueTooltipStyle final : public juce::LookAndFeel_V4 {
@@ -148,6 +154,71 @@ constexpr float kPlayheadHeadHeight = 9.5f;
 constexpr float kPlayheadHeadHalfWidth = 5.8f;
 constexpr float kPlayheadHeadInsetY = 1.5f;
 constexpr float kPlayheadNeckHalfWidth = 1.5f;
+
+bool compactCountName(const juce::String &name) {
+  return name.length() == 1 && name[0] >= '1' && name[0] <= '7';
+}
+
+struct CueMarkerPlacement {
+  juce::Rectangle<float> label, pointHit;
+  juce::Point<float> point;
+};
+
+// Shared presentation packing for provisional and saved guide points. The
+// point always retains its source-time x. Only its label moves to fit.
+class CueMarkerPacking {
+public:
+  CueMarkerPacking(juce::Rectangle<float> area, float firstY, float step,
+                   int rows, float hitSize)
+      : bounds(area), firstCenterY(firstY), rowStep(step), target(hitSize),
+        occupied(static_cast<size_t>(juce::jmax(1, rows))) {}
+
+  CueMarkerPlacement place(float sourceX, float requestedWidth) {
+    const float targetWidth = juce::jmin(target, bounds.getWidth() - 28.0f);
+    const float halfTarget = targetWidth * 0.5f;
+    const float width = juce::jmin(requestedWidth, bounds.getWidth() - halfTarget - 20.0f);
+    const float footprintWidth = juce::jmax(targetWidth + 6.0f, halfTarget + width + 16.0f);
+    const float desiredLeft = sourceX - halfTarget - 3.0f;
+    const float minimumLeft = bounds.getX() + 2.0f, maximumRight = bounds.getRight() - 2.0f;
+    int row = -1;
+    float footprintLeft = minimumLeft, displacement = std::numeric_limits<float>::infinity();
+    const auto considerGap = [&](float left, float right, int candidateRow) {
+      if (right - left < footprintWidth) return;
+      const float candidate = juce::jlimit(left, right - footprintWidth, desiredLeft);
+      const float distance = std::abs(candidate - desiredLeft);
+      if (distance < displacement) { row = candidateRow; footprintLeft = candidate; displacement = distance; }
+    };
+    for (size_t candidateRow = 0; candidateRow < occupied.size(); ++candidateRow) {
+      float cursor = minimumLeft;
+      for (const auto &used : occupied[candidateRow]) {
+        considerGap(cursor, used.getStart(), int(candidateRow));
+        cursor = juce::jmax(cursor, used.getEnd());
+      }
+      considerGap(cursor, maximumRight, int(candidateRow));
+    }
+    if (row < 0) {
+      // Keep every point present even when the viewport has no free slot;
+      // increasing zoom separates its original source-time position again.
+      row = int(placed % occupied.size());
+      footprintLeft = juce::jlimit(minimumLeft, maximumRight - footprintWidth, desiredLeft);
+    }
+    ++placed;
+    auto &used = occupied[size_t(row)];
+    used.emplace_back(footprintLeft, footprintLeft + footprintWidth);
+    std::sort(used.begin(), used.end(), [](const auto &a, const auto &b) { return a.getStart() < b.getStart(); });
+    const float labelAnchorX = footprintLeft + halfTarget + 3.0f;
+    const float y = firstCenterY + float(row) * rowStep;
+    return {{labelAnchorX + 10.0f, y - 10.0f, width, 20.0f},
+        juce::Rectangle<float>(targetWidth, target).withCentre({sourceX, y}).getIntersection(bounds),
+        {sourceX, y}};
+  }
+
+private:
+  juce::Rectangle<float> bounds;
+  float firstCenterY, rowStep, target;
+  size_t placed = 0;
+  std::vector<std::vector<juce::Range<float>>> occupied;
+};
 
 float snapToPixelCenter(const float value) {
   return std::floor(value) + 0.5f;
@@ -243,38 +314,11 @@ juce::Colour partColorOrFallback(const SongArrangementPartSnapshot &part,
   return UITheme::accent;
 }
 
-struct UtilityCueSuggestion {
-  const char *key = nullptr;
-  const char *spanishLabel = nullptr;
-  const char *englishLabel = nullptr;
-};
-
-const std::array<UtilityCueSuggestion, 17> kUtilityCueSuggestions = {{
-    {"Build", "Sube intensidad", "Build"},
-    {"Slowly Build", "Sube lento", "Slowly Build"},
-    {"Breakdown", "Baja intensidad", "Breakdown"},
-    {"Hold", "Sostener", "Hold"},
-    {"Softly", "Suave", "Softly"},
-    {"Break", "Pausa", "Break"},
-    {"All In", "Toda la banda", "All In"},
-    {"Drums", "Batería", "Drums"},
-    {"Drums In", "Entra batería", "Drums In"},
-    {"Bass", "Bajo", "Bass"},
-    {"Guitar", "Guitarra", "Guitar"},
-    {"Keys", "Teclado", "Keys"},
-    {"Key Change Up", "Sube tono", "Key Change Up"},
-    {"Key Change Down", "Baja tono", "Key Change Down"},
-    {"Big Ending", "Final grande", "Big Ending"},
-    {"Last Time", "Última vez", "Last Time"},
-    {"A Capella", "A capella", "A Capella"},
-}};
+const auto &kUtilityCueSuggestions = playworship::guide::editorUtilityDefinitions();
 
 juce::String utilityCueDisplayLabelForName(const juce::String &name) {
-  const auto key = DynamicGuideEngine::normalizeSectionKey(name);
-  for (const auto &cue : kUtilityCueSuggestions) {
-    if (key == DynamicGuideEngine::normalizeSectionKey(cue.key))
-      return L10n::tr(cue.spanishLabel, cue.englishLabel);
-  }
+  if (const auto *cue = playworship::guide::findUtilityDefinition(name))
+    return L10n::tr(cue->spanishLabel, cue->englishLabel);
   return {};
 }
 
@@ -1282,16 +1326,8 @@ WaveformBar::WaveformBar() {
   guideAlignmentLabel.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
   guideAlignmentLabel.setInterceptsMouseClicks(false, false);
   addChildComponent(guideAlignmentLabel);
-  guideAnticipationBox.setComponentID("guide-alignment-anticipation");
-  guideAnticipationBox.addItem(L10n::tr("0 compases", "0 bars"), 1);
-  guideAnticipationBox.addItem(L10n::tr("1 compás", "1 bar"), 2);
-  guideAnticipationBox.addItem(L10n::tr("2 compases", "2 bars"), 3);
-  guideAnticipationBox.setTooltip(L10n::tr("Anticipación de los anuncios de la guía", "Guide announcement anticipation"));
-  guideAnticipationBox.onChange = [this] {
-    if (guideAlignmentActive && onGuideAnticipationChanged)
-      onGuideAnticipationChanged(guideAnticipationBox.getSelectedId() - 1);
-  };
-  addChildComponent(guideAnticipationBox);
+  guideAlignmentLabel.setTooltip(L10n::tr("Secciones en el compás siguiente al anuncio. Arrastra las marcas para ajustarlas.",
+      "Sections start in the bar after the announcement. Drag markers to adjust them."));
   guideAlignmentAcceptButton.setButtonText(L10n::tr("Confirmar", "Confirm"));
   guideAlignmentAcceptButton.setComponentID("guide-alignment-accept");
   guideAlignmentCancelButton.setButtonText(L10n::tr("Cancelar", "Cancel"));
@@ -2013,14 +2049,12 @@ void WaveformBar::setGuideAlignmentPreview(const playworship::analysis::GuideAli
     cancelDeferredPartJumpFromDoubleClick();
     clearSectionInsertionAnchor();
     dragMode = DragMode::none;
-    guideOriginDragging = guideBoundaryDragging = guidePanning = false;
+    guideOriginDragging = guideBoundaryDragging = guideSecondaryDragging = guidePanning = false;
   }
   guideAlignmentPreview = draft;
   guideAlignmentError = draft.error;
   guideAlignmentActive = true;
   sectionDetectionPreview.clear();
-  guideAnticipationBox.setSelectedId(juce::jlimit(0, 2, draft.options.anticipationBars) + 1,
-                                    juce::dontSendNotification);
   resized();
   repaint();
 }
@@ -2030,8 +2064,8 @@ void WaveformBar::clearGuideAlignmentPreview() {
   guideAlignmentActive = false;
   guideAlignmentPreview = {};
   guideAlignmentError.clear();
-  guideOriginDragging = guideBoundaryDragging = guidePanning = false;
-  guideDraggedId.clear(); guideRenamingId.clear();
+  guideOriginDragging = guideBoundaryDragging = guideSecondaryDragging = guidePanning = false;
+  guideDraggedId.clear(); guideSelectedSecondaryId.clear(); guideRenamingId.clear();
   guideNameEditor.setVisible(false);
   guideAlignmentMarkers.clear(); guideOriginPill = {}; guideOriginHit = {};
   setMouseCursor(juce::MouseCursor::NormalCursor);
@@ -2040,12 +2074,10 @@ void WaveformBar::clearGuideAlignmentPreview() {
 
 void WaveformBar::setGuideAlignmentCallbacks(std::function<void(double)> originMoved,
     std::function<void(const juce::String &, double, bool)> boundaryMoved,
-    std::function<void()> accept, std::function<void()> cancel,
-    std::function<void(int)> anticipationChanged) {
+    std::function<void()> accept, std::function<void()> cancel) {
   onGuideOriginMoved = std::move(originMoved);
   onGuideBoundaryMoved = std::move(boundaryMoved);
   onGuideAlignmentAccept = std::move(accept); onGuideAlignmentCancel = std::move(cancel);
-  onGuideAnticipationChanged = std::move(anticipationChanged);
 }
 
 void WaveformBar::setGuideAlignmentError(juce::String error) {
@@ -2061,9 +2093,14 @@ void WaveformBar::setOnGuideAlignmentRemove(std::function<void(const juce::Strin
   onGuideAlignmentRemove = std::move(callback);
 }
 
+void WaveformBar::setOnGuideSecondaryCueMove(
+    std::function<void(const juce::String &, double, bool)> callback) {
+  onGuideSecondaryCueMove = std::move(callback);
+}
+
 void WaveformBar::layoutGuideAlignmentToolbar() {
   for (auto *component : std::initializer_list<juce::Component *>{&guideAlignmentLabel,
-       &guideAnticipationBox, &guideAlignmentAcceptButton, &guideAlignmentCancelButton})
+       &guideAlignmentAcceptButton, &guideAlignmentCancelButton})
     component->setVisible(guideAlignmentActive && !liveMode);
   guideAlignmentToolbarBounds = {};
   if (!guideAlignmentActive || liveMode) return;
@@ -2073,9 +2110,8 @@ void WaveformBar::layoutGuideAlignmentToolbar() {
   guideAlignmentLabel.setBounds(row.removeFromLeft(compact ? 85 : 108));
   guideAlignmentCancelButton.setBounds(row.removeFromRight(compact ? 77 : 88).reduced(2, 0));
   guideAlignmentAcceptButton.setBounds(row.removeFromRight(compact ? 82 : 98).reduced(2, 0));
-  row.removeFromLeft(3);
-  guideAnticipationBox.setBounds(row.removeFromLeft(juce::jmin(compact ? 110 : 140, row.getWidth())));
-  guideAlignmentAcceptButton.setEnabled(!guideAlignmentPreview.suggestions.empty() && guideAlignmentPreview.error.isEmpty());
+  guideAlignmentAcceptButton.setEnabled((!guideAlignmentPreview.suggestions.empty() ||
+      !guideAlignmentPreview.secondaryCues.empty()) && guideAlignmentPreview.error.isEmpty());
   rebuildGuideAlignmentMarkers();
 }
 
@@ -2101,7 +2137,11 @@ void WaveformBar::rebuildGuideAlignmentMarkers() {
     guideOriginHit = {originX - 7.0f, ruler.getY(), 14.0f, ruler.getHeight() + 8.0f};
   }
   std::array<float, 3> rightEdges{{-10000, -10000, -10000}};
-  const int rowCount = juce::jlimit(1, 3, int((body.getHeight() - 20.0f) / 24.0f));
+  const float primaryHeight = guideAlignmentPreview.secondaryCues.empty()
+      ? body.getHeight() : body.getHeight() * 0.5f;
+  const int rowCount = juce::jlimit(1, 3, guideAlignmentPreview.secondaryCues.empty()
+      ? int((primaryHeight - 20.0f) / 24.0f)
+      : 1 + int(juce::jmax(0.0f, primaryHeight - 28.0f) / 24.0f));
   const auto font = makeAppFont(11.5f, AppFontWeight::SemiBold);
   for (const auto &suggestion : guideAlignmentPreview.suggestions) {
     const float x = guideAlignmentTimeX(suggestion.startSeconds);
@@ -2117,18 +2157,44 @@ void WaveformBar::rebuildGuideAlignmentMarkers() {
         {left, body.getY() + 7.0f + row * 24.0f, width, 21.0f},
         {x - 6.0f, body.getY(), 12.0f, body.getHeight()}, x});
   }
+  const float pointTarget = minimalPhoneMode || useTouchOptimisedControls() ? 44.0f : 24.0f;
+  const float secondaryTop = body.getY() + juce::jmin(80.0f, body.getHeight() * 0.55f);
+  const int secondaryRows = juce::jlimit(1, 3,
+      1 + int(juce::jmax(0.0f, body.getBottom() - 28.0f - secondaryTop) / 24.0f));
+  CueMarkerPacking packing(body, body.getBottom() - 18.0f, -24.0f, secondaryRows, pointTarget);
+  const auto secondaryFont = makeAppFont(10.5f, AppFontWeight::SemiBold);
+  for (const auto &cue : guideAlignmentPreview.secondaryCues) {
+    if (body.getWidth() < 48.0f || body.getHeight() < 64.0f) break;
+    const float x = guideAlignmentTimeX(cue.timeSeconds);
+    if (!std::isfinite(x) || x < body.getX() || x > body.getRight()) continue;
+    SongArrangementCueSnapshot display; display.name = cue.name;
+    const float width = compactCountName(cue.name) ? 24.0f
+        : juce::jmin(174.0f, juce::GlyphArrangement::getStringWidth(secondaryFont, guideCueLabel(display)) + 14.0f);
+    const auto placement = packing.place(x, width);
+    guideAlignmentMarkers.push_back({cue.id, placement.label, placement.pointHit,
+        x, true, placement.point});
+  }
   if (guideRenamingId.isNotEmpty())
     for (const auto &marker : guideAlignmentMarkers) if (marker.id == guideRenamingId)
       guideNameEditor.setBounds(marker.pill.expanded(2).toNearestInt());
 }
 
 int WaveformBar::hitGuideAlignmentMarker(const juce::Point<float> point) const {
+  int pointHit = -1;
+  float pointDistance = std::numeric_limits<float>::max();
+  for (size_t i = 0; i < guideAlignmentMarkers.size(); ++i) {
+    const auto &marker = guideAlignmentMarkers[i];
+    if (!marker.secondary || !marker.lineHit.contains(point)) continue;
+    const float distance = marker.point.getDistanceSquaredFrom(point);
+    if (distance < pointDistance) { pointHit = int(i); pointDistance = distance; }
+  }
+  if (pointHit >= 0) return pointHit;
   for (size_t i = guideAlignmentMarkers.size(); i > 0; --i)
     if (guideAlignmentMarkers[i - 1].pill.contains(point)) return int(i - 1);
   int nearest = -1; float distance = 7;
   for (size_t i = 0; i < guideAlignmentMarkers.size(); ++i) {
     const auto &marker = guideAlignmentMarkers[i];
-    if (marker.lineHit.contains(point) && std::abs(point.x - marker.x) < distance) {
+    if (!marker.secondary && marker.lineHit.contains(point) && std::abs(point.x - marker.x) < distance) {
       nearest = int(i); distance = std::abs(point.x - marker.x);
     }
   }
@@ -2145,6 +2211,14 @@ void WaveformBar::beginGuideAlignmentRename(const juce::String &id) {
     guideNameEditor.grabKeyboardFocus(); guideNameEditor.selectAll();
     return;
   }
+  for (const auto &cue : guideAlignmentPreview.secondaryCues) if (cue.id == id) {
+    guideRenamingId = id;
+    guideNameEditor.setText(cue.name, false);
+    rebuildGuideAlignmentMarkers();
+    guideNameEditor.setVisible(true); guideNameEditor.toFront(true);
+    guideNameEditor.grabKeyboardFocus(); guideNameEditor.selectAll();
+    return;
+  }
 }
 
 void WaveformBar::finishGuideAlignmentRename(const bool save) {
@@ -2153,17 +2227,18 @@ void WaveformBar::finishGuideAlignmentRename(const bool save) {
   const auto name = guideNameEditor.getText().trim();
   guideRenamingId.clear(); guideNameEditor.setVisible(false);
   if (save && guideAlignmentActive && onGuideAlignmentRename) {
-    if (name.isEmpty()) setGuideAlignmentError(L10n::tr("Escribe un nombre para esta sección.", "Enter a section name."));
+    if (name.isEmpty()) setGuideAlignmentError(L10n::tr("Escribe un nombre para esta marca.", "Enter a marker name."));
     else onGuideAlignmentRename(id, name);
   }
 }
 
 bool WaveformBar::applyDetectedSections(const SongArrangementSnapshot &snapshot) {
   if (sectionAutomationEditingPartId.isNotEmpty() || songLoadingActive ||
-      snapshot.parts.size() <= arrangement.parts.size() ||
+      snapshot.parts.size() < arrangement.parts.size() || snapshot.cues.size() < arrangement.cues.size() ||
+      (snapshot.parts.size() == arrangement.parts.size() && snapshot.cues.size() == arrangement.cues.size()) ||
       snapshot.parts.size() > static_cast<size_t>(
           playworship::audio::SectionScheduler::maxSections) ||
-      snapshot.cues != arrangement.cues)
+      arrangementCueEventCount(snapshot) > kMaxArrangementCueEvents)
     return false;
   const auto samePart = [](const auto &a, const auto &b) {
     return a.id == b.id && a.name == b.name && a.color == b.color &&
@@ -2180,17 +2255,27 @@ bool WaveformBar::applyDetectedSections(const SongArrangementSnapshot &snapshot)
     if (found == snapshot.parts.end() || !samePart(*found, part))
       return false;
   }
+  for (const auto &cue : arrangement.cues) {
+    const auto found = std::find_if(snapshot.cues.begin(), snapshot.cues.end(),
+        [&](const auto &candidate) { return candidate.id == cue.id; });
+    if (found == snapshot.cues.end() || !(*found == cue)) return false;
+  }
   const double sourceLength = getWaveformSourceLengthSeconds();
+  if (!std::isfinite(sourceLength) || sourceLength <= 0.0) return false;
+  juce::StringArray ids;
   for (size_t i = 0; i < snapshot.parts.size(); ++i) {
     const auto &part = snapshot.parts[i];
-    if (part.id.isEmpty()) return false;
-    for (size_t j = 0; j < i; ++j)
-      if (snapshot.parts[j].id == part.id) return false;
+    if (part.id.trim().isEmpty() || ids.contains(part.id)) return false;
+    ids.add(part.id);
     if (std::any_of(arrangement.parts.begin(), arrangement.parts.end(),
                     [&](const auto &existing) { return existing.id == part.id; }))
       continue;
     if (!std::isfinite(part.startSec) || !std::isfinite(part.endSec) ||
+        !std::isfinite(part.sourceStartSec) || !std::isfinite(part.sourceEndSec) ||
         part.startSec < 0.0 || part.endSec > sourceLength ||
+        (part.sourceEndSec > part.sourceStartSec &&
+         (std::abs(part.startSec - part.sourceStartSec) > 0.000001 ||
+          std::abs(part.endSec - part.sourceEndSec) > 0.000001)) ||
         part.endSec - part.startSec < kMinPartDurationSec ||
         part.name.trim().isEmpty() || part.sourcePartId.isNotEmpty() ||
         part.utilityCue || part.muteInstruments || part.skipPlayback ||
@@ -2202,6 +2287,36 @@ bool WaveformBar::applyDetectedSections(const SongArrangementSnapshot &snapshot)
       if (part.startSec < other.endSec && part.endSec > other.startSec)
         return false;
     }
+  }
+  double previousCueTime = -1.0;
+  for (const auto &cue : snapshot.cues) {
+    if (cue.id.trim().isEmpty() || ids.contains(cue.id)) return false;
+    ids.add(cue.id);
+    const double time = resolveArrangementCueSeconds(snapshot, cue);
+    if (!std::isfinite(time) || time < previousCueTime) return false;
+    previousCueTime = time;
+    if (std::any_of(arrangement.cues.begin(), arrangement.cues.end(),
+                    [&](const auto &existing) { return existing.id == cue.id; })) continue;
+    SongArrangementCueSnapshot decoded;
+    if (cue.name.trim().isEmpty() || cue.name.length() > 128 ||
+        !arrangementCueFromVar(arrangementCueToVar(cue), decoded) ||
+        !(decoded == cue) || !std::isfinite(cue.positionSec) || cue.positionSec < 0.0 ||
+        cue.positionSec >= sourceLength || time < 0.0 || time >= sourceLength ||
+        std::abs(time - cue.positionSec) > 0.000001)
+      return false;
+    if (cue.partId.isNotEmpty()) {
+      const auto parent = std::find_if(snapshot.parts.begin(), snapshot.parts.end(),
+          [&](const auto &part) { return part.id == cue.partId; });
+      if (parent == snapshot.parts.end() || cue.positionSec < parent->startSec ||
+          cue.positionSec >= parent->endSec || cue.offsetSec < 0.0 ||
+          cue.offsetSec >= parent->endSec - parent->startSec)
+        return false;
+    }
+    const int first = cue.name.getIntValue();
+    const double lastOffset = !cue.countOffsetsSec.empty() ? cue.countOffsetsSec.back()
+        : cue.countEnd > 0 ? (cue.countEnd - first) * cue.countIntervalSec : 0.0;
+    if (!std::isfinite(lastOffset) || !std::isfinite(time + lastOffset) ||
+        time + lastOffset >= sourceLength) return false;
   }
   pushArrangementUndoSnapshot();
   arrangement = snapshot;
@@ -2409,7 +2524,6 @@ void WaveformBar::refreshThemeColours() {
   }
   guideAlignmentAcceptButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
   guideAlignmentAcceptButton.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
-  applyComboBoxTheme(guideAnticipationBox, UITheme::cardBgHover, UITheme::cardBorder.withAlpha(0.75f));
   applyTextEditorTheme(guideNameEditor, UITheme::cardBg, UITheme::accent);
   sectionAutomationLabel.setColour(juce::Label::textColourId, UITheme::accent);
   for (auto *button : std::initializer_list<juce::TextButton *>{
@@ -2735,7 +2849,7 @@ void WaveformBar::resized() {
   if (guideAlignmentActive) {
     for (int i = 0; i < getNumChildComponents(); ++i) {
       auto *component = getChildComponent(i);
-      if (component != &guideAlignmentLabel && component != &guideAnticipationBox &&
+      if (component != &guideAlignmentLabel &&
           component != &guideAlignmentAcceptButton && component != &guideAlignmentCancelButton &&
           component != &guideNameEditor) component->setVisible(false);
     }
@@ -3612,8 +3726,10 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     if (songLoadingActive || midiLearnActive || guideAlignmentToolbarBounds.toFloat().contains(event.position)) return;
     finishGuideAlignmentRename(true);
     rebuildGuideAlignmentMarkers();
-    guideOriginDragging = guideBoundaryDragging = guidePanning = false;
+    guideOriginDragging = guideBoundaryDragging = guideSecondaryDragging = guidePanning = false;
     const int hit = hitGuideAlignmentMarker(event.position);
+    guideSelectedSecondaryId = hit >= 0 && guideAlignmentMarkers[size_t(hit)].secondary
+        ? guideAlignmentMarkers[size_t(hit)].id : juce::String{};
     if (event.mods.isPopupMenu()) {
       if (hit >= 0) {
         const auto id = guideAlignmentMarkers[size_t(hit)].id;
@@ -3639,9 +3755,17 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
       guideOriginDragging = true;
       guideDragSourceStart = guideAlignmentPreview.options.originSeconds;
     } else if (hit >= 0) {
-      guideBoundaryDragging = true; guideDraggedId = guideAlignmentMarkers[size_t(hit)].id;
-      for (const auto &suggestion : guideAlignmentPreview.suggestions)
-        if (suggestion.id == guideDraggedId) guideDragSourceStart = suggestion.startSeconds;
+      const auto &marker = guideAlignmentMarkers[size_t(hit)];
+      guideDraggedId = marker.id;
+      if (marker.secondary) {
+        guideSecondaryDragging = true;
+        for (const auto &cue : guideAlignmentPreview.secondaryCues)
+          if (cue.id == guideDraggedId) guideDragSourceStart = cue.timeSeconds;
+      } else {
+        guideBoundaryDragging = true;
+        for (const auto &suggestion : guideAlignmentPreview.suggestions)
+          if (suggestion.id == guideDraggedId) guideDragSourceStart = suggestion.startSeconds;
+      }
     } else if (body.contains(event.position) || ruler.contains(event.position)) {
       guidePanning = true;
     } else {
@@ -4003,12 +4127,14 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     const auto body = getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
     if (body.getWidth() < 2) return;
     const float delta = (event.position.x - guideDragStart.x) / body.getWidth();
-    if (guideOriginDragging || guideBoundaryDragging) {
+    if (guideOriginDragging || guideBoundaryDragging || guideSecondaryDragging) {
       const double target = juce::jlimit(0.0, guideAlignmentPreview.durationSeconds,
           guideDragSourceStart + double(delta * guideDragViewportSpan) * getSongLengthSeconds());
       if (guideOriginDragging && onGuideOriginMoved) onGuideOriginMoved(target);
       else if (guideBoundaryDragging && onGuideBoundaryMoved)
         onGuideBoundaryMoved(guideDraggedId, target, !event.mods.isAltDown());
+      else if (guideSecondaryDragging && onGuideSecondaryCueMove)
+        onGuideSecondaryCueMove(guideDraggedId, target, !event.mods.isAltDown());
     } else if (guidePanning) {
       setVisibleWindow(guideDragViewportStart - delta * guideDragViewportSpan, guideDragViewportSpan);
     }
@@ -4590,7 +4716,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 void WaveformBar::mouseUp(const juce::MouseEvent &event) {
   if (guideAlignmentActive) {
     const bool tap = guidePanning && event.position.getDistanceFrom(guideDragStart) < 5;
-    guideOriginDragging = guideBoundaryDragging = guidePanning = false;
+    guideOriginDragging = guideBoundaryDragging = guideSecondaryDragging = guidePanning = false;
     guideDraggedId.clear();
     if (tap) {
       const auto body = getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
@@ -4975,6 +5101,12 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
   if (guideAlignmentActive) {
     if (key == juce::KeyPress::escapeKey && onGuideAlignmentCancel) onGuideAlignmentCancel();
     else if (key == juce::KeyPress::returnKey && onGuideAlignmentAccept && guideAlignmentAcceptButton.isEnabled()) onGuideAlignmentAccept();
+    else if ((key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) &&
+        guideSelectedSecondaryId.isNotEmpty() && onGuideAlignmentRemove) {
+      const auto id = guideSelectedSecondaryId;
+      guideSelectedSecondaryId.clear();
+      onGuideAlignmentRemove(id);
+    }
     // A review never edits the committed arrangement through its old shortcuts.
     return true;
   }
@@ -5041,7 +5173,7 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
 
 void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                                  const juce::MouseWheelDetails &wheel) {
-  if (guideAlignmentActive && (guideOriginDragging || guideBoundaryDragging)) return;
+  if (guideAlignmentActive && (guideOriginDragging || guideBoundaryDragging || guideSecondaryDragging)) return;
   if (liveMode) {
     if (!songLoadingActive && !midiLearnActive && getLiveRowBounds().contains(event.position)) {
       if (wheel.isInertial && (liveSuppressNativeMomentum || livePointerActive)) return;
@@ -5104,7 +5236,7 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                                float magnifyAmount) {
-  if (guideAlignmentActive && (guideOriginDragging || guideBoundaryDragging)) return;
+  if (guideAlignmentActive && (guideOriginDragging || guideBoundaryDragging || guideSecondaryDragging)) return;
   if (liveMode) { stopLiveScrollMotion(); suspendLiveFollow(); livePointerMoved = true; return; }
   if (touchWaveformNavigationActive) touchWaveformTapCancelled = true;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
@@ -7726,6 +7858,33 @@ void WaveformBar::drawGuideAlignmentPreview(juce::Graphics &g,
   }
   for (size_t i = 0; i < guideAlignmentMarkers.size(); ++i) {
     const auto &marker = guideAlignmentMarkers[i];
+    if (marker.secondary) {
+      const auto cue = std::find_if(guideAlignmentPreview.secondaryCues.begin(), guideAlignmentPreview.secondaryCues.end(),
+          [&](const auto &candidate) { return candidate.id == marker.id; });
+      if (cue == guideAlignmentPreview.secondaryCues.end()) continue;
+      const bool count = playworship::analysis::isGuideCountCue(cue->name);
+      const auto colour = count ? juce::Colour::fromRGB(91, 169, 218)
+                                : juce::Colour::fromRGB(224, 171, 91);
+      const float y = marker.point.y;
+      g.setColour(colour.withAlpha(0.32f));
+      g.drawLine(marker.x, y + 5.0f, marker.x, body.getBottom() - 3.0f, 0.8f);
+      const float labelAnchorX = marker.pill.getX() - 10.0f;
+      if (std::abs(marker.x - labelAnchorX) > 0.5f)
+        g.drawLine(marker.x, y, labelAnchorX, y, 0.8f);
+      g.setColour(UITheme::panelDark.withAlpha(0.94f));
+      g.fillRoundedRectangle(marker.pill, 5.0f);
+      g.setColour(colour.withAlpha(0.48f));
+      g.drawRoundedRectangle(marker.pill.reduced(0.5f), 5.0f, 0.8f);
+      g.setColour(colour);
+      g.fillEllipse(marker.point.x - 4.0f, y - 4.0f, 8.0f, 8.0f);
+      SongArrangementCueSnapshot display; display.name = cue->name;
+      const bool compactCount = compactCountName(cue->name);
+      g.setColour(UITheme::textPrimary);
+      g.setFont(makeAppFont(10.5f, AppFontWeight::SemiBold));
+      g.drawFittedText(compactCount ? cue->name : guideCueLabel(display), marker.pill.toNearestInt().reduced(7, 0),
+                       juce::Justification::centredLeft, 1);
+      continue;
+    }
     const auto found = std::find_if(guideAlignmentPreview.suggestions.begin(), guideAlignmentPreview.suggestions.end(),
         [&](const auto &suggestion) { return suggestion.id == marker.id; });
     if (found == guideAlignmentPreview.suggestions.end()) continue;
@@ -7742,6 +7901,16 @@ void WaveformBar::drawGuideAlignmentPreview(juce::Graphics &g,
     g.setFont(makeAppFont(11.5f, AppFontWeight::SemiBold));
     g.drawFittedText(found->displayName, marker.pill.withTrimmedLeft(15).reduced(3, 0).toNearestInt(),
                      juce::Justification::centredLeft, 1);
+  }
+  // Labels may move along a row to remain readable. Draw the fixed temporal
+  // points last so a later packed label cannot hide an earlier cue's instant.
+  for (const auto &marker : guideAlignmentMarkers) if (marker.secondary) {
+    const auto cue = std::find_if(guideAlignmentPreview.secondaryCues.begin(), guideAlignmentPreview.secondaryCues.end(),
+        [&](const auto &candidate) { return candidate.id == marker.id; });
+    if (cue == guideAlignmentPreview.secondaryCues.end()) continue;
+    g.setColour(playworship::analysis::isGuideCountCue(cue->name)
+        ? juce::Colour::fromRGB(91, 169, 218) : juce::Colour::fromRGB(224, 171, 91));
+    g.fillEllipse(marker.point.x - 4.0f, marker.point.y - 4.0f, 8.0f, 8.0f);
   }
   if (guideAlignmentError.isNotEmpty()) {
     auto errorBounds = body.withHeight(24).withY(body.getBottom() - 26).reduced(5, 0);
@@ -9281,16 +9450,31 @@ void WaveformBar::rebuildCueMarkers() {
     std::stable_sort(positions.begin(), positions.end(), [](const auto &a, const auto &b) {
       return a.first < b.first;
     });
-    // Editing stacks the complete point+label footprint. Performance keeps
-    // only independent points and their small interaction targets.
+    // Saved editing uses the same compact packing as provisional review.
+    // Performance keeps its independent points and small interaction targets.
     std::vector<std::vector<juce::Range<float>>> occupiedRows;
     // Leave the primary section title, timing and contextual actions reachable.
     const float top = safeBody.getY() + juce::jmin(isEditingArrangement() ? 68.0f : 30.0f,
                                                  safeBody.getHeight() - labelHeight);
+    const int editingRows = 1 + int(juce::jmax(0.0f,
+        safeBody.getBottom() - top - labelHeight) / rowStep);
+    CueMarkerPacking editingPacking(safeBody, top + labelHeight * 0.5f, rowStep, editingRows, target);
     for (const auto &[x, id] : positions) {
       const int index = findCueIndexById(id);
       if (index < 0) continue;
-      const auto text = guideCueLabel(arrangement.cues[static_cast<size_t>(index)]);
+      const auto &cue = arrangement.cues[static_cast<size_t>(index)];
+      const auto text = guideCueLabel(cue);
+      if (editing) {
+        const float requestedWidth = cue.countEnd == 0 && compactCountName(cue.name) ? 24.0f
+            : juce::jmin(174.0f, juce::GlyphArrangement::getStringWidth(font, text) + 14.0f);
+        const auto placement = editingPacking.place(x, requestedWidth);
+        CueMarkerBounds marker;
+        marker.id = id; marker.x = x; marker.pointX = placement.point.x; marker.y = placement.point.y;
+        marker.label = placement.label; marker.pointHit = placement.pointHit;
+        marker.hit = placement.pointHit.getUnion(placement.label).getIntersection(safeBody);
+        cueMarkerBounds.push_back(std::move(marker));
+        continue;
+      }
       const float width = juce::jmin(safeBody.getWidth() - 20.0f,
           juce::jmin(174.0f, juce::GlyphArrangement::getStringWidth(font, text) + 14.0f));
       const float pointX = juce::jlimit(safeBody.getX() + 6.0f, safeBody.getRight() - 6.0f, x);
@@ -9327,7 +9511,8 @@ void WaveformBar::rebuildCueMarkers() {
   }
   while (cueMarkerButtons.size() < cueMarkerBounds.size()) {
     const auto index = cueMarkerButtons.size();
-    auto button = std::make_unique<CueMarkerButton>(*this);
+    auto button = std::make_unique<CueMarkerButton>(*this,
+        [this, index](juce::Point<float> point) { return hitTestCueMarker(point) == int(index); });
     button->setViewportIgnoreDragFlag(true);
     button->onClick = [this, index] {
       if (index < cueMarkerBounds.size()) {
@@ -9363,8 +9548,8 @@ void WaveformBar::drawCueMarkers(juce::Graphics &g) const {
   const auto body = getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
   juce::Graphics::ScopedSaveState save(g);
   g.reduceClipRegion(body.toNearestInt());
-  // All stems retain the exact temporal x; only the point and its label move
-  // vertically to avoid collisions. Edge points connect to their true time.
+  // Every cue dot retains its exact temporal x. Editing only packs labels in
+  // available rows; a connector links a displaced label to its source point.
   if (isEditingArrangement()) for (const auto &marker : cueMarkerBounds) {
     if (marker.hit.isEmpty()) continue;
     const int index = findCueIndexById(marker.id);
@@ -9384,9 +9569,10 @@ void WaveformBar::drawCueMarkers(juce::Graphics &g) const {
         ? juce::Colour::fromString(cue.color) : UITheme::accent;
     const bool selected = marker.id == selectedCueId;
     const float pointX = marker.pointX;
-    if (isEditingArrangement() && std::abs(marker.x - pointX) > 0.5f) {
+    const float labelAnchorX = marker.label.getX() - 10.0f;
+    if (isEditingArrangement() && std::abs(marker.x - labelAnchorX) > 0.5f) {
       g.setColour(colour.withAlpha(0.5f));
-      g.drawLine(pointX, marker.y + 5.0f, marker.x, marker.y + 9.0f, 0.8f);
+      g.drawLine(pointX, marker.y, labelAnchorX, marker.y, 0.8f);
     }
     if (isEditingArrangement()) {
       g.setColour(UITheme::panelDark.withAlpha(selected ? 0.96f : 0.88f));
@@ -9405,9 +9591,19 @@ void WaveformBar::drawCueMarkers(juce::Graphics &g) const {
     if (isEditingArrangement()) {
       g.setFont(makeAppFont(minimalPhoneMode || useTouchOptimisedControls() ? 11.5f : 10.5f,
                           AppFontWeight::SemiBold));
-      g.drawFittedText(guideCueLabel(cue), marker.label.toNearestInt().reduced(7, 0),
+      const bool compactCount = cue.countEnd == 0 && compactCountName(cue.name);
+      g.drawFittedText(compactCount ? cue.name : guideCueLabel(cue), marker.label.toNearestInt().reduced(7, 0),
                       juce::Justification::centredLeft, 1);
     }
+  }
+  if (isEditingArrangement()) for (const auto &marker : cueMarkerBounds) {
+    if (marker.hit.isEmpty()) continue;
+    const int index = findCueIndexById(marker.id);
+    if (index < 0) continue;
+    const auto &cue = arrangement.cues[static_cast<size_t>(index)];
+    g.setColour(isArrangementPartColorValid(cue.color)
+        ? juce::Colour::fromString(cue.color) : UITheme::accent);
+    g.fillEllipse(marker.pointX - 4.0f, marker.y - 4.0f, 8.0f, 8.0f);
   }
 }
 
@@ -9416,10 +9612,13 @@ int WaveformBar::hitTestCueMarker(juce::Point<float> position) const {
   float distance = std::numeric_limits<float>::max();
   for (size_t i = 0; i < cueMarkerBounds.size(); ++i) {
     const auto &marker = cueMarkerBounds[i];
-    if (!marker.hit.contains(position)) continue;
+    if (!marker.pointHit.contains(position)) continue;
     const float d = position.getDistanceSquaredFrom({marker.pointX, marker.y});
     if (d < distance) { distance = d; best = static_cast<int>(i); }
   }
+  if (best >= 0) return best;
+  if (isEditingArrangement()) for (size_t i = 0; i < cueMarkerBounds.size(); ++i)
+    if (cueMarkerBounds[i].label.contains(position)) return int(i);
   return best;
 }
 

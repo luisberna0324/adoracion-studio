@@ -66,9 +66,24 @@ struct WaveformEditingTestAccess {
     throw std::runtime_error("guide marker missing from viewport");
   }
   static int guideMarkerCount(WaveformBar &wave) { wave.rebuildGuideAlignmentMarkers(); return int(wave.guideAlignmentMarkers.size()); }
+  static juce::Rectangle<float> guideMarkerPill(WaveformBar &wave, const juce::String &id) {
+    wave.rebuildGuideAlignmentMarkers();
+    for (const auto &marker : wave.guideAlignmentMarkers) if (marker.id == id) return marker.pill;
+    throw std::runtime_error("guide label missing from viewport");
+  }
+  static juce::Point<float> guideSecondaryPoint(WaveformBar &wave, const juce::String &id) {
+    wave.rebuildGuideAlignmentMarkers();
+    for (const auto &marker : wave.guideAlignmentMarkers)
+      if (marker.id == id && marker.secondary) return marker.point;
+    throw std::runtime_error("secondary guide point missing from viewport");
+  }
+  static juce::String guideHitId(WaveformBar &wave, juce::Point<float> position) {
+    wave.rebuildGuideAlignmentMarkers();
+    const int hit = wave.hitGuideAlignmentMarker(position);
+    return hit >= 0 ? wave.guideAlignmentMarkers[size_t(hit)].id : juce::String{};
+  }
   static auto &guideAccept(WaveformBar &wave) { return wave.guideAlignmentAcceptButton; }
   static auto &guideCancel(WaveformBar &wave) { return wave.guideAlignmentCancelButton; }
-  static auto &guideAnticipation(WaveformBar &wave) { return wave.guideAnticipationBox; }
   static auto &guideRename(WaveformBar &wave) { return wave.guideNameEditor; }
   static auto &suggestSections(WaveformBar &wave) { return wave.suggestSectionsButton; }
   static juce::String bpmText(TopBar &bar) {
@@ -309,6 +324,43 @@ struct WaveformEditingTestAccess {
   static size_t markerCount(WaveformBar &waveform) {
     waveform.rebuildCueMarkers(); return waveform.cueMarkerBounds.size();
   }
+  static juce::Button &nativeCueButton(WaveformBar &waveform, const juce::String &id) {
+    waveform.rebuildCueMarkers();
+    for (size_t i = 0; i < waveform.cueMarkerBounds.size(); ++i) {
+      const auto &marker = waveform.cueMarkerBounds[i];
+      if (marker.id != id) continue;
+      const auto point = juce::Point<float>{marker.pointX, marker.y};
+      auto &button = *waveform.cueMarkerButtons[i];
+      expect(!marker.hit.isEmpty() && marker.hit.contains(point) &&
+                 waveform.hitTestCueMarker(point) == int(i),
+             "each saved cue retains an independent waveform hit target");
+      expect(button.isVisible() && button.isEnabled() &&
+                 button.getBounds().contains(point.toInt()) &&
+                 waveform.getComponentAt(point.toInt()) == &button,
+             "the native cue button remains visible and receives its point gesture");
+      return button;
+    }
+    throw std::runtime_error("missing native cue button");
+  }
+  static juce::Rectangle<float> cueLabel(WaveformBar &waveform, const juce::String &id) {
+    waveform.rebuildCueMarkers();
+    for (const auto &marker : waveform.cueMarkerBounds)
+      if (marker.id == id) return marker.label;
+    throw std::runtime_error("missing saved cue label");
+  }
+  static double cueSourceX(WaveformBar &waveform, const juce::String &id) {
+    waveform.rebuildCueMarkers();
+    for (const auto &marker : waveform.cueMarkerBounds)
+      if (marker.id == id) return marker.x;
+    throw std::runtime_error("missing saved cue temporal reference");
+  }
+  static void clickNativeCue(WaveformBar &waveform, const juce::String &id) {
+    juce::Component &button = nativeCueButton(waveform, id);
+    const auto point = cuePoint(waveform, id);
+    button.mouseDown(pointerEvent(waveform, point, point).getEventRelativeTo(&button));
+    button.mouseUp(pointerEvent(waveform, point, point).getEventRelativeTo(&button));
+    expect(waveform.selectedCueId == id, "a native point click selects only its saved cue");
+  }
   static void expectCueLabels(WaveformBar &waveform) {
     waveform.rebuildCueMarkers();
     const auto body = waveBody(waveform);
@@ -422,12 +474,21 @@ struct WaveformEditingTestAccess {
   static juce::Point<float> bodyPoint(WaveformBar &waveform,
                                      const juce::String &id) {
     const auto bounds = overlay(waveform, id).body;
-    // The edit toolbar is near the top; the lower body starts a part move.
+    // Prefer the lower body, then the area below the section toolbar. A dense
+    // guide arrangement may legitimately fill the available lower cue rows.
     waveform.rebuildCueMarkers();
-    for (const float ratio : {0.5f, 0.75f, 0.25f}) {
-      const juce::Point<float> point(bounds.getX() + bounds.getWidth() * ratio,
-                                     bounds.getBottom() - 20.0f);
-      if (waveform.hitTestCueMarker(point) < 0) return point;
+    for (const float y : {bounds.getBottom() - 20.0f, bounds.getCentreY(),
+                          bounds.getY() + 60.0f, bounds.getY() + 16.0f}) {
+      for (const float ratio : {0.5f, 0.75f, 0.25f}) {
+        const juce::Point<float> point(bounds.getX() + bounds.getWidth() * ratio, y);
+        const auto hit = waveform.hitTestArrangementPart(point);
+        if (waveform.hitTestCueMarker(point) < 0 &&
+            hit.partIndex == waveform.findPartIndexById(id) &&
+            !hit.leftEdge && !hit.rightEdge && !hit.deleteButton && !hit.loopButton &&
+            !hit.jumpButton && !hit.duplicateButton && !hit.addButton && !hit.muteButton &&
+            !hit.overflowButton && !hit.skipButton && !hit.automateButton)
+          return point;
+      }
     }
     throw std::runtime_error("no free section body point");
   }
@@ -3417,7 +3478,7 @@ void testDetectedSectionsReviewAndHistory() {
 
 playworship::analysis::GuideAlignmentDraft guideDraftFixture() {
   playworship::analysis::GuideAlignmentDraft draft;
-  draft.options.originSeconds = 1.0; draft.options.bpm = 120; draft.options.anticipationBars = 1;
+  draft.options.originSeconds = 1.0; draft.options.bpm = 120;
   draft.durationSeconds = 30;
   for (int pulse = 0; pulse < 59; ++pulse)
     draft.grid.push_back({1.0 + pulse * 0.5, pulse / 4 + 1, pulse % 4 + 1, pulse % 4 == 0});
@@ -3470,11 +3531,7 @@ void testCalculatedGuideAlignmentReview() {
     const auto plan = appendConfirmedSuggestions(wave.getArrangementSnapshot(), draft.suggestions, draft.durationSeconds);
     expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement), "calculated review confirms through domain acceptance and ordinary history");
     wave.clearGuideAlignmentPreview();
-  }, [&] { wave.clearGuideAlignmentPreview(); }, [&](int anticipation) {
-    options.anticipationBars = anticipation;
-    draft = alignGuideSections(transcript, options);
-    wave.setGuideAlignmentPreview(draft);
-  });
+  }, [&] { wave.clearGuideAlignmentPreview(); });
   wave.setGuideAlignmentPreview(draft);
   const auto body = WaveformEditingTestAccess::waveBody(wave);
   const auto origin = WaveformEditingTestAccess::guideOrigin(wave);
@@ -3494,9 +3551,8 @@ void testCalculatedGuideAlignmentReview() {
   expectNear(draft.suggestions[0].endSeconds, 11.3, "local correction recalculates the preceding section end");
   expectNear(draft.suggestions[2].startSeconds, 18.5, "local correction preserves the later section start");
   expect(fixture.commits == 0 && wave.getArrangementSnapshot().parts.empty(), "calculated origin and boundary edits remain provisional");
-  WaveformEditingTestAccess::guideAnticipation(wave).setSelectedId(3, juce::sendNotificationSync);
-  expectNear(draft.suggestions[0].startSeconds, 6.5, "anticipation control rebuilds real proposed entries");
-  expectNear(draft.suggestions[1].startSeconds, 12.5, "new anticipation recalculates all entries from spoken evidence");
+  expectNear(draft.suggestions[0].startSeconds, 4.5, "automatic suggestions keep the following-bar policy");
+  expectNear(draft.suggestions[1].startSeconds, 11.3, "explicit marker correction remains available with fixed automatic anticipation");
   const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_CALCULATED_CAPTURE_PATH", {});
   if (capturePath.isNotEmpty()) {
     const juce::File file(capturePath);
@@ -3537,7 +3593,7 @@ void testGuideAlignmentWaveformReview() {
 
   auto draft = guideDraftFixture();
   double origin = -1, moved = -1; juce::String movedId; bool snapped = false;
-  int accepted = 0, cancelled = 0, anticipation = -1;
+  int accepted = 0, cancelled = 0;
   wave.setGuideAlignmentCallbacks([&](double value) {
     origin = value;
     const auto delta = value - draft.options.originSeconds;
@@ -3556,7 +3612,7 @@ void testGuideAlignmentWaveformReview() {
     }
     expect(wave.applyDetectedSections(snapshot), "confirm applies suggestions through ordinary arrangement transaction");
     ++accepted; wave.clearGuideAlignmentPreview();
-  }, [&] { ++cancelled; wave.clearGuideAlignmentPreview(); }, [&](int value) { anticipation = value; });
+  }, [&] { ++cancelled; wave.clearGuideAlignmentPreview(); });
   wave.setOnGuideAlignmentRename([&](juce::String id, juce::String name) {
     for (auto &suggestion : draft.suggestions) if (suggestion.id == id) suggestion.displayName = name;
     wave.setGuideAlignmentPreview(draft);
@@ -3598,8 +3654,6 @@ void testGuideAlignmentWaveformReview() {
   rename.setText("Coro", false); rename.onReturnKey();
   expect(draft.suggestions.front().displayName == "Coro" && fixture.commits == 0,
          "renaming updates only the transient draft via its callback");
-  WaveformEditingTestAccess::guideAnticipation(wave).setSelectedId(3, juce::sendNotificationSync);
-  expect(anticipation == 2, "anticipation control requests the selected whole-bar offset");
   expect(fixture.command('Z') && wave.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && fixture.commits == 0,
          "review absorbs old arrangement undo and delete shortcuts without mutating the base");
 
@@ -3628,6 +3682,590 @@ void testGuideAlignmentWaveformReview() {
          "Cancel clears markers and toolbar without persistence or history changes");
   wave.setGuideAlignmentPreview(draft); wave.resetPlaybackViewForSong();
   expect(!wave.hasGuideAlignmentPreview(), "song view reset removes review markers and toolbar");
+}
+
+void testGuideSecondaryWaveformReview() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  wave.setArrangement({}, false); wave.setSize(1200, 360);
+  auto draft = guideDraftFixture();
+  for (size_t i = 0; i < draft.suggestions.size(); ++i)
+    draft.suggestions[i].displayName = "Refrain " + juce::String(int(i) + 1);
+  const double positions[]{2, 6, 9, 12, 16, 19, 24, 27};
+  const char *names[]{"All In", "Build", "Drums In", "Breakdown", "Hold", "Bass", "Softly", "Last Time"};
+  for (int i = 0; i < 8; ++i) {
+    GuideSecondaryCueSuggestion cue;
+    cue.id = "secondary-review-" + juce::String(i); cue.name = cue.rawText = names[i];
+    cue.timeSeconds = cue.rawTimeSeconds = positions[i];
+    draft.secondaryCues.push_back(cue);
+  }
+  int seeks = 0, moves = 0, cancels = 0;
+  bool snapped = false;
+  wave.setSeekCallback([&](double) { ++seeks; });
+  wave.setGuideAlignmentCallbacks({}, {}, [&] {
+    const auto plan = appendConfirmedGuideSuggestions(wave.getArrangementSnapshot(), draft);
+    expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement),
+           "secondary review confirms using the ordinary additive arrangement transaction");
+    wave.clearGuideAlignmentPreview();
+  }, [&] { ++cancels; wave.clearGuideAlignmentPreview(); });
+  wave.setOnGuideSecondaryCueMove([&](const juce::String &id, double seconds, bool snap) {
+    ++moves; snapped = snap; juce::String error;
+    expect(moveGuideSecondaryCue(draft, id, seconds, snap, error), "secondary gesture uses the actual pulse calculation");
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setOnGuideAlignmentRename([&](juce::String id, juce::String name) {
+    for (auto &cue : draft.secondaryCues) if (cue.id == id) { cue.name = name; cue.userEdited = true; }
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setOnGuideAlignmentRemove([&](const juce::String &id) {
+    draft.secondaryCues.erase(std::remove_if(draft.secondaryCues.begin(), draft.secondaryCues.end(),
+        [&](const auto &cue) { return cue.id == id; }), draft.secondaryCues.end());
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setGuideAlignmentPreview(draft);
+  expect(WaveformEditingTestAccess::guideMarkerCount(wave) == 11 && fixture.commits == 0 &&
+             wave.getArrangementSnapshot().parts.empty() && wave.getArrangementSnapshot().cues.empty(),
+         "three corrected musical names and eight secondary points render without changing saved arrangement");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_SECONDARY_CAPTURE_PATH", {});
+  if (capturePath.isNotEmpty()) {
+    const juce::File file(capturePath);
+    expect(file.getParentDirectory().createDirectory().wasOk(), "secondary preview capture directory opens");
+    auto stream = file.createOutputStream();
+    expect(stream && juce::PNGImageFormat().writeImageToStream(
+        wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.5f), *stream),
+        "the production waveform renders eight secondary instructions in its existing timeline");
+  }
+  const auto body = WaveformEditingTestAccess::waveBody(wave);
+  auto start = WaveformEditingTestAccess::guideSecondaryPoint(wave, "secondary-review-0");
+  auto target = start.translated(body.getWidth() * 0.3f / 30.0f, 0);
+  wave.mouseDown(guidePointer(wave, start, start, false));
+  wave.mouseDrag(guidePointer(wave, target, start, true));
+  wave.mouseUp(guidePointer(wave, target, start, true));
+  expect(moves == 1 && snapped && seeks == 0, "secondary dragging requests pulse snap without seeking");
+  expectNear(draft.secondaryCues.front().timeSeconds, 2.5, "secondary marker snaps to its nearest proposed pulse");
+  start = WaveformEditingTestAccess::guideSecondaryPoint(wave, "secondary-review-0");
+  target = start.translated(body.getWidth() * 0.125f / 30.0f, 0);
+  wave.mouseDown(guidePointer(wave, start, start, false, true));
+  wave.mouseDrag(guidePointer(wave, target, start, true, true));
+  wave.mouseUp(guidePointer(wave, target, start, true, true));
+  expect(!snapped && seeks == 0 && fixture.commits == 0, "Alt adjusts only the provisional secondary marker freely");
+  expectNear(draft.secondaryCues.front().timeSeconds, 2.625, "free secondary gesture retains sub-pulse source time");
+  expectNear(draft.secondaryCues.front().rawTimeSeconds, 2.0, "secondary editing preserves the original spoken evidence time");
+  start = WaveformEditingTestAccess::guideMarker(wave, "secondary-review-0");
+  wave.mouseDoubleClick(guidePointer(wave, start, start, false));
+  auto &rename = WaveformEditingTestAccess::guideRename(wave);
+  expect(rename.isVisible() && rename.getText() == "All In", "secondary names use the same inline review editor");
+  rename.setText("Build", false); rename.onReturnKey();
+  expect(draft.secondaryCues.front().name == "Build" && draft.secondaryCues.front().rawText == "All In" && fixture.commits == 0,
+         "secondary renaming changes only the draft while retaining literal ASR evidence");
+  start = WaveformEditingTestAccess::guideSecondaryPoint(wave, "secondary-review-7");
+  wave.mouseDown(guidePointer(wave, start, start, false)); wave.mouseUp(guidePointer(wave, start, start, false));
+  expect(wave.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && draft.secondaryCues.size() == 7,
+         "deleting the selected secondary discards only that suggestion");
+  for (size_t i = 0; i < draft.suggestions.size(); ++i) {
+    expect(draft.suggestions[i].displayName == "Refrain " + juce::String(int(i) + 1),
+           "secondary edits preserve every manually corrected Refrain name");
+    expectNear(draft.suggestions[i].startSeconds, 5.0 + double(i) * 8.0,
+               "secondary edits never shift a musical boundary");
+  }
+  WaveformEditingTestAccess::guideCancel(wave).onClick();
+  expect(cancels == 1 && fixture.commits == 0 && !wave.hasGuideAlignmentPreview() &&
+             wave.getArrangementSnapshot().cues.empty(), "cancel discards secondary edits without persistence or history");
+  draft.suggestions.clear(); wave.setGuideAlignmentPreview(draft);
+  expect(WaveformEditingTestAccess::guideAccept(wave).isEnabled(), "a secondary-only draft can be confirmed");
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  expect(fixture.commits == 1 && wave.getArrangementSnapshot().parts.empty() &&
+             wave.getArrangementSnapshot().cues.size() == 7, "secondary-only confirmation publishes one complete transaction");
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().cues.empty(), "one undo reverses the full secondary-only confirmation");
+  expect(fixture.command('Y') && wave.getArrangementSnapshot().cues.size() == 7, "redo restores all accepted secondary point IDs");
+}
+
+void testDenseGuideLabelsWithSecondaryLane() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  wave.setSize(1200, 320);
+  auto draft = guideDraftFixture();
+  for (int i = 0; i < 8; ++i) {
+    GuideSecondaryCueSuggestion cue;
+    cue.id = "compact-secondary-" + juce::String(i); cue.name = cue.rawText = "All In";
+    cue.timeSeconds = cue.rawTimeSeconds = 2.0 + i * 3.5;
+    draft.secondaryCues.push_back(cue);
+  }
+  wave.setGuideAlignmentPreview(draft);
+  const auto initialBody = WaveformEditingTestAccess::waveBody(wave);
+  wave.setSize(wave.getWidth(), wave.getHeight() + juce::roundToInt(130.0f - initialBody.getHeight()));
+  const auto body = WaveformEditingTestAccess::waveBody(wave);
+  expectNear(body.getHeight(), 130.0, "compact review fixture has a 130-point waveform body");
+  const double secondsPerLabel = 74.0 * 30.0 / body.getWidth();
+  for (size_t i = 0; i < draft.suggestions.size(); ++i) {
+    auto &suggestion = draft.suggestions[i];
+    suggestion.displayName = "Revisar: anuncio largo de muestra " + juce::String(int(i) + 1);
+    suggestion.startSeconds = 15.0 + double(i) * secondsPerLabel;
+  }
+  wave.setGuideAlignmentPreview(draft);
+  const auto first = WaveformEditingTestAccess::guideMarkerPill(wave, draft.suggestions[0].id);
+  const auto second = WaveformEditingTestAccess::guideMarkerPill(wave, draft.suggestions[1].id);
+  const auto third = WaveformEditingTestAccess::guideMarkerPill(wave, draft.suggestions[2].id);
+  expect(first.getWidth() >= 139.0f && second.getWidth() >= 139.0f,
+         "dense review fixture exercises full-width unknown-section labels");
+  expect(first.getY() != second.getY() && !first.intersects(second) &&
+             !second.intersects(third) && !first.intersects(third),
+         "compact primary space retains two rows and keeps three dense unknown labels separately readable");
+  for (const auto &cue : draft.secondaryCues) {
+    const auto label = WaveformEditingTestAccess::guideMarkerPill(wave, cue.id);
+    expect(!label.intersects(first) && !label.intersects(second) && !label.intersects(third),
+           "the compact secondary lane remains clear of both musical label rows");
+  }
+  expect(fixture.commits == 0, "responsive guide layout never changes the arrangement");
+}
+
+void testViLaLuzSecondaryAlongsideSectionDuringPlayback() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  constexpr double length = 244.1578231292517;
+  double position = 52.6;
+  bool playing = false;
+  wave.setVisible(true);
+  wave.setTransportProviders([&] { return position; }, [] { return length; }, [&] { return playing; });
+  wave.setSongSourceLengthProvider([] { return length; });
+  wave.setSongRhythm(116, "4/4");
+  wave.setArrangement({}, false); wave.setSize(1200, 320);
+
+  GuideTranscript transcript;
+  transcript.provider = "synthetic-secondary-fixture"; transcript.providerVersion = "1";
+  transcript.audioFingerprint = "vi-secondary-waveform-fixture";
+  transcript.durationSeconds = length;
+  transcript.segments = {{35.2,35.64,"Coro"}, {49.68,50.52,"Interludio"},
+      {50.71,51.56,"Toda la banda."}, {57.96,58.84,"Verso 2"}};
+  GuideAlignmentOptions options; options.originSeconds = .02; options.bpm = 116;
+  auto draft = alignGuideSections(transcript, options);
+  expect(draft.error.isEmpty() && draft.suggestions.size() == 3 && draft.secondaryCues.size() == 1,
+         "separate spoken All In and Interlude produce both a secondary point and a musical boundary");
+  const auto &allIn = draft.secondaryCues.front();
+  expect(allIn.name == "All In", "Toda la banda resolves to the existing native All In instruction");
+  expectNear(allIn.rawTimeSeconds, 50.71, "All In retains its own observed voice onset");
+  expectNear(allIn.timeSeconds, 50.71, "All In does not inherit the main section's one-bar anticipation");
+  const auto interlude = std::find_if(draft.suggestions.begin(), draft.suggestions.end(),
+      [](const auto &suggestion) { return suggestion.type == SectionType::interlude; });
+  expect(interlude != draft.suggestions.end(), "the Interlude proposal remains present beside All In");
+  expectNear(interlude->startSeconds, .02 + 25 * 240.0 / 116,
+             "Interlude starts on bar 26 after its own announcement");
+  wave.setGuideAlignmentCallbacks({}, {}, [&] {
+    const auto plan = appendConfirmedGuideSuggestions({}, draft);
+    expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement),
+           "All In and its surrounding sections confirm through one existing arrangement transaction");
+    wave.clearGuideAlignmentPreview();
+  }, [&] { wave.clearGuideAlignmentPreview(); });
+  wave.setGuideAlignmentPreview(draft);
+  WaveformEditingTestAccess::fixedPlaybackViewport(wave, float(35.0 / length), float(27.0 / length));
+  const auto expectedX = [&](double seconds) {
+    const auto body = WaveformEditingTestAccess::waveBody(wave);
+    const auto window = WaveformEditingTestAccess::visibleWindow(wave);
+    return body.getX() + float((seconds / length - window.first) / window.second) * body.getWidth();
+  };
+  const auto expectVisibleSecondary = [&] {
+    const auto body = WaveformEditingTestAccess::waveBody(wave);
+    const auto point = WaveformEditingTestAccess::guideSecondaryPoint(wave, allIn.id);
+    const auto label = WaveformEditingTestAccess::guideMarkerPill(wave, allIn.id);
+    const auto sectionLabel = WaveformEditingTestAccess::guideMarkerPill(wave, interlude->id);
+    expect(WaveformEditingTestAccess::guideMarkerCount(wave) == 4 &&
+               body.contains(point) && body.contains(label) && body.contains(sectionLabel),
+           "All In remains visible in the screenshot's bar range alongside Interlude and the other sections");
+    expectNear(point.x, expectedX(50.71), "the secondary point uses its own source-time coordinate");
+    expect(WaveformEditingTestAccess::guideHitId(wave, point) == allIn.id &&
+               WaveformEditingTestAccess::guideHitId(wave, label.getCentre()) == allIn.id,
+           "the All In point and label both retain their independent editable target");
+  };
+  expectVisibleSecondary();
+  playing = true;
+  WaveformEditingTestAccess::vblank(wave, juce::Time::getMillisecondCounterHiRes() + 40.0);
+  expectVisibleSecondary();
+  expect(fixture.commits == 0 && wave.getArrangementSnapshot().cues.empty(),
+         "displaying All In during playback never implicitly accepts the review");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_VI_SECONDARY_CAPTURE_PATH", {});
+  if (capturePath.isNotEmpty()) {
+    const juce::File file(capturePath);
+    expect(file.getParentDirectory().createDirectory().wasOk(), "Vi la luz secondary capture directory opens");
+    auto output = file.createOutputStream();
+    expect(output && juce::PNGImageFormat().writeImageToStream(
+        wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.5f), *output),
+        "native waveform renders the All In instruction beside Interlude during playback");
+  }
+
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  const auto accepted = wave.getArrangementSnapshot();
+  expect(fixture.commits == 1 && accepted.parts.size() == 3 && accepted.cues.size() == 1,
+         "one confirmation saves the main labels and independent All In together");
+  const auto &saved = accepted.cues.front();
+  expect(saved.id == allIn.id && saved.name == "All In" && saved.partId.isNotEmpty(),
+         "the saved secondary retains its identity and anchors to the containing section");
+  expectNear(resolveArrangementCueSeconds(accepted, saved), 50.71,
+             "resolving a confirmed secondary's section-relative offset preserves its absolute source time");
+  expectNear(WaveformEditingTestAccess::cuePoint(wave, saved.id).x, expectedX(50.71),
+             "saved editing renders All In at the same temporal coordinate as the provisional review");
+  WaveformEditingTestAccess::nativeCueButton(wave, saved.id);
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().cues.empty() &&
+             wave.getArrangementSnapshot().parts.empty(),
+         "one undo restores the untouched song after this isolated secondary confirmation");
+}
+
+void testViLaLuzCountTemporalPositions() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  constexpr double length = 244.1578231292517;
+  wave.setVisible(true);
+  wave.setTransportProviders([] { return 0.0; }, [] { return length; }, [] { return false; });
+  wave.setSongSourceLengthProvider([] { return length; });
+  wave.setSongRhythm(116, "4/4");
+  wave.setArrangement({}, false); wave.setSize(1200, 320);
+  GuideAlignmentDraft draft;
+  draft.durationSeconds = length; draft.options.originSeconds = .02; draft.options.bpm = 116;
+  for (int pulse = 0; .02 + pulse * 60.0 / 116 <= length; ++pulse)
+    draft.grid.push_back({.02 + pulse * 60.0 / 116, pulse / 4 + 1, pulse % 4 + 1, pulse % 4 == 0});
+  SectionSuggestion intro;
+  intro.id = "vi-intro"; intro.type = SectionType::intro; intro.displayName = "Intro";
+  intro.rawStartSeconds = 2.16; intro.startSeconds = .02 + 8 * 60.0 / 116;
+  intro.endSeconds = length; draft.suggestions.push_back(intro);
+  // First two observed source onsets and representative subsequent onsets.
+  // This component test does not infer numbers or times from musical beats.
+  const double times[]{.02, 1.06, 2.62, 3.13, 3.65};
+  const char *names[]{"1", "2", "2", "3", "4"};
+  for (int i = 0; i < 5; ++i) {
+    GuideSecondaryCueSuggestion cue;
+    cue.id = "vi-count-" + juce::String(i); cue.name = cue.rawText = names[i];
+    cue.timeSeconds = cue.rawTimeSeconds = times[i]; draft.secondaryCues.push_back(cue);
+  }
+  wave.setGuideAlignmentCallbacks({}, {}, [&] {
+    const auto plan = appendConfirmedGuideSuggestions({}, draft);
+    expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement),
+           "timed count review confirms through the existing arrangement transaction");
+    wave.clearGuideAlignmentPreview();
+  }, [&] { wave.clearGuideAlignmentPreview(); });
+  wave.setGuideAlignmentPreview(draft);
+  // Keep the first count visible exactly at the viewport's left edge despite
+  // the ratio's float representation. The packed chip must not shift its dot.
+  WaveformEditingTestAccess::fixedPlaybackViewport(wave,
+      std::nextafter(float(times[0] / length), 0.0f), float(9.0 / length));
+  const auto expectedX = [&](double seconds) {
+    const auto body = WaveformEditingTestAccess::waveBody(wave);
+    const auto window = WaveformEditingTestAccess::visibleWindow(wave);
+    return body.getX() + float((seconds / length - window.first) / window.second) * body.getWidth();
+  };
+  for (const auto &cue : draft.secondaryCues) {
+    const auto point = WaveformEditingTestAccess::guideSecondaryPoint(wave, cue.id);
+    const auto label = WaveformEditingTestAccess::guideMarkerPill(wave, cue.id);
+    expectNear(point.x, expectedX(cue.timeSeconds),
+               "count dots retain source-time x even when label packing shifts a chip");
+    expect(WaveformEditingTestAccess::guideHitId(wave, point) == cue.id &&
+               WaveformEditingTestAccess::guideHitId(wave, label.getCentre()) == cue.id,
+           "both the real temporal point and its packed count chip select the same cue");
+  }
+  const auto first = WaveformEditingTestAccess::guideSecondaryPoint(wave, draft.secondaryCues[0].id);
+  expectNear(first.x, WaveformEditingTestAccess::waveBody(wave).getX(),
+             "a count at the viewport edge never acquires an artificial leading time offset");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_VI_COUNT_CAPTURE_PATH", {});
+  if (capturePath.isNotEmpty()) {
+    const juce::File file(capturePath);
+    expect(file.getParentDirectory().createDirectory().wasOk(), "timed count capture directory opens");
+    auto output = file.createOutputStream();
+    expect(output && juce::PNGImageFormat().writeImageToStream(
+        wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.5f), *output),
+           "native waveform renders the 116 BPM count timing regression");
+  }
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  expect(wave.getArrangementSnapshot().cues.size() == 5 && fixture.commits == 1,
+         "confirmation saves the exact five independent count points");
+  for (const auto &cue : wave.getArrangementSnapshot().cues) {
+    const auto point = WaveformEditingTestAccess::cuePoint(wave, cue.id);
+    expectNear(point.x, expectedX(resolveArrangementCueSeconds(wave.getArrangementSnapshot(), cue)),
+               "saved editing keeps count dots at persisted source times too");
+    WaveformEditingTestAccess::nativeCueButton(wave, cue.id);
+  }
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().cues.empty(),
+         "one undo restores the original song after timed count confirmation");
+}
+
+void testClusteredGuideCountsWithInstructions() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  constexpr double length = 337.391;
+  // Native component hit dispatch requires a visible root. No desktop peer is
+  // created; this remains an isolated component regression fixture.
+  wave.setVisible(true);
+  wave.setTransportProviders([] { return 0.0; }, [] { return 337.391; }, [] { return false; });
+  wave.setSongSourceLengthProvider([] { return 337.391; });
+  wave.setArrangement({}, false); wave.setSize(1200, 320);
+  GuideAlignmentDraft draft;
+  draft.durationSeconds = length; draft.options.originSeconds = 0; draft.options.bpm = 69;
+  for (int pulse = 0; pulse * 60.0 / 69.0 <= length; ++pulse)
+    draft.grid.push_back({pulse * 60.0 / 69.0, pulse / 4 + 1, pulse % 4 + 1, pulse % 4 == 0});
+  for (int i = 0; i < 3; ++i) {
+    SectionSuggestion section;
+    section.id = "corrected-count-review-refrain-" + juce::String(i);
+    section.displayName = "Refrain " + juce::String(i + 1);
+    section.startSeconds = 219 + i * 14.0; section.endSeconds = i == 2 ? length : 233 + i * 14.0;
+    draft.suggestions.push_back(section);
+  }
+  const double countTimes[]{0.0, 1.74, 4.34, 5.2, 6.08};
+  for (int i = 0; i < 5; ++i) {
+    GuideSecondaryCueSuggestion count;
+    count.id = "clustered-guide-count-" + juce::String(i); count.name = juce::String(i + 1);
+    count.rawText = "spoken count " + juce::String(i + 1);
+    count.timeSeconds = count.rawTimeSeconds = countTimes[i]; draft.secondaryCues.push_back(count);
+  }
+  const char *names[]{"All In", "Build", "Drums In", "Breakdown", "Hold", "Bass", "Softly", "Last Time"};
+  for (int i = 0; i < 8; ++i) {
+    GuideSecondaryCueSuggestion instruction;
+    instruction.id = "clustered-guide-instruction-" + juce::String(i);
+    instruction.name = instruction.rawText = names[i];
+    instruction.timeSeconds = instruction.rawTimeSeconds = 74.78 + i * 26.0;
+    draft.secondaryCues.push_back(instruction);
+  }
+  wave.setGuideAlignmentCallbacks({}, {}, [&] {
+    const auto plan = appendConfirmedGuideSuggestions(wave.getArrangementSnapshot(), draft);
+    expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement),
+           "five counts and eight instructions share the existing atomic confirmation");
+    wave.clearGuideAlignmentPreview();
+  }, [&] { wave.clearGuideAlignmentPreview(); });
+  int seeks = 0;
+  wave.setSeekCallback([&](double) { ++seeks; });
+  wave.setOnGuideSecondaryCueMove([&](const juce::String &id, double seconds, bool snap) {
+    juce::String error;
+    expect(moveGuideSecondaryCue(draft, id, seconds, snap, error), "a compact count chip uses the ordinary secondary gesture callback");
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setGuideAlignmentPreview(draft);
+  const auto initialBody = WaveformEditingTestAccess::waveBody(wave);
+  wave.setSize(wave.getWidth(), wave.getHeight() + juce::roundToInt(130.0f - initialBody.getHeight()));
+  WaveformEditingTestAccess::fixedPlaybackViewport(wave, 0, 1);
+  const auto body = WaveformEditingTestAccess::waveBody(wave);
+  expectNear(body.getHeight(), 130.0, "count overview fixture retains the compact 130-point body");
+  expect(WaveformEditingTestAccess::guideMarkerCount(wave) == 16,
+         "all five clustered counts, eight instructions and three corrected musical labels stay visible");
+  auto image = wave.createComponentSnapshot(wave.getLocalBounds());
+  const auto blue = juce::Colour::fromRGB(91, 169, 218);
+  const auto amber = juce::Colour::fromRGB(224, 171, 91);
+  for (size_t i = 0; i < draft.secondaryCues.size(); ++i) {
+    const auto &cue = draft.secondaryCues[i];
+    const auto point = WaveformEditingTestAccess::guideSecondaryPoint(wave, cue.id);
+    const auto pill = WaveformEditingTestAccess::guideMarkerPill(wave, cue.id);
+    expect(WaveformEditingTestAccess::guideHitId(wave, point) == cue.id,
+           "every count and instruction can be selected independently at overview zoom");
+    expect(image.getPixelAt(juce::roundToInt(point.x), juce::roundToInt(point.y)).withAlpha(1.0f) ==
+               (i < 5 ? blue : amber), "counts use native blue while utility instructions retain amber");
+    if (i < 5) {
+      expect(pill.getWidth() <= 24.1f, "individual numeric counts use compact pills");
+      expectNear(cue.timeSeconds, countTimes[i], "count layout preserves the exact spoken timeline position");
+    }
+    for (size_t j = 0; j < i; ++j)
+      expect(!pill.intersects(WaveformEditingTestAccess::guideMarkerPill(wave, draft.secondaryCues[j].id)),
+             "horizontal packing prevents dense count or instruction labels from overlapping");
+  }
+  for (const auto *literal : {"one two three four", "eight"}) {
+    draft.secondaryCues.front().name = literal; wave.setGuideAlignmentPreview(draft);
+    image = wave.createComponentSnapshot(wave.getLocalBounds());
+    const auto point = WaveformEditingTestAccess::guideSecondaryPoint(wave, draft.secondaryCues.front().id);
+    expect(image.getPixelAt(juce::roundToInt(point.x), juce::roundToInt(point.y)).withAlpha(1.0f) == blue &&
+               WaveformEditingTestAccess::guideMarkerCount(wave) == 16,
+           "literal compound or unsupported counts remain one editable blue point without invented beats");
+  }
+  draft.secondaryCues.front().name = "1"; wave.setGuideAlignmentPreview(draft);
+  const auto start = WaveformEditingTestAccess::guideSecondaryPoint(wave, draft.secondaryCues[4].id);
+  const auto target = start.translated(body.getWidth() * 0.25f / float(length), 0);
+  wave.mouseDown(guidePointer(wave, start, start, false, true));
+  wave.mouseDrag(guidePointer(wave, target, start, true, true));
+  wave.mouseUp(guidePointer(wave, target, start, true, true));
+  expectNear(draft.secondaryCues[4].timeSeconds, 6.33, "dragging a packed count chip moves only its source-time position");
+  expect(fixture.commits == 0 && seeks == 0, "count review gestures neither seek nor publish provisional changes");
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  const auto accepted = wave.getArrangementSnapshot();
+  expect(fixture.commits == 1 && accepted.parts.size() == 3 && accepted.cues.size() == 13 &&
+             arrangementCueEventCount(accepted) == 13, "confirmation persists exactly thirteen native individual cues with the musical sections");
+  expect(accepted.cues.front().name == "1" && accepted.cues.front().positionSec == 0.0 &&
+             accepted.cues.front().countEnd == 0, "the initial count remains a native source-zero point rather than a fabricated sequence");
+  for (size_t i = 0; i < accepted.parts.size(); ++i)
+    expect(accepted.parts[i].name == "Refrain " + juce::String(int(i) + 1),
+           "adding and confirming count points retains all three manually corrected Refrains");
+  const auto expectUnchanged = [&accepted](const SongArrangementSnapshot &actual,
+                                           const std::vector<SongArrangementCueSnapshot> &cues) {
+    expect(actual.cues == cues && actual.parts.size() == accepted.parts.size(),
+           "saved cue presentation preserves every cue field and musical section");
+    for (size_t i = 0; i < accepted.parts.size(); ++i) {
+      const auto &a = actual.parts[i], &b = accepted.parts[i];
+      expect(a.id == b.id && a.name == b.name && a.color == b.color &&
+                 a.startSec == b.startSec && a.endSec == b.endSec &&
+                 a.sourcePartId == b.sourcePartId && a.sourceStartSec == b.sourceStartSec &&
+                 a.sourceEndSec == b.sourceEndSec && a.utilityCue == b.utilityCue &&
+                 a.muteInstruments == b.muteInstruments && a.skipPlayback == b.skipPlayback &&
+                 a.automation == b.automation,
+             "compact native counts leave the corrected Refrains and all source/automation data intact");
+    }
+  };
+  const auto expectSavedTargets = [&](WaveformBar &saved) {
+    const auto savedBody = WaveformEditingTestAccess::waveBody(saved);
+    expectNear(savedBody.getHeight(), 130.0, "saved count overview retains the 130-point body");
+    expect(WaveformEditingTestAccess::markerCount(saved) == 13,
+           "all thirteen confirmed cues retain native markers at overview zoom");
+    WaveformEditingTestAccess::expectCueLabels(saved);
+    for (size_t i = 0; i < accepted.cues.size(); ++i) {
+      const auto &cue = accepted.cues[i];
+      auto &button = WaveformEditingTestAccess::nativeCueButton(saved, cue.id);
+      if (i < 5) {
+        expect(WaveformEditingTestAccess::cueLabel(saved, cue.id).getWidth() <= 24.1f,
+               "confirmed individual counts retain compact numeric chips");
+        expect(button.getButtonText() == L10n::tr("Cuenta ", "Count ") + cue.name &&
+                   button.getTitle() == button.getButtonText(),
+               "compact count chips retain the full native accessible count label");
+      }
+      expectNear(WaveformEditingTestAccess::cueSourceX(saved, cue.id),
+                 savedBody.getX() + resolveArrangementCueSeconds(accepted, cue) /
+                     length * savedBody.getWidth(),
+                 "packing keeps the connector at the exact persisted source time");
+      WaveformEditingTestAccess::clickNativeCue(saved, cue.id);
+    }
+    expectUnchanged(saved.getArrangementSnapshot(), accepted.cues);
+  };
+  // The saved editor must retain the same five dense points that were visible
+  // during review, rather than assigning the later counts rows below the body.
+  expectSavedTargets(wave);
+  expect(fixture.commits == 1 && seeks == 0,
+         "selecting every confirmed native point adds no history, persistence or seek");
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().parts.empty() && wave.getArrangementSnapshot().cues.empty(),
+         "one undo reverses counts, instructions and musical suggestions together");
+  expect(fixture.command('Y') && wave.getArrangementSnapshot().cues == accepted.cues,
+         "redo restores the native count and instruction identities without duplication");
+  expectSavedTargets(wave);
+
+  Fixture reopened;
+  auto &saved = reopened.waveform;
+  saved.setVisible(true);
+  saved.setTransportProviders([] { return 0.0; }, [] { return 337.391; }, [] { return false; });
+  saved.setSongSourceLengthProvider([] { return 337.391; });
+  saved.setArrangement(accepted, true);
+  const auto reopenedBody = WaveformEditingTestAccess::waveBody(saved);
+  saved.setSize(saved.getWidth(), saved.getHeight() + juce::roundToInt(130.0f - reopenedBody.getHeight()));
+  WaveformEditingTestAccess::fixedPlaybackViewport(saved, 0, 1);
+  int savedSeeks = 0;
+  saved.setSeekCallback([&](double) { ++savedSeeks; });
+  expectSavedTargets(saved);
+  expect(reopened.commits == 0 && savedSeeks == 0,
+         "reopening and selecting all saved count and utility buttons never modifies the song");
+
+  const auto countId = accepted.cues[4].id;
+  juce::Component &native = WaveformEditingTestAccess::nativeCueButton(saved, countId);
+  const auto sourcePoint = WaveformEditingTestAccess::cuePoint(saved, countId);
+  const auto movedPoint = sourcePoint.translated(
+      WaveformEditingTestAccess::waveBody(saved).getWidth() * 2.0f / float(length), 0.0f);
+  native.mouseDown(pointerEvent(saved, sourcePoint, sourcePoint).getEventRelativeTo(&native));
+  native.mouseDrag(pointerEvent(saved, movedPoint, sourcePoint, true).getEventRelativeTo(&native));
+  native.mouseUp(pointerEvent(saved, movedPoint, sourcePoint, true).getEventRelativeTo(&native));
+  auto expectedMoved = accepted.cues;
+  expectedMoved[4].positionSec += 2.0;
+  expectNear(WaveformEditingTestAccess::cue(saved, countId).positionSec,
+             expectedMoved[4].positionSec,
+             "dragging a saved packed count uses its original time plus pointer delta");
+  // Pointer coordinates are floats; retain their exact resolved value for the
+  // all-fields comparison while the independent time assertion checks intent.
+  expectedMoved[4].positionSec = WaveformEditingTestAccess::cue(saved, countId).positionSec;
+  expectUnchanged(saved.getArrangementSnapshot(), expectedMoved);
+  expect(reopened.commits == 1 && savedSeeks == 0,
+         "one native count drag creates one ordinary edit without seeking");
+  expect(reopened.command('Z'), "the native packed count edit can be undone");
+  expectUnchanged(saved.getArrangementSnapshot(), accepted.cues);
+  expectSavedTargets(saved);
+  expect(reopened.command('Y'), "the native packed count edit can be redone");
+  expectUnchanged(saved.getArrangementSnapshot(), expectedMoved);
+}
+
+void testDetectedSecondaryCueTransactions() {
+  Fixture fixture;
+  SongArrangementSnapshot base;
+  for (int i = 0; i < 3; ++i) {
+    auto part = original(("protected-refrain-" + juce::String(i)).toRawUTF8(), i * 10.0, (i + 1) * 10.0);
+    part.name = "Refrain " + juce::String(i + 1); part.automation.pads.volume = 0.25f;
+    base.parts.push_back(part);
+  }
+  SongArrangementCueSnapshot count;
+  count.id = "protected-count"; count.name = "1"; count.partId = base.parts.front().id;
+  count.positionSec = count.offsetSec = 1.0; count.countEnd = 4; count.countIntervalSec = 0.5;
+  count.countOffsetsSec = {0.0, 0.5, 1.0, 1.5};
+  base.cues.push_back(count);
+  fixture.waveform.setArrangement(base, true); base = fixture.waveform.getArrangementSnapshot();
+  auto candidate = base;
+  SongArrangementCueSnapshot added;
+  added.id = "accepted-secondary"; added.name = "All In";
+  added.positionSec = 15; added.partId = base.parts[1].id; added.offsetSec = 5;
+  candidate.cues.push_back(added);
+  auto invalid = candidate; invalid.cues.front().name = "2";
+  expect(!fixture.waveform.applyDetectedSections(invalid) && fixture.commits == 0,
+         "detected secondary confirmation cannot modify an existing anchored count");
+  invalid = candidate; invalid.cues.back().id = base.parts.front().id;
+  expect(!fixture.waveform.applyDetectedSections(invalid), "new secondary IDs cannot collide with musical IDs");
+  invalid = candidate; invalid.cues.back().positionSec = std::numeric_limits<double>::quiet_NaN();
+  expect(!fixture.waveform.applyDetectedSections(invalid), "nonfinite secondary positions reject the complete transaction");
+  invalid = candidate; invalid.cues.back().positionSec = 30; invalid.cues.back().partId.clear(); invalid.cues.back().offsetSec = 0;
+  expect(!fixture.waveform.applyDetectedSections(invalid), "a secondary cannot be placed at the exclusive song end");
+  invalid = candidate; invalid.cues.back().offsetSec = 4;
+  expect(!fixture.waveform.applyDetectedSections(invalid), "secondary anchors must resolve to their explicit source position");
+  invalid = candidate; invalid.cues.back().partId = "missing-parent";
+  expect(!fixture.waveform.applyDetectedSections(invalid), "a missing secondary parent cannot silently become absolute");
+  invalid = candidate; std::reverse(invalid.cues.begin(), invalid.cues.end());
+  expect(!fixture.waveform.applyDetectedSections(invalid), "unordered new cue points reject confirmation atomically");
+  expect(fixture.waveform.applyDetectedSections(candidate) && fixture.commits == 1,
+         "an additive secondary confirms while all existing musical ranges stay untouched");
+  expect(fixture.waveform.getArrangementSnapshot().cues.front() == base.cues.front(),
+         "accepting a secondary preserves prior count offsets, anchor and metadata exactly");
+  const auto confirmed = fixture.waveform.getArrangementSnapshot();
+  for (size_t i = 0; i < base.parts.size(); ++i) {
+    const auto &part = confirmed.parts[i];
+    expect(part.id == base.parts[i].id && part.name == base.parts[i].name &&
+               part.startSec == base.parts[i].startSec && part.endSec == base.parts[i].endSec &&
+               part.automation == base.parts[i].automation,
+           "cue-only confirmation preserves all three corrected Refrains and their automation");
+  }
+  expect(!fixture.waveform.applyDetectedSections(candidate) && fixture.commits == 1,
+         "reconfirming identical secondary points creates no duplicates or extra history");
+  expect(fixture.command('Z') && fixture.waveform.getArrangementSnapshot().cues == base.cues,
+         "one undo restores all prior anchored cues without changing protected sections");
+  expect(fixture.command('Y') && fixture.waveform.getArrangementSnapshot().cues == confirmed.cues,
+         "redo restores the newly accepted secondary and every original count offset");
+
+  Fixture mixed;
+  SongArrangementSnapshot middle; middle.parts = {original("manual-middle", 10, 20)};
+  mixed.waveform.setArrangement(middle, true); middle = mixed.waveform.getArrangementSnapshot();
+  auto combined = middle;
+  combined.parts.insert(combined.parts.begin(), original("detected-intro", 0, 10));
+  combined.parts.push_back(original("detected-ending", 20, 30));
+  added.id = "detected-band"; added.positionSec = 5; added.partId = "detected-intro"; added.offsetSec = 5;
+  combined.cues.push_back(added);
+  expect(mixed.waveform.applyDetectedSections(combined) && mixed.commits == 1,
+         "musical sections and secondary points publish together in one transaction");
+  expect(mixed.command('Z') && mixed.waveform.getArrangementSnapshot().parts.size() == 1 &&
+             mixed.waveform.getArrangementSnapshot().cues.empty(), "one undo reverses both parts and cues together");
+  expect(mixed.command('Y') && mixed.waveform.getArrangementSnapshot().parts.size() == 3 &&
+             mixed.waveform.getArrangementSnapshot().cues.size() == 1, "redo restores the combined detection once");
+
+  Fixture capacity;
+  auto many = base; many.cues.clear();
+  for (int i = 0; i < 73; ++i) {
+    auto sequence = count; sequence.id = "protected-sequence-" + juce::String(i);
+    sequence.positionSec = sequence.offsetSec = 1.0 + i * 0.05; sequence.countEnd = 7;
+    sequence.countOffsetsSec = {0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6};
+    many.cues.push_back(sequence);
+  }
+  capacity.waveform.setArrangement(many, true); many = capacity.waveform.getArrangementSnapshot();
+  expect(arrangementCueEventCount(many) == 511, "capacity fixture counts expanded events rather than markers");
+  for (int i = 0; i < 2; ++i) {
+    SongArrangementCueSnapshot extra; extra.id = "overflow-secondary-" + juce::String(i);
+    extra.name = "Build"; extra.positionSec = 20.0 + i; many.cues.push_back(extra);
+  }
+  expect(!capacity.waveform.applyDetectedSections(many) && capacity.commits == 0,
+         "secondary additions exceeding 512 expanded events are rejected without partial publication");
 }
 
 void testCueVisualPreview() {
@@ -3765,6 +4403,12 @@ int main() {
   run("section detection preview, safe confirmation and undo", testDetectedSectionsReviewAndHistory);
   run("guide waveform review, origin and marker gestures, confirmation and undo", testGuideAlignmentWaveformReview);
   run("calculated guide grid, live origin and boundary edits, atomic confirmation", testCalculatedGuideAlignmentReview);
+  run("secondary guide points, isolated gestures and provisional review", testGuideSecondaryWaveformReview);
+  run("dense primary guide labels remain readable above compact secondary lane", testDenseGuideLabelsWithSecondaryLane);
+  run("All In stays independently visible alongside Interlude while playing and after confirmation", testViLaLuzSecondaryAlongsideSectionDuringPlayback);
+  run("116 BPM counts retain temporal dots while chips pack at viewport edge", testViLaLuzCountTemporalPositions);
+  run("five clustered guide counts and eight instructions remain visible and confirm atomically", testClusteredGuideCountsWithInstructions);
+  run("additive detected secondary cues and atomic arrangement history", testDetectedSecondaryCueTransactions);
   run("independent cue drag, history and deletion", testIndependentCueEditing);
   run("stacked cue double-click deletion and undo", testCueDoubleClickDeletesOnlyItsPoint);
   run("wave cues preserve rendered musical ruler", testCueOverlayPreservesMusicalRuler);

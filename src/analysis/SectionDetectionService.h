@@ -40,7 +40,7 @@ struct SectionDetectionRequest {
   // separate review step; this mode never creates section suggestions.
   bool transcribeGuideOnly = false;
   juce::File guideModelFile;
-  juce::String guideLanguage = "es";
+  juce::String guideLanguage = "es-en";
 };
 struct DetectionOutcome {
   SectionDetectionResult result;

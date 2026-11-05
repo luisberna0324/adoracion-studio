@@ -37,6 +37,17 @@ el error se presenta en una tarjeta informativa del mismo estilo.
 La tarjeta es interna a JUCE y funciona con la misma presentación en iOS,
 Android y escritorio. La entrada de texto sigue usando el teclado del sistema.
 
+## Procesamiento de sugerencias
+
+`AppModal::paintSurface` comparte el fondo atenuado y la tarjeta con el modal
+específico de `SectionDetectionPanel`. Durante el análisis local de la guía,
+ese modal cubre el componente superior y presenta una barra de progreso,
+fase y Cancelar en una tarjeta compacta. La selección de pistas o la descarga
+explícita del modelo se presentan dentro de la tarjeta cuando hacen falta.
+El modal se libera antes de entregar las sugerencias a la onda; un error o
+cancelación conserva una configuración recuperable. Véase
+[Sugerir secciones](SectionDetection.md#sugerir-secciones-sobre-la-onda).
+
 ## Renderizado en Android
 
 El contexto OpenGL pertenece a `MainWindow` y renderiza la ventana completa,

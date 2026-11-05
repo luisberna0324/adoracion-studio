@@ -349,6 +349,13 @@ fuente `countIntervalSec` se conserva como fallback legacy. Se expande en
 puntos individuales al publicar y al exportar. Tempo convierte sus puntos fuente a los
 offsets de salida de cada callback, sin cambiar el pitch de la voz.
 
+Los nombres y aliases comunes se definen en `data/GuideVocabulary.h` y se
+comparten con el editor y la detección asistida. La clasificación de utilidades
+de `DynamicGuideTiming` consulta ese catálogo; los conteos conservan su ruta
+numérica. Se incluyen 17 familias musicales, con Turnaround, Exhortation y Rap.
+La disponibilidad de una grabación depende del pack instalado y de su idioma;
+una equivalencia léxica no crea audio ni modifica los offsets de reproducción.
+
 `DynamicGuideEvents` mantiene hasta 772 eventos callback-locales, ordenados de
 forma estable por offset. En empates, primero se registran anuncios musicales
 y luego cues en orden persistido. Cada trigger usa una de ocho voces fijas;

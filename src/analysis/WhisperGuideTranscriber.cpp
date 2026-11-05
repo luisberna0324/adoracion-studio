@@ -1,4 +1,7 @@
 #include "GuideTranscription.h"
+#include "GuideRecognitionSelection.h"
+#include "GuideSpeechSegmentation.h"
+#include "GuideAcousticTemplateMatcher.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_cryptography/juce_cryptography.h>
 #include <algorithm>
@@ -23,7 +26,9 @@ constexpr int preRollFrames = 10;             // 200 ms of original context.
 constexpr int endingSilenceFrames = 15;       // Separate independent announcements.
 constexpr int minimumActiveFrames = 4;        // Reject short isolated clicks.
 constexpr int maximumUtteranceFrames = 1000;  // Bounded PCM: at most 20 seconds.
-constexpr const char *algorithmVersion = "guide-energy-sinc16k-beam5-prompt128-2";
+// Candidate selection uses the shared catalog as a lexical prior. Expanding
+// that vocabulary invalidates earlier recognition even with the same prompt.
+constexpr const char *algorithmVersion = "guide-energy-sinc16k-beam5-prompt128-bilingual-10-acoustic-compounds";
 
 bool isCancelled(const CancellationCheck &cancelled) { return cancelled && cancelled(); }
 
@@ -135,7 +140,11 @@ public:
   bool available() const override { return true; }
   juce::String unavailableReason() const override { return {}; }
   juce::String providerId() const override { return "whisper.cpp"; }
-  juce::String version() const override { return juce::String(whisper_version()) + ":" + algorithmVersion; }
+  juce::String version() const override {
+    const auto fingerprint = guideAcousticPackFingerprint(defaultGuideAcousticPackFile());
+    return juce::String(whisper_version()) + ":" + algorithmVersion + ":pack-" +
+        (fingerprint.isEmpty() ? juce::String("unavailable") : fingerprint);
+  }
 
   bool transcribe(const GuideTranscriptionRequest &request, const CancellationCheck &cancelled,
                   const GuideTranscriptionProgress &progress, GuideTranscript &out,
@@ -150,8 +159,9 @@ public:
       error = juce::String::fromUTF8("Offset de guía inválido."); return false;
     }
     const auto language = request.language.trim().toLowerCase();
-    if (language.isEmpty() || language == "auto" || whisper_lang_id(language.toRawUTF8()) < 0) {
-      error = juce::String::fromUTF8("Selecciona un idioma de guía compatible; no se usa detección automática."); return false;
+    const bool bilingual = language == "es-en";
+    if (!bilingual && language != "es" && language != "en") {
+      error = juce::String::fromUTF8("Selecciona Español + inglés, español o inglés para reconocer la guía local."); return false;
     }
     const auto model = request.modelFile == juce::File{} ? defaultWhisperGuideModelFile() : request.modelFile;
     if (!model.existsAsFile() || model.getSize() <= 0 || model.getSize() > maximumModelBytes) {
@@ -169,10 +179,25 @@ public:
     std::unique_lock<std::timed_mutex> exclusive(transcriptionMutex, std::defer_lock);
     while (!exclusive.try_lock_for(std::chrono::milliseconds(40))) if (cancelledNow()) return false;
     if (cancelledNow()) return false;
-    const auto notify = [&](double value) { if (progress) progress(std::clamp(value, 0.0, 1.0)); };
+    double lastProgress = 0.0;
+    const GuideTranscriptionProgress notify = [&](double value) {
+      if (!std::isfinite(value) || isCancelled(cancelled)) return;
+      lastProgress = std::max(lastProgress, std::clamp(value, 0.0, 1.0));
+      if (progress) progress(lastProgress);
+    };
     notify(0.0);
+    const auto acousticPack = defaultGuideAcousticPackFile();
+    const auto acousticPackIdentity = guideAcousticPackFingerprint(acousticPack, cancelled);
+    if (cancelledNow()) return false;
     GuideTranscript result;
-    result.provider = providerId(); result.providerVersion = version(); result.language = language;
+    result.provider = providerId();
+    result.providerVersion = juce::String(whisper_version()) + ":" + algorithmVersion + ":pack-" +
+        (acousticPackIdentity.isEmpty() ? juce::String("unavailable") : acousticPackIdentity);
+    if (request.expectedProviderVersion.isNotEmpty() && request.expectedProviderVersion != result.providerVersion) {
+      error = juce::String::fromUTF8("El pack de voces cambió antes de iniciar el reconocimiento; vuelve a analizar.");
+      return false;
+    }
+    result.language = language;
     const auto audioSize = request.audioFile.getSize();
     const auto audioModified = request.audioFile.getLastModificationTime();
     const auto modelSize = model.getSize();
@@ -209,74 +234,262 @@ public:
     const auto totalSamples = static_cast<juce::int64>(std::ceil(duration * analysisRate));
     std::array<float, frameSamples> frame{};
     std::vector<float> recent, utterance;
+    GuideAcousticTemplateBank acousticTemplates;
+    bool acousticTemplatesAttempted = false;
     recent.reserve(preRollFrames * frameSamples); utterance.reserve(maximumUtteranceFrames * frameSamples);
     juce::int64 utteranceStart = 0, speechStart = 0, speechEnd = 0;
     int silenceFrames = 0, activeFrames = 0;
+
+    const auto decodeWindow = [&](const std::vector<float> &pcm,
+        double windowStart, double observedStart, double observedEnd,
+        double progressBase, double progressAmount,
+        std::optional<GuideTranscriptSegment> &selected, bool wordTimings = false,
+        const juce::String &timingLanguage = {}) -> bool {
+      selected.reset();
+      if (cancelledNow()) return false;
+      const std::vector<juce::String> languages = wordTimings && timingLanguage.isNotEmpty()
+          ? std::vector<juce::String>{timingLanguage}
+          : bilingual ? std::vector<juce::String>{"es", "en"} : std::vector<juce::String>{language};
+      float peak = 0.0f;
+      for (auto sample : pcm) peak = std::max(peak, std::abs(sample));
+      // Normalize only a detected utterance, never its surrounding silent
+      // timeline. Both language passes receive exactly the same PCM window.
+      const float normalizationGain = peak > 0 ? std::min(20.0f, 0.95f / peak) : 1.0f;
+      auto inferenceAudio = pcm;
+      for (auto &sample : inferenceAudio) sample *= normalizationGain;
+      std::vector<GuideRecognitionCandidate> candidates;
+      for (size_t pass = 0; pass < languages.size(); ++pass) {
+        if (cancelledNow()) return false;
+        const auto &passLanguage = languages[pass];
+        const double progressSpan = progressAmount / double(languages.size());
+        InferenceCallbacks callbacks{cancelled, notify,
+            progressBase + double(pass) * progressSpan, progressSpan};
+        auto params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
+        params.n_threads = int(std::max(1u, std::min(4u, std::thread::hardware_concurrency())));
+        params.language = passLanguage.toRawUTF8(); params.translate = false;
+        // Generic vocabulary only: no song labels, expected order, timestamps
+        // or aliases for observed recognition mistakes condition the decoder.
+        params.initial_prompt = passLanguage == "es"
+            ? "Guía musical hablada: intro, verso, estrofa, pre-coro, coro, estribillo, post-coro, puente, instrumental, solo, interludio, tag, vamp, salida, final; uno, dos, tres, cuatro; baja intensidad, a capella, sostener, subir, parar."
+            : "Spoken music guide: intro, verse, pre-chorus, chorus, refrain, post-chorus, bridge, instrumental, solo, interlude, tag, vamp, outro, ending; one, two, three, four; breakdown, a cappella, hold, build, stop.";
+        // no_context clears prior utterances and the other language pass. A
+        // nonzero text budget still lets Whisper consume this generic prompt.
+        params.no_context = true; params.n_max_text_ctx = 128;
+        params.carry_initial_prompt = true;
+        params.single_segment = true; params.no_timestamps = false;
+        params.print_special = params.print_progress = params.print_realtime = params.print_timestamps = false;
+        params.token_timestamps = wordTimings;
+        params.temperature = 0.0f; params.temperature_inc = 0.0f;
+        params.greedy.best_of = 1; params.beam_search.beam_size = 5; params.max_tokens = 64;
+        params.suppress_blank = true; params.suppress_nst = true;
+        params.no_speech_thold = 0.6f;
+        params.encoder_begin_callback = [](whisper_context *, whisper_state *, void *data) {
+          return !isCancelled(static_cast<InferenceCallbacks *>(data)->cancelled);
+        };
+        params.encoder_begin_callback_user_data = &callbacks;
+        params.abort_callback = [](void *data) { return isCancelled(static_cast<InferenceCallbacks *>(data)->cancelled); };
+        params.abort_callback_user_data = &callbacks;
+        params.progress_callback = [](whisper_context *, whisper_state *, int percent, void *data) {
+          const auto &c = *static_cast<InferenceCallbacks *>(data);
+          if (c.progress) c.progress(std::clamp(c.baseProgress + c.progressSpan * percent / 100.0, 0.0, 0.99));
+        };
+        params.progress_callback_user_data = &callbacks;
+        const auto status = whisper_full(context.get(), params, inferenceAudio.data(), int(inferenceAudio.size()));
+        if (cancelledNow()) return false;
+        if (status != 0) { error = juce::String::fromUTF8("Whisper no pudo reconocer la guía local."); return false; }
+
+        GuideRecognitionCandidate candidate;
+        candidate.segment.language = passLanguage;
+        // Word bounds are uncertainty intervals from an additional ASR pass,
+        // not measured attacks or instructions to split the original text.
+        GuideWordTimingCollector wordEvidence(request.offsetSeconds + observedStart,
+                                              request.offsetSeconds + observedEnd);
+        const auto collectWordToken = [&](const juce::String &tokenText,
+            const whisper_token_data &data, double logProbability) {
+          if (!wordTimings) return;
+          const double begin = data.t0 < 0 || data.t1 < data.t0
+              ? std::numeric_limits<double>::quiet_NaN()
+              : request.offsetSeconds + std::clamp(windowStart + double(data.t0) * 0.01,
+                                                   observedStart, observedEnd);
+          const double end = request.offsetSeconds + std::clamp(
+              windowStart + double(data.t1) * 0.01, observedStart, observedEnd);
+          wordEvidence.append(tokenText, begin, end, logProbability);
+        };
+        double tokenLogProbability = 0.0;
+        double noSpeechProbability = 0.0;
+        for (int i = 0; i < whisper_full_n_segments(context.get()); ++i) {
+          const auto rawText = juce::String::fromUTF8(whisper_full_get_segment_text(context.get(), i));
+          if (rawText.trim().isEmpty() || !rawText.containsAnyOf(juce::String::fromUTF8(
+              "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZáéíóúÁÉÍÓÚñÑ0123456789"))) continue;
+          // ASR uses local 10 ms ticks. Keep this pass's times within observed
+          // source speech, including all preceding silence and explicit offset.
+          double begin = std::max(observedStart, windowStart + double(whisper_full_get_segment_t0(context.get(), i)) * 0.01);
+          double end = std::min(observedEnd, windowStart + double(whisper_full_get_segment_t1(context.get(), i)) * 0.01);
+          if (!std::isfinite(begin) || !std::isfinite(end) || end <= begin) { begin = observedStart; end = observedEnd; }
+          if (end <= begin) continue;
+          begin = request.offsetSeconds + std::clamp(begin, 0.0, duration);
+          end = request.offsetSeconds + std::clamp(end, 0.0, duration);
+          if (candidate.segment.text.isEmpty()) {
+            candidate.segment.startSeconds = begin;
+            candidate.segment.endSeconds = end;
+          } else {
+            candidate.segment.startSeconds = std::min(candidate.segment.startSeconds, begin);
+            candidate.segment.endSeconds = std::max(candidate.segment.endSeconds, end);
+          }
+          // single_segment normally produces one result per <=20 s window;
+          // preserve literal decoder strings if a backend returns more than one.
+          candidate.segment.text += rawText;
+          const double segmentNoSpeech = whisper_full_get_segment_no_speech_prob(context.get(), i);
+          noSpeechProbability = std::max(noSpeechProbability,
+              std::isfinite(segmentNoSpeech) ? std::clamp(segmentNoSpeech, 0.0, 1.0) : 1.0);
+          for (int token = 0; token < whisper_full_n_tokens(context.get(), i); ++token) {
+            const auto data = whisper_full_get_token_data(context.get(), i, token);
+            if (data.id < 0 || data.id >= whisper_token_eot(context.get())) continue;
+            const auto tokenText = juce::String::fromUTF8(whisper_full_get_token_text(context.get(), i, token));
+            if (tokenText.trim().isEmpty()) {
+              if (wordTimings) collectWordToken(tokenText, data, 0.0);
+              continue;
+            }
+            double logProbability = data.plog;
+            if (!std::isfinite(logProbability) || logProbability > 0.0) {
+              const double probability = data.p;
+              if (!std::isfinite(probability) || probability < 0.0 || probability > 1.0) continue;
+              logProbability = std::log(std::max(probability, std::exp(-100.0)));
+            }
+            tokenLogProbability += std::clamp(logProbability, -100.0, 0.0);
+            ++candidate.textTokenCount;
+            collectWordToken(tokenText, data, logProbability);
+          }
+        }
+        candidate.segment.text = candidate.segment.text.trim();
+        if (wordTimings) candidate.segment.words = wordEvidence.takeWords();
+        if (!candidate.segment.text.isEmpty()) {
+          candidate.avgLogProbability = candidate.textTokenCount > 0
+              ? tokenLogProbability / candidate.textTokenCount : -100.0;
+          candidate.noSpeechProbability = noSpeechProbability;
+          candidates.push_back(std::move(candidate));
+        }
+        notify(std::min(0.99, callbacks.baseProgress + callbacks.progressSpan));
+      }
+      selected = selectGuideRecognitionCandidate(candidates);
+      return true;
+    };
+
+    const auto locateKnownCompound = [&](GuideTranscriptSegment &parent, double windowStart) -> bool {
+      if (!guideAcousticCompoundPhrases(parent.text) || acousticPackIdentity.isEmpty()) return true;
+      if (cancelledNow()) return false;
+      if (!acousticTemplatesAttempted) {
+        acousticTemplatesAttempted = true;
+        juce::String ignored;
+        acousticTemplates = loadGuideAcousticTemplates(acousticPack, formats, cancelled, ignored);
+        if (cancelledNow()) return false;
+      }
+      if (acousticTemplates.fingerprint != acousticPackIdentity || acousticTemplates.templates.empty()) return true;
+      const auto located = matchKnownGuideCompound(utterance, request.offsetSeconds + windowStart,
+          parent, acousticTemplates, cancelled);
+      if (located.cancelled || cancelledNow()) { error = "Cancelado"; return false; }
+      if (located.announcements.empty()) return true;
+      auto candidate = parent;
+      candidate.acousticAnnouncements = located.announcements;
+      candidate.acousticResidualRatio = located.residualRatio;
+      const bool inSource = std::all_of(candidate.acousticAnnouncements.begin(),
+          candidate.acousticAnnouncements.end(), [&](const auto &announcement) {
+            return announcement.startSeconds >= request.offsetSeconds &&
+                announcement.endSeconds <= result.durationSeconds + 1e-7;
+          });
+      if (inSource && guideAcousticAnnouncementsMatchParent(candidate)) {
+        parent.acousticAnnouncements = std::move(candidate.acousticAnnouncements);
+        parent.acousticResidualRatio = candidate.acousticResidualRatio;
+      }
+      return true;
+    };
 
     const auto recognize = [&]() -> bool {
       if (utterance.empty() || activeFrames < minimumActiveFrames) return true;
       if (cancelledNow()) return false;
       if (result.segments.size() >= 65536) { error = juce::String::fromUTF8("La guía contiene demasiados anuncios."); return false; }
       const double windowStart = double(utteranceStart) / analysisRate;
-      InferenceCallbacks callbacks{cancelled, progress, 0.1 + 0.89 * windowStart / duration,
-          0.89 * double(utterance.size()) / analysisRate / duration};
-      auto params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
-      params.n_threads = int(std::max(1u, std::min(4u, std::thread::hardware_concurrency())));
-      params.language = language.toRawUTF8(); params.translate = false;
-      // Generic vocabulary only: never condition on a fixture's labels, order
-      // or expected timestamps. Short isolated guide words need domain context.
-      params.initial_prompt = language == "es"
-          ? "Guía musical hablada: intro, verso, estrofa, pre-coro, coro, puente, instrumental, solo, interludio, salida, final; uno, dos, tres, cuatro."
-          : language == "en"
-              ? "Spoken music guide: intro, verse, pre-chorus, chorus, bridge, instrumental, solo, interlude, outro, ending; one, two, three, four."
-              : nullptr;
-      // no_context clears prior utterances; a nonzero text budget is still
-      // necessary for whisper.cpp to actually consume the generic prompt.
-      params.no_context = true; params.n_max_text_ctx = 128;
-      params.carry_initial_prompt = true;
-      params.single_segment = true; params.no_timestamps = false;
-      params.print_special = params.print_progress = params.print_realtime = params.print_timestamps = false;
-      params.token_timestamps = false;
-      params.temperature = 0.0f; params.temperature_inc = 0.0f;
-      params.greedy.best_of = 1; params.beam_search.beam_size = 5; params.max_tokens = 64;
-      params.suppress_blank = true; params.suppress_nst = true;
-      params.no_speech_thold = 0.6f;
-      params.encoder_begin_callback = [](whisper_context *, whisper_state *, void *data) {
-        return !isCancelled(static_cast<InferenceCallbacks *>(data)->cancelled);
-      };
-      params.encoder_begin_callback_user_data = &callbacks;
-      params.abort_callback = [](void *data) { return isCancelled(static_cast<InferenceCallbacks *>(data)->cancelled); };
-      params.abort_callback_user_data = &callbacks;
-      params.progress_callback = [](whisper_context *, whisper_state *, int percent, void *data) {
-        const auto &c = *static_cast<InferenceCallbacks *>(data);
-        if (c.progress) c.progress(std::clamp(c.baseProgress + c.progressSpan * percent / 100.0, 0.0, 0.99));
-      };
-      params.progress_callback_user_data = &callbacks;
-      float peak = 0.0f;
-      for (auto sample : utterance) peak = std::max(peak, std::abs(sample));
-      // Normalize only a detected utterance, never its surrounding silent
-      // timeline. The gain cap avoids turning low-level residuals into speech.
-      const float normalizationGain = peak > 0 ? std::min(20.0f, 0.95f / peak) : 1.0f;
-      auto inferenceAudio = utterance;
-      for (auto &sample : inferenceAudio) sample *= normalizationGain;
-      const auto status = whisper_full(context.get(), params, inferenceAudio.data(), int(inferenceAudio.size()));
-      if (cancelledNow()) return false;
-      if (status != 0) { error = juce::String::fromUTF8("Whisper no pudo reconocer la guía local."); return false; }
-      for (int i = 0; i < whisper_full_n_segments(context.get()); ++i) {
-        if (whisper_full_get_segment_no_speech_prob(context.get(), i) >= 0.6f) continue;
-        auto text = juce::String::fromUTF8(whisper_full_get_segment_text(context.get(), i)).trim();
-        if (text.isEmpty() || !text.containsAnyOf(juce::String::fromUTF8("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZáéíóúÁÉÍÓÚñÑ0123456789"))) continue;
-        // ASR timestamps are local 10 ms ticks. Restrict them to the observed
-        // speech extent, retaining absolute file silence and the explicit offset.
-        const double observedStart = double(speechStart) / analysisRate;
-        const double observedEnd = double(speechEnd) / analysisRate;
-        double start = std::max(observedStart, windowStart + double(whisper_full_get_segment_t0(context.get(), i)) * 0.01);
-        double end = std::min(observedEnd, windowStart + double(whisper_full_get_segment_t1(context.get(), i)) * 0.01);
-        if (!std::isfinite(start) || !std::isfinite(end) || end <= start) { start = observedStart; end = observedEnd; }
-        if (end <= start) continue;
-        result.segments.push_back({request.offsetSeconds + std::clamp(start, 0.0, duration),
-            request.offsetSeconds + std::clamp(end, 0.0, duration), std::move(text)});
-      }
+      const double progressBase = 0.1 + 0.89 * windowStart / duration;
+      const double progressAmount = 0.89 * double(utterance.size()) / analysisRate / duration;
+      std::optional<GuideTranscriptSegment> selected;
+      // Reserve progress for bounded retries. A successful
+      // ordinary directive never gets split merely because its words pause.
+      if (!decodeWindow(utterance, windowStart, double(speechStart) / analysisRate,
+          double(speechEnd) / analysisRate, progressBase, progressAmount * 0.4, selected)) return false;
+      if (selected && !locateKnownCompound(*selected, windowStart)) return false;
+      if (selected && !selected->acousticAnnouncements.empty()) {
+        // Preserve ASR literally; known recordings supply independent source
+        // onsets, including actual overlaps and physically verified omissions.
+        result.segments.push_back(std::move(*selected));
+      } else if (selected && !isSingleGuideDirective(*selected)) {
+        const auto compound = guideCompoundDirectives(selected->text);
+        const auto windows = guideSpeechRetryWindows(utterance);
+        std::vector<GuideTranscriptSegment> children;
+        bool supported = !windows.empty() &&
+            (!compound || windows.size() == size_t(compound->phrases.size()));
+        for (size_t i = 0; supported && i < windows.size(); ++i) {
+          const auto &window = windows[i];
+          const std::vector<float> pcm(utterance.begin() + std::ptrdiff_t(window.beginSample),
+              utterance.begin() + std::ptrdiff_t(window.endSample));
+          std::optional<GuideTranscriptSegment> child;
+          const double childSpan = progressAmount * 0.3 / double(windows.size());
+          if (!decodeWindow(pcm, windowStart + double(window.beginSample) / analysisRate,
+              windowStart + double(window.speechBeginSample) / analysisRate,
+              windowStart + double(window.speechEndSample) / analysisRate,
+              progressBase + progressAmount * 0.4 + double(i) * childSpan, childSpan, child)) return false;
+          supported = child && isSupportedGuideRetryChild(*child) &&
+              (!compound || sameGuideDirectiveMeaning(compound->phrases[int(i)], child->text));
+          if (supported) children.push_back(std::move(*child));
+        }
+        if (!supported && compound) {
+          // Explicit independently meaningful parts may have short gaps, or
+          // one part may contain a pause ("All In"). Only measured silence
+          // supplies candidate boundaries. Re-decode every contiguous group;
+          // the complete decomposition must be semantically unique.
+          const auto regions = guideSpeechRetryWindowsAtGap(utterance, 6);
+          const auto partitions = guideSpeechRetryPartitions(regions, size_t(compound->phrases.size()));
+          constexpr size_t maximumDecodes = 16;
+          const auto regrouped = guideUniqueSpeechRetry(partitions, compound->phrases,
+              [&](const GuideSpeechWindow &window, size_t attempt,
+                  std::optional<GuideTranscriptSegment> &child) {
+                const std::vector<float> pcm(utterance.begin() + std::ptrdiff_t(window.beginSample),
+                    utterance.begin() + std::ptrdiff_t(window.endSample));
+                const double childSpan = progressAmount * 0.3 / double(maximumDecodes);
+                return decodeWindow(pcm, windowStart + double(window.beginSample) / analysisRate,
+                    windowStart + double(window.speechBeginSample) / analysisRate,
+                    windowStart + double(window.speechEndSample) / analysisRate,
+                    progressBase + progressAmount * 0.7 + double(attempt) * childSpan,
+                    childSpan, child);
+              }, maximumDecodes);
+          if (!regrouped.completed) return false;
+          if (!regrouped.children.empty()) {
+            children = regrouped.children;
+            supported = true;
+          }
+        }
+        if (supported) {
+          if (result.segments.size() + children.size() > 65536) {
+            error = juce::String::fromUTF8("La guía contiene demasiados anuncios."); return false;
+          }
+          for (auto &child : children) result.segments.push_back(std::move(child));
+        } else {
+          // Touching words cannot be separated by the energy gate. Retain the
+          // original parent and attach bounded word evidence only when the
+          // additional pass recognises the same phrase in the same language.
+          if (guideCompoundCount(selected->text) || compound) {
+            std::optional<GuideTranscriptSegment> timed;
+            if (!decodeWindow(utterance, windowStart, double(speechStart) / analysisRate,
+                double(speechEnd) / analysisRate, progressBase + progressAmount * 0.7,
+                progressAmount * 0.3, timed, true, selected->language)) return false;
+            if (timed && timed->language == selected->language &&
+                playworship::guide::normalizedWords(timed->text) ==
+                    playworship::guide::normalizedWords(selected->text))
+              selected->words = std::move(timed->words);
+          }
+          result.segments.push_back(std::move(*selected));
+        }
+      } else if (selected) result.segments.push_back(std::move(*selected));
+      notify(std::min(0.99, progressBase + progressAmount));
       return true;
     };
 
@@ -310,12 +523,19 @@ public:
           utterance.clear(); activeFrames = silenceFrames = 0;
         }
       }
-      if ((position / frameSamples) % 25 == 0) notify(0.1 + 0.89 * double(position + count) / double(totalSamples));
+      if ((position / frameSamples) % 25 == 0) {
+        // Scanning an active window has not recognised it yet. Its two decode
+        // passes own that part of the progress range, in language order.
+        const auto processed = utterance.empty() ? position + count : utteranceStart;
+        notify(0.1 + 0.89 * double(processed) / double(totalSamples));
+      }
     }
     if (!recognize() || cancelledNow()) return false;
     if (request.audioFile.getSize() != audioSize || request.audioFile.getLastModificationTime() != audioModified ||
-        model.getSize() != modelSize || model.getLastModificationTime() != modelModified) {
-      error = juce::String::fromUTF8("El audio o el modelo cambió durante el reconocimiento; vuelve a analizar."); return false;
+        model.getSize() != modelSize || model.getLastModificationTime() != modelModified ||
+        guideAcousticPackFingerprint(acousticPack, cancelled) != acousticPackIdentity) {
+      if (cancelledNow()) return false;
+      error = juce::String::fromUTF8("El audio, el modelo o el pack de voces cambió durante el reconocimiento; vuelve a analizar."); return false;
     }
     out = std::move(result);
     notify(1.0);

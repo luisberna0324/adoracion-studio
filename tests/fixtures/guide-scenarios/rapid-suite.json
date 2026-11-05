@@ -1,0 +1,1421 @@
+{
+  "schemaVersion": 1,
+  "title": "PlayWorship · combinaciones rápidas de guía",
+  "sourceArchiveSha256": "cc3c26dbc40e10a6c2fbc7ab518ffe1a4728a592f568a38b318f832f2014506b",
+  "cases": [
+    {
+      "id": "rapid-count-es-120",
+      "title": "Cuenta + Intro · 120 BPM · ES",
+      "group": "rapid-counts",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "es",
+        "bpm-120",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 1.5
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 2.5,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 3.0
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 3.5
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 4.0
+        }
+      ]
+    },
+    {
+      "id": "rapid-count-en-120",
+      "title": "Cuenta + Intro · 120 BPM · EN",
+      "group": "rapid-counts",
+      "bpm": 120,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "en",
+        "bpm-120",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "en",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 1.5
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "onsetSeconds": 2.5,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 3.0
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "en",
+          "onsetSeconds": 3.5
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "en",
+          "onsetSeconds": 4.0
+        }
+      ]
+    },
+    {
+      "id": "rapid-count-es-140",
+      "title": "Cuenta + Intro · 140 BPM · ES",
+      "group": "rapid-counts",
+      "bpm": 140,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "es",
+        "bpm-140",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 1.3571428571428572
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 2.2142857142857144,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 2.642857142857143
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 3.071428571428571
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 3.5
+        }
+      ]
+    },
+    {
+      "id": "rapid-count-en-140",
+      "title": "Cuenta + Intro · 140 BPM · EN",
+      "group": "rapid-counts",
+      "bpm": 140,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "en",
+        "bpm-140",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "en",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 1.3571428571428572
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "onsetSeconds": 2.2142857142857144,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 2.642857142857143
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "en",
+          "onsetSeconds": 3.071428571428571
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "en",
+          "onsetSeconds": 3.5
+        }
+      ]
+    },
+    {
+      "id": "rapid-count-es-160",
+      "title": "Cuenta + Intro · 160 BPM · ES",
+      "group": "rapid-counts",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "es",
+        "bpm-160",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 1.25
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 2.0,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 2.375
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 2.75
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 3.125
+        }
+      ]
+    },
+    {
+      "id": "rapid-count-en-160",
+      "title": "Cuenta + Intro · 160 BPM · EN",
+      "group": "rapid-counts",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "en",
+        "bpm-160",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "en",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 1.25
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "onsetSeconds": 2.0,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 2.375
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "en",
+          "onsetSeconds": 2.75
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "en",
+          "onsetSeconds": 3.125
+        }
+      ]
+    },
+    {
+      "id": "rapid-count-es-180",
+      "title": "Cuenta + Intro · 180 BPM · ES",
+      "group": "rapid-counts",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "es",
+        "bpm-180",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 1.1666666666666665
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 1.8333333333333333,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 2.1666666666666665
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 2.5
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 2.833333333333333
+        }
+      ]
+    },
+    {
+      "id": "rapid-count-en-180",
+      "title": "Cuenta + Intro · 180 BPM · EN",
+      "group": "rapid-counts",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "counts",
+        "en",
+        "bpm-180",
+        "overlap-declared"
+      ],
+      "description": "Cinco cuentas realmente pronunciadas: 1, 2, Intro, 2, 3, 4. Los dos 2 son eventos distintos. Las voces no se aceleran: a pulsos cortos pueden tocarse o solaparse sus colas; el manifiesto conserva los solapamientos. Intro permanece sin ordinal y su marca va al compás siguiente.",
+      "events": [
+        {
+          "id": "one",
+          "kind": "count",
+          "key": "1",
+          "language": "en",
+          "onsetSeconds": 0.5
+        },
+        {
+          "id": "two-initial",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 1.1666666666666665
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "onsetSeconds": 1.8333333333333333,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 2.1666666666666665
+        },
+        {
+          "id": "three",
+          "kind": "count",
+          "key": "3",
+          "language": "en",
+          "onsetSeconds": 2.5
+        },
+        {
+          "id": "four",
+          "kind": "count",
+          "key": "4",
+          "language": "en",
+          "onsetSeconds": 2.833333333333333
+        }
+      ]
+    },
+    {
+      "id": "rapid-pair-es-200",
+      "title": "Interludio + Toda la banda · 200 ms",
+      "group": "rapid-pairs",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "main-secondary",
+        "es",
+        "gap-200",
+        "bpm-160"
+      ],
+      "description": "Escalera controlada de pausas entre voces activas: mismos clips ES y misma cuadrícula a 160 BPM. Pausa de 200 ms; sólo la principal se anticipa al compás siguiente. Sin pausa no se añade una frontera artificial.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.2
+        }
+      ]
+    },
+    {
+      "id": "rapid-pair-es-100",
+      "title": "Interludio + Toda la banda · 100 ms",
+      "group": "rapid-pairs",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "main-secondary",
+        "es",
+        "gap-100",
+        "bpm-160"
+      ],
+      "description": "Escalera controlada de pausas entre voces activas: mismos clips ES y misma cuadrícula a 160 BPM. Pausa de 100 ms; sólo la principal se anticipa al compás siguiente. Sin pausa no se añade una frontera artificial.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.1
+        }
+      ]
+    },
+    {
+      "id": "rapid-pair-es-060",
+      "title": "Interludio + Toda la banda · 060 ms",
+      "group": "rapid-pairs",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "main-secondary",
+        "es",
+        "gap-060",
+        "bpm-160"
+      ],
+      "description": "Escalera controlada de pausas entre voces activas: mismos clips ES y misma cuadrícula a 160 BPM. Pausa de 060 ms; sólo la principal se anticipa al compás siguiente. Sin pausa no se añade una frontera artificial.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.06
+        }
+      ]
+    },
+    {
+      "id": "rapid-pair-es-040",
+      "title": "Interludio + Toda la banda · 040 ms",
+      "group": "rapid-pairs",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "main-secondary",
+        "es",
+        "gap-040",
+        "bpm-160"
+      ],
+      "description": "Escalera controlada de pausas entre voces activas: mismos clips ES y misma cuadrícula a 160 BPM. Pausa de 040 ms; sólo la principal se anticipa al compás siguiente. Sin pausa no se añade una frontera artificial.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.04
+        }
+      ]
+    },
+    {
+      "id": "rapid-pair-es-020",
+      "title": "Interludio + Toda la banda · 020 ms",
+      "group": "rapid-pairs",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "main-secondary",
+        "es",
+        "gap-020",
+        "bpm-160"
+      ],
+      "description": "Escalera controlada de pausas entre voces activas: mismos clips ES y misma cuadrícula a 160 BPM. Pausa de 020 ms; sólo la principal se anticipa al compás siguiente. Sin pausa no se añade una frontera artificial.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.02
+        }
+      ]
+    },
+    {
+      "id": "rapid-pair-es-000",
+      "title": "Interludio + Toda la banda · 000 ms",
+      "group": "rapid-pairs",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "main-secondary",
+        "es",
+        "gap-000",
+        "bpm-160"
+      ],
+      "description": "Escalera controlada de pausas entre voces activas: mismos clips ES y misma cuadrícula a 160 BPM. Pausa de 000 ms; sólo la principal se anticipa al compás siguiente. Sin pausa no se añade una frontera artificial.",
+      "events": [
+        {
+          "id": "interlude",
+          "kind": "section",
+          "key": "Interlude",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.0
+        }
+      ]
+    },
+    {
+      "id": "rapid-triple-es-100",
+      "title": "Tres indicaciones · ES · 100 ms",
+      "group": "rapid-triples",
+      "bpm": 140,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "three-secondary",
+        "es",
+        "gap-100",
+        "bpm-140"
+      ],
+      "description": "Build, All In y Drums In deben ser tres puntos independientes, sin límites musicales. Pausas activas de 100 ms; una pausa interna de All In no crea otro evento.",
+      "events": [
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "es",
+          "onsetSeconds": 0.62
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.1
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "gapSeconds": 0.1
+        }
+      ]
+    },
+    {
+      "id": "rapid-triple-en-040",
+      "title": "Tres indicaciones · EN · 040 ms",
+      "group": "rapid-triples",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "three-secondary",
+        "en",
+        "gap-040",
+        "bpm-160"
+      ],
+      "description": "Build, All In y Drums In deben ser tres puntos independientes, sin límites musicales. Pausas activas de 040 ms; una pausa interna de All In no crea otro evento.",
+      "events": [
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "en",
+          "onsetSeconds": 0.62
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "gapSeconds": 0.04
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "en",
+          "gapSeconds": 0.04
+        }
+      ]
+    },
+    {
+      "id": "rapid-triple-mixed-000",
+      "title": "Tres indicaciones · MIXED · 000 ms",
+      "group": "rapid-triples",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "three-secondary",
+        "mixed",
+        "gap-000",
+        "bpm-180"
+      ],
+      "description": "Build, All In y Drums In deben ser tres puntos independientes, sin límites musicales. Pausas activas de 000 ms; una pausa interna de All In no crea otro evento.",
+      "events": [
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "es",
+          "onsetSeconds": 0.62
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "gapSeconds": 0.0
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "gapSeconds": 0.0
+        }
+      ]
+    },
+    {
+      "id": "rapid-chain-es-140",
+      "title": "Principal + indicaciones + cuenta · ES · 140 BPM",
+      "group": "rapid-chains",
+      "bpm": 140,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 8,
+      "tags": [
+        "rapid",
+        "main-secondary-counts",
+        "es",
+        "bpm-140",
+        "overlap-declared"
+      ],
+      "description": "Una única principal, dos indicaciones muy próximas y una cuenta 1–4 posterior sobre pulsos. Las cuentas pueden solapar colas por la velocidad. No se anuncian dos principales sobre el mismo compás de destino.",
+      "events": [
+        {
+          "id": "main",
+          "kind": "section",
+          "key": "Verse",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "ordinal": 1
+        },
+        {
+          "id": "instruction-a",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "gapSeconds": 0.06
+        },
+        {
+          "id": "instruction-b",
+          "kind": "instruction",
+          "key": "Break",
+          "language": "es",
+          "gapSeconds": 0.02
+        },
+        {
+          "id": "count-1",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 5.642857142857142
+        },
+        {
+          "id": "count-2",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 6.071428571428571
+        },
+        {
+          "id": "count-3",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 6.499999999999999
+        },
+        {
+          "id": "count-4",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 6.928571428571428
+        }
+      ]
+    },
+    {
+      "id": "rapid-chain-en-160",
+      "title": "Principal + indicaciones + cuenta · EN · 160 BPM",
+      "group": "rapid-chains",
+      "bpm": 160,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 8,
+      "tags": [
+        "rapid",
+        "main-secondary-counts",
+        "en",
+        "bpm-160",
+        "overlap-declared"
+      ],
+      "description": "Una única principal, dos indicaciones muy próximas y una cuenta 1–4 posterior sobre pulsos. Las cuentas pueden solapar colas por la velocidad. No se anuncian dos principales sobre el mismo compás de destino.",
+      "events": [
+        {
+          "id": "main",
+          "kind": "section",
+          "key": "Bridge",
+          "language": "en",
+          "onsetSeconds": 0.62,
+          "ordinal": 2
+        },
+        {
+          "id": "instruction-a",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "gapSeconds": 0.0
+        },
+        {
+          "id": "instruction-b",
+          "kind": "instruction",
+          "key": "Hits",
+          "language": "en",
+          "gapSeconds": 0.04
+        },
+        {
+          "id": "count-1",
+          "kind": "count",
+          "key": "1",
+          "language": "en",
+          "onsetSeconds": 5.0
+        },
+        {
+          "id": "count-2",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 5.375
+        },
+        {
+          "id": "count-3",
+          "kind": "count",
+          "key": "3",
+          "language": "en",
+          "onsetSeconds": 5.75
+        },
+        {
+          "id": "count-4",
+          "kind": "count",
+          "key": "4",
+          "language": "en",
+          "onsetSeconds": 6.125
+        }
+      ]
+    },
+    {
+      "id": "rapid-chain-mixed-180",
+      "title": "Principal + indicaciones + cuenta · MIXED · 180 BPM",
+      "group": "rapid-chains",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 8,
+      "tags": [
+        "rapid",
+        "main-secondary-counts",
+        "mixed",
+        "bpm-180",
+        "overlap-declared"
+      ],
+      "description": "Una única principal, dos indicaciones muy próximas y una cuenta 1–4 posterior sobre pulsos. Las cuentas pueden solapar colas por la velocidad. No se anuncian dos principales sobre el mismo compás de destino.",
+      "events": [
+        {
+          "id": "main",
+          "kind": "section",
+          "key": "Refrain",
+          "language": "en",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "instruction-a",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "gapSeconds": 0.02
+        },
+        {
+          "id": "instruction-b",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "en",
+          "gapSeconds": 0.0
+        },
+        {
+          "id": "count-1",
+          "kind": "count",
+          "key": "1",
+          "language": "es",
+          "onsetSeconds": 4.5
+        },
+        {
+          "id": "count-2",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 4.833333333333333
+        },
+        {
+          "id": "count-3",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 5.166666666666667
+        },
+        {
+          "id": "count-4",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 5.5
+        }
+      ]
+    },
+    {
+      "id": "rapid-ordinal-count-es-140",
+      "title": "Verso 2 frente a cuenta 2 · ES · 140 BPM",
+      "group": "rapid-ordinals",
+      "bpm": 140,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 8,
+      "tags": [
+        "rapid",
+        "ordinal-vs-count",
+        "es",
+        "bpm-140",
+        "overlap-declared"
+      ],
+      "description": "Verso/Verse 2 conserva un ordinal realmente hablado. El 2 aislado es una cuenta y el 2 después de Intro tampoco numera la sección. Verse e Intro tienen destinos distintos, separados por cuatro compases; no se prueba una fusión de límites.",
+      "events": [
+        {
+          "id": "verse-two",
+          "kind": "section",
+          "key": "Verse",
+          "language": "es",
+          "ordinal": 2,
+          "onsetSeconds": 0.62
+        },
+        {
+          "id": "count-two-isolated",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 4.048571428571428
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 7.477142857142857,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "count-2",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "onsetSeconds": 7.905714285714286
+        },
+        {
+          "id": "count-3",
+          "kind": "count",
+          "key": "3",
+          "language": "es",
+          "onsetSeconds": 8.334285714285715
+        },
+        {
+          "id": "count-4",
+          "kind": "count",
+          "key": "4",
+          "language": "es",
+          "onsetSeconds": 8.762857142857143
+        }
+      ]
+    },
+    {
+      "id": "rapid-ordinal-count-en-180",
+      "title": "Verso 2 frente a cuenta 2 · EN · 180 BPM",
+      "group": "rapid-ordinals",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 8,
+      "tags": [
+        "rapid",
+        "ordinal-vs-count",
+        "en",
+        "bpm-180",
+        "overlap-declared"
+      ],
+      "description": "Verso/Verse 2 conserva un ordinal realmente hablado. El 2 aislado es una cuenta y el 2 después de Intro tampoco numera la sección. Verse e Intro tienen destinos distintos, separados por cuatro compases; no se prueba una fusión de límites.",
+      "events": [
+        {
+          "id": "verse-two",
+          "kind": "section",
+          "key": "Verse",
+          "language": "en",
+          "ordinal": 2,
+          "onsetSeconds": 0.62
+        },
+        {
+          "id": "count-two-isolated",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 3.2866666666666666
+        },
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "onsetSeconds": 5.953333333333333,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "count-2",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "onsetSeconds": 6.286666666666666
+        },
+        {
+          "id": "count-3",
+          "kind": "count",
+          "key": "3",
+          "language": "en",
+          "onsetSeconds": 6.62
+        },
+        {
+          "id": "count-4",
+          "kind": "count",
+          "key": "4",
+          "language": "en",
+          "onsetSeconds": 6.953333333333333
+        }
+      ]
+    },
+    {
+      "id": "rapid-intro-single-count-es-180",
+      "title": "Intro + un solo Dos · ES · 180 BPM",
+      "group": "rapid-single-count",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "intro-single-count",
+        "es",
+        "bpm-180",
+        "gap-020"
+      ],
+      "description": "Dos clips realmente independientes: Intro sin ordinal y una única cuenta 2 después. No se pronuncian 1, 3 ni 4 y no deben completarse. Contrasta el caso de Verse 2 atómico de rapid-ordinal-count. La pausa activa es de 20 ms; sin otra evidencia temporal el significado puede quedar revisable, pero no se acredita Intro 2 como haber reconocido ambos eventos.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "es",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two-only",
+          "kind": "count",
+          "key": "2",
+          "language": "es",
+          "gapSeconds": 0.02
+        }
+      ]
+    },
+    {
+      "id": "rapid-intro-single-count-en-180",
+      "title": "Intro + un solo Dos · EN · 180 BPM",
+      "group": "rapid-single-count",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "intro-single-count",
+        "en",
+        "bpm-180",
+        "gap-000"
+      ],
+      "description": "Dos clips realmente independientes: Intro sin ordinal y una única cuenta 2 después. No se pronuncian 1, 3 ni 4 y no deben completarse. Contrasta el caso de Verse 2 atómico de rapid-ordinal-count. La pausa activa es de 0 ms; sin otra evidencia temporal el significado puede quedar revisable, pero no se acredita Intro 2 como haber reconocido ambos eventos.",
+      "events": [
+        {
+          "id": "intro",
+          "kind": "section",
+          "key": "Intro",
+          "language": "en",
+          "onsetSeconds": 0.62,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "two-only",
+          "kind": "count",
+          "key": "2",
+          "language": "en",
+          "gapSeconds": 0.0
+        }
+      ]
+    },
+    {
+      "id": "rapid-negative-silence-180",
+      "title": "Control sin voz · silence · 180 BPM",
+      "group": "rapid-negatives",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 4,
+      "tags": [
+        "rapid",
+        "negative",
+        "no-voice",
+        "bpm-180"
+      ],
+      "description": "Cero anuncios, cuentas e indicaciones esperados. Cualquier marca será un evento adicional; el click no debe convertirse en conteo.",
+      "events": []
+    },
+    {
+      "id": "rapid-negative-click-180",
+      "title": "Control sin voz · click · 180 BPM",
+      "group": "rapid-negatives",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 4,
+      "tags": [
+        "rapid",
+        "negative",
+        "no-voice",
+        "bpm-180"
+      ],
+      "description": "Cero anuncios, cuentas e indicaciones esperados. Cualquier marca será un evento adicional; el click no debe convertirse en conteo.",
+      "events": [],
+      "background": "click"
+    },
+    {
+      "id": "rapid-low-gain-es-140",
+      "title": "Tres indicaciones ES · ganancia −18 dB",
+      "group": "rapid-conditions",
+      "bpm": 140,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "three-secondary",
+        "es",
+        "gap-100",
+        "bpm-140",
+        "controlled-effect"
+      ],
+      "description": "Build, All In y Drums In deben ser tres puntos independientes, sin límites musicales. Pausas activas de 100 ms; una pausa interna de All In no crea otro evento. Condición adicional declarada: Tres indicaciones ES · ganancia −18 dB. Las referencias no cambian por añadirla.",
+      "events": [
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "es",
+          "onsetSeconds": 0.62
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "es",
+          "gapSeconds": 0.1
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "gapSeconds": 0.1
+        }
+      ],
+      "effects": {
+        "gainDb": -18
+      }
+    },
+    {
+      "id": "rapid-noise-mixed-180",
+      "title": "Tres indicaciones mixtas · ruido −54 dBFS",
+      "group": "rapid-conditions",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "three-secondary",
+        "mixed",
+        "gap-000",
+        "bpm-180",
+        "controlled-effect"
+      ],
+      "description": "Build, All In y Drums In deben ser tres puntos independientes, sin límites musicales. Pausas activas de 000 ms; una pausa interna de All In no crea otro evento. Condición adicional declarada: Tres indicaciones mixtas · ruido −54 dBFS. Las referencias no cambian por añadirla.",
+      "events": [
+        {
+          "id": "build",
+          "kind": "instruction",
+          "key": "Build",
+          "language": "es",
+          "onsetSeconds": 0.62
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "gapSeconds": 0.0
+        },
+        {
+          "id": "drums-in",
+          "kind": "instruction",
+          "key": "Drums In",
+          "language": "es",
+          "gapSeconds": 0.0
+        }
+      ],
+      "effects": {
+        "noiseDbfs": -54
+      }
+    },
+    {
+      "id": "rapid-boundary-015ms-180",
+      "title": "Frontera 15 ms · Coro + All In · 180 BPM",
+      "group": "rapid-boundaries",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "boundary",
+        "offset-015ms",
+        "es-en",
+        "bpm-180"
+      ],
+      "description": "Anuncio 15 ms antes de línea de compás a 180 BPM. La tolerancia contractual de frontera es 20 ms: los casos de15/35ms deben producir compases de destino distintos. All In mantiene su tiempo de voz y no sigue el desplazamiento de Coro.",
+      "events": [
+        {
+          "id": "chorus",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "bar": 2,
+          "floatOffsetSeconds": -0.015,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "gapSeconds": 0.02
+        }
+      ]
+    },
+    {
+      "id": "rapid-boundary-035ms-180",
+      "title": "Frontera 35 ms · Coro + All In · 180 BPM",
+      "group": "rapid-boundaries",
+      "bpm": 180,
+      "meter": "4/4",
+      "originSeconds": 0.5,
+      "durationBars": 6,
+      "tags": [
+        "rapid",
+        "boundary",
+        "offset-035ms",
+        "es-en",
+        "bpm-180"
+      ],
+      "description": "Anuncio 35 ms antes de línea de compás a 180 BPM. La tolerancia contractual de frontera es 20 ms: los casos de15/35ms deben producir compases de destino distintos. All In mantiene su tiempo de voz y no sigue el desplazamiento de Coro.",
+      "events": [
+        {
+          "id": "chorus",
+          "kind": "section",
+          "key": "Chorus",
+          "language": "es",
+          "bar": 2,
+          "floatOffsetSeconds": -0.035,
+          "requireUnnumbered": true
+        },
+        {
+          "id": "all-in",
+          "kind": "instruction",
+          "key": "All In",
+          "language": "en",
+          "gapSeconds": 0.02
+        }
+      ]
+    }
+  ]
+}

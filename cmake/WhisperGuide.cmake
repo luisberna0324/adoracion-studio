@@ -97,7 +97,9 @@ else()
 endif()
 
 function(playworship_link_whisper_guide target)
-    target_sources(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../src/analysis/WhisperGuideTranscriber.cpp")
+    target_sources(${target} PRIVATE
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../src/analysis/WhisperGuideTranscriber.cpp"
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../src/analysis/GuideRecognitionSelection.cpp")
     if(MTCONTROLS_ENABLE_WHISPER_GUIDE)
         target_compile_definitions(${target} PRIVATE PLAYWORSHIP_WHISPER_GUIDE=1)
         target_link_libraries(${target} PRIVATE whisper)
@@ -112,11 +114,18 @@ if(MTCONTROLS_BUILD_GUIDE_TRANSCRIPTION_PROBE)
     target_compile_definitions(MTControlsGuideTranscriptionProbe PRIVATE
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1)
     target_link_libraries(MTControlsGuideTranscriptionProbe PRIVATE
-        juce::juce_audio_formats juce::juce_cryptography)
+        MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     juce_generate_juce_header(MTControlsGuideTranscriptionProbe)
-    playworship_link_whisper_guide(MTControlsGuideTranscriptionProbe)
+    juce_add_console_app(MTControlsGuideCorpusEvaluationProbe PRODUCT_NAME "Guide Corpus Evaluation Probe")
+    target_sources(MTControlsGuideCorpusEvaluationProbe PRIVATE tests/guide_corpus_evaluation_probe.cpp)
+    target_include_directories(MTControlsGuideCorpusEvaluationProbe PRIVATE src)
+    target_compile_definitions(MTControlsGuideCorpusEvaluationProbe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(MTControlsGuideCorpusEvaluationProbe PRIVATE
+        MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsGuideCorpusEvaluationProbe)
     if(MSVC)
         target_compile_options(MTControlsGuideTranscriptionProbe PRIVATE /utf-8)
+        target_compile_options(MTControlsGuideCorpusEvaluationProbe PRIVATE /utf-8)
     endif()
     # No CTest entry: normal regression runs do not require/download a model or
     # private audio. Invoke this probe explicitly for native recognition proof.

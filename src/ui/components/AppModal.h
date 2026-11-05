@@ -17,6 +17,8 @@ public:
   ~AppModal() override;
 
   std::function<void()> onClosed;
+  // Shared backdrop and card surface for task-specific in-app dialogs.
+  static void paintSurface(juce::Graphics &, juce::Rectangle<int> cardBounds);
   void show();
   void paint(juce::Graphics &) override;
   void resized() override;

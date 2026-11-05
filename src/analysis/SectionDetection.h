@@ -1,18 +1,19 @@
 #pragma once
 
 #include "../data/SongData.h"
+#include "../data/GuideVocabulary.h"
 #include <atomic>
 #include <cstdint>
 
 namespace playworship::analysis {
 
 inline constexpr int sectionDetectionSchemaVersion = 1;
-inline constexpr const char *sectionDetectionAlgorithmVersion = "sections-mvp-1";
+inline constexpr const char *sectionDetectionAlgorithmVersion = "sections-mvp-7-compound-directives";
 inline constexpr std::size_t maximumSectionSuggestions = 256;
 inline constexpr double minimumAcceptedSectionDurationSeconds = 0.25;
 
-enum class SectionType { unknown, intro, verse, preChorus, chorus, bridge,
-                         instrumental, outro, ending, custom };
+// The shared vocabulary preserves every existing serialized value (0..15).
+using SectionType = playworship::guide::SectionFamily;
 enum class ConfidenceLevel { low, medium, high };
 enum class SuggestionStatus { suggested, confirmed, rejected };
 
@@ -39,6 +40,15 @@ struct GuideCue {
   juce::String rawText;
   SectionType normalizedType = SectionType::unknown;
   std::optional<int> spokenOrdinal;
+  std::optional<double> asrConfidence;
+};
+
+// An independent spoken instruction, retained separately from musical ranges.
+// name uses an existing guide key when its meaning is equivalent. Instructions
+// without an exact recorded counterpart keep their literal name for review.
+struct GuideUtilityCue {
+  double cueTimeSeconds = 0.0;
+  juce::String rawText, name;
   std::optional<double> asrConfidence;
 };
 
@@ -89,6 +99,20 @@ juce::String confidenceName(ConfidenceLevel level);
 std::optional<GuideCue> normalizeGuideCue(double cueTimeSeconds,
                                         const juce::String &rawText,
                                         std::optional<double> asrConfidence = {});
+// Known count/instrument/intensity instructions are independent cues, not
+// musical boundaries. Unrecognized speech deliberately returns false.
+bool isGuideUtilityCue(const juce::String &rawText);
+std::optional<GuideUtilityCue> normalizeGuideUtilityCue(
+    double cueTimeSeconds, const juce::String &rawText,
+    std::optional<double> asrConfidence = {});
+// Counts remain distinct from secondary instrument/intensity instructions.
+bool isGuideCountCue(const juce::String &rawText);
+// Individual counts 1..7 use their existing numeric guide key. A compound,
+// generic count-in or unsupported number stays one literal reviewable point;
+// this API cannot infer word timestamps or generate a sequence of clips.
+std::optional<GuideUtilityCue> normalizeGuideCountCue(
+    double cueTimeSeconds, const juce::String &rawText,
+    std::optional<double> asrConfidence = {});
 // Never assumes a beat at zero, meter, constant tempo, or a filename role.
 bool validateMusicStructure(const MusicStructureAnalysis &analysis,
                             double durationSeconds, juce::String &error);

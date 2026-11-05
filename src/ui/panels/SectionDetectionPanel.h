@@ -5,7 +5,9 @@
 
 // Review-only state. Persistence remains owned by WaveformBar's existing edit
 // transaction. This component never edits ImportedSongData or the processor.
-class SectionDetectionPanel final : public juce::Component {
+class SectionDetectionPanel final : public juce::Component,
+                                    private juce::ComponentListener,
+                                    private juce::Timer {
 public:
   struct Actions {
     std::function<void(std::vector<SongArrangementPartSnapshot>)> preview;
@@ -22,16 +24,27 @@ public:
       std::shared_ptr<playworship::analysis::IGuideTranscriber> =
           playworship::analysis::createWhisperGuideTranscriber());
   ~SectionDetectionPanel() override;
+  // The editor retains ownership; presentation covers its top-level host.
+  // Keeping this explicit leaves diagnostic component fixtures non-modal.
+  void showModal(juce::Component &source);
   // Called explicitly by the editor's Sugerir secciones entry. Constructors do
   // not start work or download anything implicitly.
   void beginSuggestionFlow();
   void paint(juce::Graphics &) override;
   void resized() override;
+  bool keyPressed(const juce::KeyPress &) override;
+  void inputAttemptWhenModal() override;
 private:
   friend struct SectionDetectionPanelTestAccess;
   struct RoleRow;
   struct SuggestionRow;
-  void start(bool guideOnly = false);
+  void start(bool guideOnly = false, bool continuePreparation = false);
+  void requestCancel();
+  void releaseModalPresentation();
+  juce::Rectangle<int> modalAvailableBounds() const;
+  void componentMovedOrResized(juce::Component &, bool, bool) override;
+  void componentBeingDeleted(juce::Component &) override;
+  void timerCallback() override;
   void completeDetection(playworship::analysis::DetectionOutcome);
   void chooseGuideModel();
   void prepareGuideModel();
@@ -59,7 +72,7 @@ private:
   juce::Component content;
   juce::Label title, status, help;
   juce::Label modelStatus;
-  juce::ComboBox guideLanguage;
+  AdaptiveComboBox guideLanguage;
   juce::TextEditor transcript;
   juce::File guideModelFile;
   std::unique_ptr<juce::FileChooser> modelChooser;
@@ -69,4 +82,8 @@ private:
   double progress = -1;
   juce::ProgressBar spinner{progress};
   bool busy = false, reviewing = false, reviewModified = false, transcriptReview = false;
+  bool modalPresented = false, cancelling = false;
+  juce::Component::SafePointer<juce::Component> modalHost;
+  juce::Rectangle<int> cardBounds, lastAvailableBounds;
+  juce::uint64 operationGeneration = 0;
 };

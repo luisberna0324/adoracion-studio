@@ -126,11 +126,11 @@ public:
   const playworship::analysis::GuideAlignmentDraft &getGuideAlignmentPreview() const { return guideAlignmentPreview; }
   void setGuideAlignmentCallbacks(std::function<void(double)> originMoved,
       std::function<void(const juce::String &, double, bool)> boundaryMoved,
-      std::function<void()> accept, std::function<void()> cancel,
-      std::function<void(int)> anticipationChanged);
+      std::function<void()> accept, std::function<void()> cancel);
   void setGuideAlignmentError(juce::String);
   void setOnGuideAlignmentRename(std::function<void(juce::String, juce::String)>);
   void setOnGuideAlignmentRemove(std::function<void(const juce::String &)>);
+  void setOnGuideSecondaryCueMove(std::function<void(const juce::String &, double, bool)>);
   SongArrangementSnapshot getArrangementSnapshot() const { return arrangement; }
   // Confirms only additive, non-overlapping annotations, preserving every
   // existing part/cue and entering the ordinary arrangement undo history once.
@@ -391,11 +391,10 @@ private:
   std::function<void(double)> onGuideOriginMoved;
   std::function<void(const juce::String &, double, bool)> onGuideBoundaryMoved;
   std::function<void()> onGuideAlignmentAccept, onGuideAlignmentCancel;
-  std::function<void(int)> onGuideAnticipationChanged;
   std::function<void(juce::String, juce::String)> onGuideAlignmentRename;
   std::function<void(const juce::String &)> onGuideAlignmentRemove;
+  std::function<void(const juce::String &, double, bool)> onGuideSecondaryCueMove;
   juce::Label guideAlignmentLabel;
-  AdaptiveComboBox guideAnticipationBox;
   juce::TextButton guideAlignmentAcceptButton, guideAlignmentCancelButton;
   juce::TextButton suggestSectionsButton;
   juce::Rectangle<int> guideAlignmentToolbarBounds;
@@ -403,11 +402,13 @@ private:
     juce::String id;
     juce::Rectangle<float> pill, lineHit;
     float x = 0.0f;
+    bool secondary = false;
+    juce::Point<float> point;
   };
   std::vector<GuideAlignmentMarkerBounds> guideAlignmentMarkers;
   juce::Rectangle<float> guideOriginPill, guideOriginHit;
-  bool guideOriginDragging = false, guideBoundaryDragging = false, guidePanning = false;
-  juce::String guideDraggedId;
+  bool guideOriginDragging = false, guideBoundaryDragging = false, guideSecondaryDragging = false, guidePanning = false;
+  juce::String guideDraggedId, guideSelectedSecondaryId;
   juce::Point<float> guideDragStart;
   double guideDragSourceStart = 0.0;
   float guideDragViewportStart = 0.0f, guideDragViewportSpan = 1.0f;

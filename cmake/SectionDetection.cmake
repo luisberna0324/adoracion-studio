@@ -3,6 +3,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/WhisperGuide.cmake")
 target_sources(MTControls PRIVATE
     src/analysis/SectionDetection.cpp
     src/analysis/GuideSectionAlignment.cpp
+    src/analysis/GuideAcousticTemplateMatcher.cpp
+    src/analysis/GuideSectionInterpretation.cpp
     src/analysis/GuideModelProvisioner.cpp
     src/analysis/SectionDetectionService.cpp
     src/ui/panels/SectionDetectionPanel.cpp

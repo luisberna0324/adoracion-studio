@@ -9,6 +9,8 @@
 #include "audio/AudioDeviceMonitor.h"
 #include "audio/SongMixExporter.h"
 #include "data/AppSettings.h"
+#include "data/ApplicationDataPaths.h"
+#include "analysis/GuideSectionInterpretation.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/AuthSessionApi.h"
 #include "data/CloudSyncIndexStore.h"
@@ -165,6 +167,20 @@ private:
 };
 
 namespace {
+juce::File guideSectionLearningFile() {
+  return ApplicationDataPaths::applicationDataDirectory().getChildFile("MTControls")
+      .getChildFile("analysis").getChildFile("guide-section-corrections-v1.json");
+}
+
+void applyReviewedGuideSectionName(playworship::analysis::SectionSuggestion &suggestion,
+                                  const juce::String &name) {
+  const auto recognized = playworship::analysis::normalizeGuideCue(suggestion.rawStartSeconds, name);
+  suggestion.displayName = name;
+  suggestion.userEdited = true;
+  suggestion.type = recognized ? recognized->normalizedType : playworship::analysis::SectionType::custom;
+  if (recognized && recognized->spokenOrdinal) suggestion.occurrence = *recognized->spokenOrdinal;
+}
+
 bool supportsSetlistDrawer(const juce::Component &component) {
   const auto bounds = component.getLocalBounds();
   const int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
@@ -1613,13 +1629,17 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
         },
         [this] { finishGuideSectionReview(true); },
-        [this] { finishGuideSectionReview(false); },
-        [this](int bars) {
-          if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id) return;
-          auto options = guideReviewDraft.options;
-          options.anticipationBars = bars;
-          rebuildGuideSectionReview(options);
-        });
+        [this] { finishGuideSectionReview(false); });
+    waveformBarRaw->setOnGuideSecondaryCueMove([this](const juce::String &id, double seconds, bool snapToBeats) {
+      if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
+      juce::String error;
+      if (!playworship::analysis::moveGuideSecondaryCue(guideReviewDraft, id, seconds, snapToBeats, error)) {
+        waveformBarPtr->setGuideAlignmentError(error); return;
+      }
+      for (const auto &cue : guideReviewDraft.secondaryCues) if (cue.id == id)
+        guideReviewSecondaryTimes[id] = cue.timeSeconds;
+      waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+    });
     waveformBarRaw->setOnGuideAlignmentRename([this](const juce::String &id, const juce::String &name) {
       if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
       const auto cleaned = name.trim();
@@ -1627,17 +1647,35 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         waveformBarPtr->setGuideAlignmentError(L10n::tr("Escribe un nombre de hasta 128 caracteres.", "Enter a name of up to 128 characters.")); return;
       }
       for (auto &suggestion : guideReviewDraft.suggestions) if (suggestion.id == id) {
-        suggestion.displayName = cleaned; suggestion.userEdited = true;
+        applyReviewedGuideSectionName(suggestion, cleaned);
         guideReviewNames[id] = cleaned;
         waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
-        break;
+        return;
+      }
+      for (auto &cue : guideReviewDraft.secondaryCues) if (cue.id == id) {
+        const auto count = playworship::analysis::normalizeGuideCountCue(cue.timeSeconds, cleaned);
+        const auto utility = playworship::analysis::normalizeGuideUtilityCue(cue.timeSeconds, cleaned);
+        cue.name = count ? count->name : utility ? utility->name : cleaned;
+        cue.userEdited = true;
+        guideReviewNames[id] = cue.name;
+        waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+        return;
       }
     });
     waveformBarRaw->setOnGuideAlignmentRemove([this](const juce::String &id) {
       if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
       const auto found = std::find_if(guideReviewDraft.suggestions.begin(), guideReviewDraft.suggestions.end(),
           [&id](const auto &suggestion) { return suggestion.id == id; });
-      if (found == guideReviewDraft.suggestions.end()) return;
+      if (found == guideReviewDraft.suggestions.end()) {
+        const auto cue = std::find_if(guideReviewDraft.secondaryCues.begin(), guideReviewDraft.secondaryCues.end(),
+            [&id](const auto &candidate) { return candidate.id == id; });
+        if (cue == guideReviewDraft.secondaryCues.end()) return;
+        guideReviewDiscarded.insert(id.toStdString());
+        guideReviewDraft.secondaryCues.erase(cue);
+        guideReviewSecondaryTimes.erase(id);
+        waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+        return;
+      }
       guideReviewDiscarded.insert(id.toStdString());
       const auto index = size_t(std::distance(guideReviewDraft.suggestions.begin(), found));
       guideReviewDraft.suggestions.erase(found);
@@ -4397,9 +4435,7 @@ void MTControlsAudioProcessorEditor::showSectionDetection() {
   };
   actions.close = [safe] { juce::MessageManager::callAsync([safe] { if(safe) safe->closeSectionDetection(true); }); };
   sectionDetectionPanel = std::make_unique<SectionDetectionPanel>(currentLoadedSong,std::move(actions));
-  addAndMakeVisible(*sectionDetectionPanel);
-  sectionDetectionPanel->setBounds(getLocalBounds().removeFromBottom(std::min(430,std::max(260,getHeight()-150))));
-  sectionDetectionPanel->toFront(true);
+  sectionDetectionPanel->showModal(*this);
   sectionDetectionPanel->beginSuggestionFlow();
 }
 
@@ -4414,8 +4450,8 @@ void MTControlsAudioProcessorEditor::beginGuideSectionReview(
   if (!hasCurrentLoadedSong || currentLoadedSong.blankSong || songLoadBusy ||
       playbackSession.isRemote() || !waveformBarPtr) return;
 #if !JUCE_IOS && !JUCE_ANDROID
-  // Analysis is non-modal: the user may have opened Lyrics while it ran.
-  // Keep the review's confirm/cancel controls reachable when its result arrives.
+  // Always install the result on the waveform, including programmatic changes
+  // of view while analysis was running.
   lyricsViewActive = false;
 #endif
   guideReviewTranscript = transcript;
@@ -4425,12 +4461,16 @@ void MTControlsAudioProcessorEditor::beginGuideSectionReview(
   guideReviewTranscript->durationSeconds = std::max(transcript.durationSeconds,
                                                     processorRef.getLoadedSongLengthSeconds());
   guideReviewSongId = currentLoadedSong.id;
-  guideReviewNames.clear(); guideReviewDiscarded.clear();
+  guideReviewNames.clear(); guideReviewDiscarded.clear(); guideReviewSecondaryTimes.clear();
   playworship::analysis::GuideAlignmentOptions options;
   options.originSeconds = transcript.segments.empty() ? 0.0 : transcript.segments.front().startSeconds;
   options.bpm = currentLoadedSong.bpm;
   options.timeSignature = currentLoadedSong.timeSignature;
   options.tempoMap = currentLoadedSong.tempoMap;
+  juce::String learningError;
+  if (!playworship::analysis::loadGuideSectionLearnedMappings(
+          guideSectionLearningFile(), options.learnedMappings, learningError))
+    juce::Logger::writeToLog("Guide section corrections could not be loaded; using the built-in catalog.");
   guideReviewDraft = playworship::analysis::alignGuideSections(*guideReviewTranscript, options);
   waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
   if (guideReviewDraft.error.isNotEmpty()) waveformBarPtr->setGuideAlignmentError(guideReviewDraft.error);
@@ -4451,8 +4491,16 @@ void MTControlsAudioProcessorEditor::rebuildGuideSectionReview(
         ? rebuilt.suggestions[i + 1].startSeconds : rebuilt.durationSeconds;
     const auto corrected = guideReviewNames.find(suggestion.id);
     if (corrected != guideReviewNames.end()) {
-      suggestion.displayName = corrected->second; suggestion.userEdited = true;
+      applyReviewedGuideSectionName(suggestion, corrected->second);
     }
+  }
+  rebuilt.secondaryCues.erase(std::remove_if(rebuilt.secondaryCues.begin(), rebuilt.secondaryCues.end(),
+      [this](const auto &cue) { return guideReviewDiscarded.count(cue.id.toStdString()) != 0; }), rebuilt.secondaryCues.end());
+  for (auto &cue : rebuilt.secondaryCues) {
+    const auto correctedName = guideReviewNames.find(cue.id);
+    if (correctedName != guideReviewNames.end()) { cue.name = correctedName->second; cue.userEdited = true; }
+    const auto correctedTime = guideReviewSecondaryTimes.find(cue.id);
+    if (correctedTime != guideReviewSecondaryTimes.end()) { cue.timeSeconds = correctedTime->second; cue.userEdited = true; }
   }
   guideReviewDraft = std::move(rebuilt);
   waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
@@ -4462,7 +4510,7 @@ void MTControlsAudioProcessorEditor::finishGuideSectionReview(bool confirm) {
   if (!confirm) {
     if (waveformBarPtr) waveformBarPtr->clearGuideAlignmentPreview();
     guideReviewTranscript.reset(); guideReviewDraft = {};
-    guideReviewSongId.clear(); guideReviewNames.clear(); guideReviewDiscarded.clear();
+    guideReviewSongId.clear(); guideReviewNames.clear(); guideReviewDiscarded.clear(); guideReviewSecondaryTimes.clear();
     return;
   }
   if (!guideReviewTranscript || !hasCurrentLoadedSong || guideReviewSongId != currentLoadedSong.id ||
@@ -4470,20 +4518,34 @@ void MTControlsAudioProcessorEditor::finishGuideSectionReview(bool confirm) {
   if (guideReviewDraft.error.isNotEmpty()) {
     waveformBarPtr->setGuideAlignmentError(guideReviewDraft.error); return;
   }
-  if (guideReviewDraft.suggestions.empty()) {
+  if (guideReviewDraft.suggestions.empty() && guideReviewDraft.secondaryCues.empty()) {
     waveformBarPtr->setGuideAlignmentError(L10n::tr("No hay sugerencias para confirmar.", "There are no suggestions to confirm.")); return;
   }
-  const auto plan = playworship::analysis::appendConfirmedSuggestions(
-      waveformBarPtr->getArrangementSnapshot(), guideReviewDraft.suggestions,
-      guideReviewDraft.durationSeconds);
+  const auto plan = playworship::analysis::appendConfirmedGuideSuggestions(
+      waveformBarPtr->getArrangementSnapshot(), guideReviewDraft);
   if (plan.error.isNotEmpty()) { waveformBarPtr->setGuideAlignmentError(plan.error); return; }
+  std::vector<playworship::analysis::GuideConfirmedSectionRename> reviewedNames;
+  for (const auto &[id, name] : guideReviewNames) reviewedNames.push_back({id, name});
+  std::vector<playworship::analysis::SectionSuggestion> acceptedSuggestions;
+  for (const auto &suggestion : guideReviewDraft.suggestions)
+    if (plan.addedSuggestionIds.contains(suggestion.id)) acceptedSuggestions.push_back(suggestion);
+  const auto learned = playworship::analysis::guideSectionCorrectionsForConfirmedReview(
+      *guideReviewTranscript, acceptedSuggestions, reviewedNames);
   if (!waveformBarPtr->applyDetectedSections(plan.arrangement)) {
     waveformBarPtr->setGuideAlignmentError(L10n::tr(
         "Hay un conflicto con las secciones existentes. Ajusta o descarta las marcas que coincidan.",
         "There is a conflict with existing sections. Adjust or discard overlapping suggestions."));
     return;
   }
+  juce::String learningError;
+  const bool remembered = learned.empty() || playworship::analysis::mergeAndSaveGuideSectionLearnedMappings(
+      guideSectionLearningFile(), learned, learningError);
   finishGuideSectionReview(false);
+  if (!remembered)
+    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+        L10n::tr("Sugerencias confirmadas", "Suggestions confirmed"),
+        L10n::tr("Las secciones se guardaron, pero no pudimos recordar las correcciones de nombres para próximos análisis.",
+                 "The sections were saved, but the name corrections could not be remembered for future analyses."), this);
 }
 
 bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
@@ -5688,9 +5750,6 @@ void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile
     settingsOverlay->setBounds(getLocalBounds());
   if (practiceOverlay != nullptr)
     practiceOverlay->setBounds(getLocalBounds());
-
-  if (sectionDetectionPanel != nullptr)
-    sectionDetectionPanel->setBounds(getLocalBounds().removeFromBottom(std::min(430,std::max(260,getHeight()-150))));
 
   int topBarH = kDefaultTopBarH;
   int waveformH = kDefaultWaveformH;

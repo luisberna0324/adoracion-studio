@@ -262,6 +262,7 @@ private:
   playworship::analysis::GuideAlignmentDraft guideReviewDraft;
   juce::String guideReviewSongId;
   std::map<juce::String, juce::String> guideReviewNames;
+  std::map<juce::String, double> guideReviewSecondaryTimes;
   std::unordered_set<std::string> guideReviewDiscarded;
   playworship::remote::RemoteSession remoteSession;
   std::string remotePracticeOwner;
