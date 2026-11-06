@@ -1,4 +1,5 @@
 #include "analysis/GuideAcousticTemplateMatcher.h"
+#include "analysis/GuideCatalogueGrammar.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -176,6 +177,108 @@ void fractionalSamplePhases() {
     }
   }
 }
+
+void atomicCatalogueRecoveryAndRejections() {
+  const auto references = bank();
+  // Every recording is a possible result; no ASR spelling selects the class.
+  for (size_t index = 0; index < references.templates.size(); ++index) {
+    std::vector<float> source(16000);
+    add(source, references.templates[index], .137, .4);
+    auto raw = parent("unresolved spoken call", .10, .8);
+    raw.confidence = .05; // Independent physical evidence is not token confidence.
+    const auto matched = matchKnownGuideAtomic(source, 5.0, raw, references);
+    // Absolute source timestamps must describe the same parent interval.
+    expect(matched.announcements.empty(), "an atomic match cannot escape its absolute source parent interval");
+    raw.startSeconds += 5.0; raw.endSeconds += 5.0;
+    const auto result = matchKnownGuideAtomic(source, 5.0, raw, references);
+    expect(result.announcements.size() == 1 &&
+               result.announcements[0].text == references.templates[index].text &&
+               std::abs(result.announcements[0].startSeconds - 5.137) <= 2.0 / 16000,
+           "the complete known-voice catalogue can recover atomic counts, sections and instructions without ASR aliases");
+    expect(result.residualRatio < .001 && result.announcements[0].correlation >= guideAcousticMinimumCorrelation,
+           "a recovered atomic label needs the same strict independent waveform evidence");
+    raw.acousticAnnouncements = result.announcements; raw.acousticResidualRatio = result.residualRatio;
+    expect(guideAcousticAnnouncementsMatchParent(raw), "single-recording evidence remains usable on the unchanged raw parent");
+    expect(raw.text == "unresolved spoken call" && raw.confidence == .05,
+           "atomic recovery preserves the decoder's literal text and token confidence");
+  }
+  std::vector<float> source(16000);
+  add(source, references.templates[7], .137);
+  auto nearMatch = parent("Perso!", .1, .8);
+  expect(guideAcousticAtomicCandidate(nearMatch),
+         "a tentative lexical match can reach the physical search and catalogue retry");
+  const auto recovered = matchKnownGuideAtomic(source, 0, nearMatch, references);
+  expect(recovered.announcements.size() == 1 &&
+             recovered.announcements.front().text == references.templates[7].text,
+         "independent source evidence can recover an instruction despite a tentative primary hypothesis");
+  nearMatch.acousticAnnouncements = recovered.announcements;
+  nearMatch.acousticResidualRatio = recovered.residualRatio;
+  expect(guideAcousticAnnouncementsMatchParent(nearMatch) && nearMatch.text == "Perso!",
+         "validation retains the recovered mark and literal ASR after a tentative interpretation");
+  expect(matchKnownGuideAtomic(source, 0, parent("Verse 2", .1, .8), references).announcements.empty(),
+         "atomic catalogue search cannot replace an already resolved section by a different physical label");
+  auto withSupportedAlternative = parent("unresolved spoken call", .1, .8);
+  withSupportedAlternative.confidence = std::exp(-.5);
+  withSupportedAlternative.language = "en";
+  withSupportedAlternative.alternatives = {{withSupportedAlternative.text, "en", -.5, .01},
+                                         {"Chorus", "es", -.55, .01}};
+  expect(!guideAcousticAtomicCandidate(withSupportedAlternative),
+         "a supported existing alternative constrains an atomic parent before recovery");
+  withSupportedAlternative.alternatives = {{"Verse", "en", -.5, .01}, {"All In", "es", -.55, .01}};
+  expect(!guideAcousticAtomicCandidate(withSupportedAlternative) &&
+             matchKnownGuideAtomic(source, 0, withSupportedAlternative, references).announcements.empty(),
+         "conflicting supported roles require review even when one recorded clip fits");
+  expect(!guideAcousticAtomicCandidate(parent("Intro, uno, dos", .1, .8)),
+         "an explicit compound cannot collapse into one atomic catalogue label");
+  auto competing = references;
+  competing.templates.push_back(competing.templates[7]);
+  competing.templates.back().text = "Pausa";
+  competing.templates.back().identity = "synthetic-competing-break";
+  expect(matchKnownGuideAtomic(source, 0, parent("unresolved spoken call", .1, .8), competing).ambiguous,
+         "two distinct meanings with indistinguishable physical evidence remain unresolved for catalogue review");
+  std::fill(source.begin(), source.end(), 0.0f);
+  expect(matchKnownGuideAtomic(source, 0, parent("unresolved spoken call", .1, .8), references).announcements.empty(),
+         "silence does not become a catalogue event");
+  std::fill(source.begin(), source.end(), .03f);
+  expect(matchKnownGuideAtomic(source, 0, parent("unresolved spoken call", .1, .8), references).announcements.empty(),
+         "DC energy cannot become an atomic catalogue event");
+  std::uint32_t state = 71;
+  for (auto &sample : source) { state = state * 1664525u + 1013904223u; sample = float(double(state) / 4294967296.0 - .5) * .2f; }
+  expect(matchKnownGuideAtomic(source, 0, parent("a longer unknown narrative", .1, .8), references).announcements.empty(),
+         "unmatched narration/noise does not get an arbitrary best catalogue label");
+  expect(matchKnownGuideAtomic(source, 0, parent("unresolved spoken call", .1, .8), references,
+                              [] { return true; }).cancelled,
+         "full catalogue search can be cancelled before any atomic evidence is returned");
+  source[200] = std::numeric_limits<float>::quiet_NaN();
+  expect(matchKnownGuideAtomic(source, 0, parent("unresolved spoken call", .1, .8), references).announcements.empty(),
+         "nonfinite source data cannot enter atomic catalogue recovery");
+}
+
+void grammarUsesTheEntireApplicationCatalogue() {
+  const auto phrases = guideCatalogueUtterances();
+  expect(!phrases.empty() && std::is_sorted(phrases.begin(), phrases.end()) &&
+             std::adjacent_find(phrases.begin(), phrases.end()) == phrases.end(),
+         "the closed grammar is bounded, sorted and deduplicated from the shared catalogue");
+  for (const auto &entry : playworship::guide::sectionDefinitions()) {
+    expect(isGuideCatalogueUtterance(entry.key) && isGuideCatalogueUtterance(entry.spanishLabel) &&
+               isGuideCatalogueUtterance(entry.englishLabel), "all musical families are generated in both languages");
+    for (const auto *alias : entry.aliases)
+      expect(isGuideCatalogueUtterance(alias), "ordinary section aliases remain catalogue grammar alternatives");
+    for (int ordinal = 1; ordinal <= entry.numberedVariantLimit; ++ordinal)
+      expect(isGuideCatalogueUtterance(juce::String(entry.key) + " " + juce::String(ordinal)),
+             "each managed musical ordinal is available without a hand-written song exception");
+  }
+  for (const auto &entry : playworship::guide::utilityDefinitions()) {
+    expect(isGuideCatalogueUtterance(entry.key) && isGuideCatalogueUtterance(entry.spanishLabel) &&
+               isGuideCatalogueUtterance(entry.englishLabel), "every managed secondary instruction is in the grammar");
+    for (const auto *alias : entry.aliases)
+      expect(isGuideCatalogueUtterance(alias), "ordinary utility aliases are generated from their catalogue entries");
+  }
+  for (int number = 1; number <= 7; ++number)
+    expect(isGuideCatalogueUtterance(juce::String(number)), "all supported count numbers are valid grammar results");
+  expect(!isGuideCatalogueUtterance("an unknown narrative") && !isGuideCatalogueUtterance("verse 99"),
+         "the grammar does not add free narration or unsupported ordinal variants to the catalogue");
+}
 } // namespace
 
 int main() {
@@ -183,7 +286,7 @@ int main() {
     completeAndOverlappingCounts(); missingAsrCountUsesPhysicalRecording();
     isolatedOrdinalAndRepeatedInstances(); noPauseInstructionsAndNegativeSignals();
     omittedInstructionAndMixedRoles();
-    fractionalSamplePhases();
+    fractionalSamplePhases(); atomicCatalogueRecoveryAndRejections(); grammarUsesTheEntireApplicationCatalogue();
     std::cout << "Guide acoustic templates: " << checks << " checks passed\n";
     return 0;
   } catch (const std::exception &error) {

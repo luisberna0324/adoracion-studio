@@ -56,6 +56,18 @@ juce::var transcriptJson(const GuideTranscript &transcript) {
       alternatives.add(candidate);
     }
     item.getDynamicObject()->setProperty("alternatives", alternatives);
+    if (!segment.catalogueAlternatives.empty()) {
+      juce::Array<juce::var> catalogueAlternatives;
+      for (const auto &alternative : segment.catalogueAlternatives) {
+        auto candidate = juce::var(new juce::DynamicObject());
+        candidate.getDynamicObject()->setProperty("text", alternative.text);
+        candidate.getDynamicObject()->setProperty("language", alternative.language);
+        candidate.getDynamicObject()->setProperty("avgLogProbability", alternative.avgLogProbability);
+        candidate.getDynamicObject()->setProperty("noSpeechProbability", alternative.noSpeechProbability);
+        catalogueAlternatives.add(candidate);
+      }
+      item.getDynamicObject()->setProperty("catalogueAlternatives", catalogueAlternatives);
+    }
     if (!segment.words.empty()) {
       juce::Array<juce::var> words;
       for (const auto &word : segment.words) {
@@ -105,13 +117,13 @@ int main(int argc, char **argv) {
     std::cerr << "Usage: MTControlsGuideTranscriptionProbe --audio local-file --output result.json "
                  "[--model ggml-base-q5_1.bin] [--language es-en] [--offset seconds] "
                  "[--cache-directory local-dir] [--bpm source-bpm] [--meter 4/4] [--grid-origin seconds] "
-                 "[--require-cache-hit 1] "
+                 "[--require-cache-hit 1] [--learned-mappings local-file] "
                  "[--cancel-after-ms milliseconds] [--cancel-at-progress fraction]\n"
                  "Exit codes: 0 recognized, 1 failed, 2 cancelled, 3 backend unavailable. "
                  "Transcript text is written only to the requested JSON file.\n";
   };
   if (arguments.isEmpty() || arguments.contains("--help")) { usage(); return arguments.isEmpty() ? 1 : 0; }
-  const auto allowed = juce::StringArray{"--audio", "--output", "--model", "--language", "--offset", "--cancel-after-ms", "--cancel-at-progress", "--cache-directory", "--bpm", "--meter", "--grid-origin", "--require-cache-hit"};
+  const auto allowed = juce::StringArray{"--audio", "--output", "--model", "--language", "--offset", "--cancel-after-ms", "--cancel-at-progress", "--cache-directory", "--bpm", "--meter", "--grid-origin", "--require-cache-hit", "--learned-mappings"};
   for (int i = 0; i < arguments.size(); i += 2) {
     if (!allowed.contains(arguments[i]) || i + 1 >= arguments.size()) { usage(); return 1; }
   }
@@ -146,6 +158,17 @@ int main(int argc, char **argv) {
   const juce::File output(value("--output"));
   if (output == request.audioFile || output == request.modelFile) {
     std::cerr << "Output must differ from audio and model.\n"; return 1;
+  }
+  std::vector<GuideLearnedMapping> learnedMappings;
+  if (arguments.contains("--learned-mappings")) {
+    const auto path = value("--learned-mappings");
+    if (path.isEmpty() || bpm <= 0) { usage(); return 1; }
+    const juce::File file(path);
+    juce::String readError;
+    if (file == output || !file.existsAsFile() ||
+        !loadGuideSectionLearnedMappings(file, learnedMappings, readError)) {
+      std::cerr << "Cannot load the requested guide corrections.\n"; return 1;
+    }
   }
   const auto started = std::chrono::steady_clock::now();
   std::atomic<bool> cancelRequested{false};
@@ -213,6 +236,8 @@ int main(int argc, char **argv) {
     options.bpm = bpm; options.timeSignature = value("--meter", "4/4");
     if (value("--grid-origin").isNotEmpty()) options.originSeconds = gridOrigin;
     else options = makeInitialGuideAlignmentOptions(transcript, options);
+    options.learnedMappings = std::move(learnedMappings);
+    object->setProperty("alignmentLearnedMappingCount", int(options.learnedMappings.size()));
     const auto draft = alignGuideSections(transcript, options);
     object->setProperty("alignmentError", draft.error);
     object->setProperty("alignmentOriginSeconds", options.originSeconds);
@@ -247,6 +272,43 @@ int main(int argc, char **argv) {
       secondaryCues.add(item);
     }
     object->setProperty("secondaryCues", secondaryCues);
+    const auto kindName = [](GuideAnnouncementKind kind) {
+      switch (kind) {
+      case GuideAnnouncementKind::section: return "section";
+      case GuideAnnouncementKind::instruction: return "instruction";
+      case GuideAnnouncementKind::count: return "count";
+      default: return "unknown";
+      }
+    };
+    juce::Array<juce::var> pendingAnnouncements;
+    for (const auto &pending : draft.pendingAnnouncements) {
+      auto item = juce::var(new juce::DynamicObject());
+      auto *properties = item.getDynamicObject();
+      properties->setProperty("id", pending.id);
+      properties->setProperty("rawText", pending.rawText);
+      properties->setProperty("startSeconds", pending.startSeconds);
+      properties->setProperty("endSeconds", pending.endSeconds);
+      juce::Array<juce::var> choices;
+      for (const auto &candidate : pending.candidates) {
+        auto choice = juce::var(new juce::DynamicObject());
+        auto *fields = choice.getDynamicObject();
+        fields->setProperty("key", candidate.key);
+        fields->setProperty("label", candidate.label);
+        fields->setProperty("kind", kindName(candidate.kind));
+        fields->setProperty("type", int(candidate.type));
+        if (candidate.ordinal) fields->setProperty("ordinal", *candidate.ordinal);
+        fields->setProperty("score", candidate.score);
+        fields->setProperty("evidence", candidate.evidence);
+        fields->setProperty("supported", candidate.supported);
+        choices.add(std::move(choice));
+      }
+      properties->setProperty("candidates", std::move(choices));
+      pendingAnnouncements.add(std::move(item));
+    }
+    object->setProperty("pendingAnnouncements", std::move(pendingAnnouncements));
+    object->setProperty("alignmentPendingCount", int(draft.pendingAnnouncements.size()));
+    object->setProperty("alignmentResolvedMarkCount", int(draft.suggestions.size() + draft.secondaryCues.size()));
+    object->setProperty("alignmentComplete", draft.error.isEmpty() && draft.pendingAnnouncements.empty());
   }
   if (!output.getParentDirectory().createDirectory()) { std::cerr << "Cannot create output directory.\n"; return 1; }
   juce::TemporaryFile temporary(output);

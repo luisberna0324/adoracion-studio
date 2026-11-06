@@ -4,6 +4,7 @@
 #include <juce_cryptography/juce_cryptography.h>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <iterator>
 #include <map>
@@ -156,10 +157,12 @@ struct Candidate {
   juce::String identityLabel;
   juce::StringArray rawLabels;
   bool conflict = false;
+  std::vector<GuideTranscriptSegment> sourceSegments;
 };
 void merge(Candidate &target, const Candidate &incoming, bool nearBoundary) {
   target.suggestion.sources.addIfNotAlreadyThere(juce::String::fromUTF8(mergedGuideAnnouncementsSource));
   for (const auto &label : incoming.rawLabels) if (!target.rawLabels.contains(label)) target.rawLabels.add(label);
+  target.sourceSegments.insert(target.sourceSegments.end(), incoming.sourceSegments.begin(), incoming.sourceSegments.end());
   target.suggestion.reason += " " + incoming.suggestion.reason;
   target.conflict = target.conflict || incoming.conflict || target.identityLabel != incoming.identityLabel || nearBoundary;
   if (target.conflict) {
@@ -187,11 +190,82 @@ bool validConfidence(const std::optional<double> &confidence) {
   return !confidence || (std::isfinite(*confidence) && *confidence >= 0.0 && *confidence <= 1.0);
 }
 
+std::optional<GuideCatalogChoice> canonicalChoice(const GuideCatalogChoice &choice) {
+  for (const auto &entry : guideCatalogEntries())
+    if (entry.kind == choice.kind && entry.key == choice.key && entry.type == choice.type &&
+        entry.ordinal == choice.ordinal) return entry;
+  return {};
+}
+
 struct TimedCountExpansion {
   bool expanded = false;
   GuideSectionInterpretation section;
   std::vector<GuideSecondaryCueSuggestion> counts;
 };
+
+// Token boundaries are reported on a 10 ms clock. When an interval is
+// ambiguous only at its edge, use at most half a tick of uncertainty.
+constexpr double countWordBoundaryTolerance = 0.005;
+
+struct CountPulseRange {
+  size_t first, pastLast;
+  size_t size() const { return pastLast - first; }
+};
+
+std::vector<size_t> evidencedCountPulses(const GuideTranscriptSegment &segment,
+    const GuideCompoundCount &compound, const std::vector<GuideGridMark> &grid, double duration) {
+  const auto gridEnd = std::lower_bound(grid.begin(), grid.end(), duration - epsilon,
+      [](const auto &mark, double time) { return mark.timeSeconds < time; });
+  const auto rangeFor = [&](const GuideTranscriptWord &word, double tolerance) {
+    const double from = std::max(segment.startSeconds, word.startSeconds - tolerance) - epsilon;
+    const double to = std::min(segment.endSeconds, word.endSeconds + tolerance) + epsilon;
+    const auto first = std::lower_bound(grid.begin(), gridEnd, from,
+        [](const auto &mark, double time) { return mark.timeSeconds < time; });
+    const auto last = std::upper_bound(first, gridEnd, to,
+        [](double time, const auto &mark) { return time < mark.timeSeconds; });
+    return CountPulseRange{size_t(first - grid.begin()), size_t(last - grid.begin())};
+  };
+
+  std::vector<CountPulseRange> ranges;
+  std::vector<size_t> exact;
+  for (size_t i = 0; i < compound.counts.size(); ++i) {
+    const auto &word = segment.words[size_t(compound.prefixWordCount) + i];
+    const auto range = rangeFor(word, 0.0);
+    ranges.push_back(range);
+    if (range.size() == 1) exact.push_back(range.first);
+  }
+  // Preserve existing, individually unambiguous pulses, including slower
+  // counts and repeated numbers. The sequence rule below is a recovery only.
+  if (exact.size() == ranges.size() &&
+      std::adjacent_find(exact.begin(), exact.end(), std::greater_equal<size_t>{}) == exact.end())
+    return exact;
+
+  if (exact.empty()) return {};
+  for (size_t i = 0; i < ranges.size(); ++i) {
+    if (i > 0 && compound.counts[i] != compound.counts[i - 1] + 1) return {};
+    const auto &word = segment.words[size_t(compound.prefixWordCount) + i];
+    auto &range = ranges[i];
+    if (range.size() == 0) range = rangeFor(word, countWordBoundaryTolerance);
+    if (range.size() == 0 || range.size() > 2) return {};
+    if (range.size() == 2 &&
+        std::abs(grid[range.first].timeSeconds - word.startSeconds) > countWordBoundaryTolerance + epsilon &&
+        std::abs(grid[range.pastLast - 1].timeSeconds - word.endSeconds) > countWordBoundaryTolerance + epsilon)
+      return {};
+  }
+
+  // Each range constrains the first grid index of a consecutive run:
+  // first+i must fall in the range measured for word i. Intersect them all.
+  auto starts = ranges.front();
+  for (size_t i = 1; i < ranges.size(); ++i) {
+    if (ranges[i].pastLast <= i) return {};
+    starts.first = std::max(starts.first, ranges[i].first > i ? ranges[i].first - i : 0);
+    starts.pastLast = std::min(starts.pastLast, ranges[i].pastLast - i);
+  }
+  if (starts.pastLast != starts.first + 1) return {};
+  std::vector<size_t> pulses;
+  for (size_t i = 0; i < ranges.size(); ++i) pulses.push_back(starts.first + i);
+  return pulses;
+}
 
 TimedCountExpansion expandTimedCounts(const GuideTranscript &transcript,
     const GuideTranscriptSegment &segment, const std::vector<GuideGridMark> &grid) {
@@ -218,25 +292,19 @@ TimedCountExpansion expandTimedCounts(const GuideTranscript &transcript,
     result.section = interpretGuideSection(prefix);
     if (!result.section.recognized() || result.section.tentative || result.section.ordinal) return {};
     result.section.provenance = "word-interval-counts";
-    result.section.reason = juce::String::fromUTF8("La etiqueta y las cuentas tienen evidencia por palabra; cada cuenta se propone sólo en el único pulso contenido en su intervalo ASR.");
+    result.section.reason = juce::String::fromUTF8("La etiqueta y las cuentas tienen evidencia por palabra; los intervalos de voz y la cuadrícula identifican los pulsos de las cuentas.");
   }
-  double previousPulse = -1.0;
+  const auto pulses = evidencedCountPulses(segment, *compound, grid, transcript.durationSeconds);
+  if (pulses.empty()) return {};
   for (size_t i = 0; i < compound->counts.size(); ++i) {
     const auto index = size_t(compound->prefixWordCount) + i;
     const auto &word = segment.words[index];
     const auto count = normalizeGuideCountCue(word.startSeconds, word.text, word.confidence);
     if (!count || count->name != juce::String(compound->counts[i]) || !word.confidence ||
         *word.confidence < std::exp(-1.2)) return {};
-    auto pulse = std::lower_bound(grid.begin(), grid.end(), word.startSeconds - epsilon,
-        [](const auto &mark, double time) { return mark.timeSeconds < time; });
-    if (pulse == grid.end() || pulse->timeSeconds >= transcript.durationSeconds - epsilon ||
-        pulse->timeSeconds > word.endSeconds + epsilon ||
-        (std::next(pulse) != grid.end() && std::next(pulse)->timeSeconds <= word.endSeconds + epsilon) ||
-        pulse->timeSeconds <= previousPulse + epsilon) return {};
-    previousPulse = pulse->timeSeconds;
     result.counts.push_back({"guide-secondary-" + segmentIdentityHash(transcript, segment, segment.text.trim()) +
         "-word-" + juce::String(int(index)), count->name, word.text,
-        word.startSeconds, pulse->timeSeconds, word.confidence, false});
+        word.startSeconds, grid[pulses[i]].timeSeconds, word.confidence, false});
   }
   result.expanded = true;
   return result;
@@ -273,6 +341,9 @@ bool validReviewGrid(const GuideAlignmentDraft &draft, juce::String &error) {
 
 bool validDraftAnnotations(const GuideAlignmentDraft &draft, juce::String &error,
                            bool allowTimingIssues = false) {
+  if (!allowTimingIssues && !draft.pendingAnnouncements.empty()) {
+    error = juce::String::fromUTF8("Elige una marca del catálogo o descarta cada anuncio pendiente antes de confirmar."); return false;
+  }
   if ((!allowTimingIssues && !draft.timingIssues.empty()) ||
       (!draft.timingIssues.empty() && draft.error != timingIssuesError(draft.timingIssues)) ||
       (draft.error.isNotEmpty() && (!allowTimingIssues || draft.error != timingIssuesError(draft.timingIssues))) ||
@@ -302,6 +373,17 @@ bool validDraftAnnotations(const GuideAlignmentDraft &draft, juce::String &error
         !std::isfinite(cue.timeSeconds) || cue.timeSeconds < 0.0 || cue.timeSeconds >= draft.durationSeconds ||
         !validConfidence(cue.asrConfidence)) {
       error = juce::String::fromUTF8("Las indicaciones propuestas tienen IDs, tiempos o nombres inválidos."); return false;
+    }
+  }
+  if (draft.pendingAnnouncements.size() > maximumSectionSuggestions + kMaxArrangementCueEvents) {
+    error = juce::String::fromUTF8("Hay demasiados anuncios pendientes."); return false;
+  }
+  for (const auto &pending : draft.pendingAnnouncements) {
+    if (pending.id.trim().isEmpty() || !ids.insert(pending.id.toStdString()).second ||
+        !std::isfinite(pending.startSeconds) || !std::isfinite(pending.endSeconds) ||
+        pending.startSeconds < 0 || pending.endSeconds <= pending.startSeconds ||
+        pending.endSeconds > draft.durationSeconds + epsilon || pending.rawText.trim().isEmpty()) {
+      error = juce::String::fromUTF8("Los anuncios pendientes contienen datos inválidos."); return false;
     }
   }
   std::unordered_set<std::string> issueIds;
@@ -444,6 +526,15 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     draft.error = juce::String::fromUTF8("Revisa duración y origen de la guía."); return draft;
   }
   if (!buildGrid(draft)) { draft.grid.clear(); return draft; }
+  std::unordered_set<std::string> selectionIds;
+  if (options.catalogueSelections.size() > maximumSectionSuggestions + kMaxArrangementCueEvents) {
+    draft.error = juce::String::fromUTF8("Hay demasiadas elecciones de catálogo."); return draft;
+  }
+  for (const auto &selection : options.catalogueSelections)
+    if (selection.announcementId.trim().isEmpty() || !canonicalChoice(selection.choice) ||
+        !selectionIds.insert(selection.announcementId.toStdString()).second) {
+      draft.error = juce::String::fromUTF8("Las elecciones del catálogo no son válidas."); return draft;
+    }
   const auto gridBars = bars(draft);
   if (gridBars.empty()) { draft.error = juce::String::fromUTF8("No hay compases válidos desde el origen propuesto."); return draft; }
   auto latestStart = draft.durationSeconds - minimumAcceptedSectionDurationSeconds;
@@ -491,6 +582,31 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
       segments.push_back(std::move(child));
     }
   }
+  std::map<std::string, juce::String> selectedWordIds;
+  std::vector<GuideTranscriptSegment> selectedWordSources;
+  for (const auto &segment : segments) {
+    const auto expansion = expandTimedCounts(transcript, segment, draft.grid);
+    if (!expansion.expanded) continue;
+    for (const auto &count : expansion.counts) {
+      const auto selected = std::find_if(options.catalogueSelections.begin(), options.catalogueSelections.end(),
+          [&](const auto &item) { return item.announcementId == count.id; });
+      if (selected == options.catalogueSelections.end()) continue;
+      const auto word = std::find_if(segment.words.begin(), segment.words.end(), [&](const auto &item) {
+        return std::abs(item.startSeconds - count.rawTimeSeconds) <= epsilon;
+      });
+      if (word == segment.words.end()) continue;
+      GuideTranscriptSegment child;
+      child.text = count.rawText; child.language = segment.language;
+      child.startSeconds = word->startSeconds; child.endSeconds = word->endSeconds;
+      child.confidence = count.asrConfidence;
+      selectedWordIds[guideSectionSuggestionId(transcript, child).toStdString()] = count.id;
+      selectedWordSources.push_back(std::move(child));
+    }
+  }
+  if (segments.size() + selectedWordSources.size() > 65536) {
+    draft.error = juce::String::fromUTF8("Hay demasiados anuncios para revisar."); return draft;
+  }
+  segments.insert(segments.end(), selectedWordSources.begin(), selectedWordSources.end());
   std::stable_sort(segments.begin(), segments.end(), [](const auto &a, const auto &b) {
     if (a.startSeconds < b.startSeconds) return true;
     if (b.startSeconds < a.startSeconds) return false;
@@ -505,8 +621,15 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     if (text.isEmpty()) continue;
     const auto expansion = expandTimedCounts(transcript, segment, draft.grid);
     if (expansion.expanded) {
-      for (const auto &count : expansion.counts)
-        if (secondaryIds.insert(count.id.toStdString()).second) draft.secondaryCues.push_back(count);
+      for (const auto &count : expansion.counts) {
+        if (std::any_of(options.catalogueSelections.begin(), options.catalogueSelections.end(),
+              [&](const auto &selection) { return selection.announcementId == count.id; })) continue;
+        if (secondaryIds.insert(count.id.toStdString()).second) {
+          draft.secondaryCues.push_back(count);
+          draft.sourceAnnouncements.push_back({count.id, count.rawText, count.rawTimeSeconds,
+              segment.endSeconds, count.asrConfidence});
+        }
+      }
       if (!expansion.section.recognized()) continue;
     }
     auto announcement = interpretGuideAnnouncement(segment, options.learnedMappings);
@@ -514,25 +637,42 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
       announcement.kind = GuideAnnouncementKind::section;
       announcement.section = expansion.section;
     }
+    auto primaryId = guideSectionSuggestionId(transcript, segment);
+    auto secondaryId = "guide-secondary-" + segmentIdentityHash(transcript, segment, text);
+    const auto wordSelection = selectedWordIds.find(primaryId.toStdString());
+    if (wordSelection != selectedWordIds.end()) primaryId = secondaryId = wordSelection->second;
+    const GuideCatalogSelection *selection = nullptr;
+    for (const auto &item : options.catalogueSelections)
+      if (item.announcementId == primaryId || item.announcementId == secondaryId) { selection = &item; break; }
+    if (selection) {
+      announcement.kind = selection->choice.kind;
+      announcement.section = {selection->choice.type, selection->choice.ordinal,
+          "catalogue-selection", juce::String::fromUTF8("Marca elegida explícitamente del catálogo.")};
+      announcement.secondaryName = selection->choice.key;
+    }
+    const auto sourceId = selection ? selection->announcementId :
+        (announcement.kind == GuideAnnouncementKind::count || announcement.kind == GuideAnnouncementKind::instruction)
+            ? secondaryId : primaryId;
+    draft.sourceAnnouncements.push_back({sourceId, segment.text, segment.startSeconds, segment.endSeconds, segment.confidence});
+    if (announcement.recognitionState() != GuideRecognitionState::resolved) {
+      if (draft.pendingAnnouncements.size() >= maximumSectionSuggestions + kMaxArrangementCueEvents) {
+        draft.error = juce::String::fromUTF8("Hay demasiados anuncios pendientes para revisar."); return draft;
+      }
+      draft.pendingAnnouncements.push_back({sourceId, segment.text, segment.startSeconds, segment.endSeconds,
+          announcement.candidates.empty() ? guideCatalogChoices(segment, options.learnedMappings) : announcement.candidates});
+      continue;
+    }
     if (announcement.kind == GuideAnnouncementKind::count ||
         announcement.kind == GuideAnnouncementKind::instruction) {
-      const auto id = "guide-secondary-" + segmentIdentityHash(transcript, segment, text);
-      double entrySeconds = segment.startSeconds;
-      if (announcement.kind == GuideAnnouncementKind::instruction) {
-        const auto anchor = musicalOnsetAnchor(gridBars, segment.startSeconds);
-        const auto entry = std::upper_bound(gridBars.begin(), gridBars.end(), anchor.seconds + epsilon,
-            [](double time, const auto &mark) { return time < mark.timeSeconds; });
-        if (entry == gridBars.end() || entry->timeSeconds >= draft.durationSeconds - epsilon) {
-          // Keep the spoken point visible for review, while rejecting the
-          // unresolved draft atomically instead of clamping to an earlier bar.
-          addTimingIssue(draft, id, segment, true);
-        } else entrySeconds = entry->timeSeconds;
-      }
+      const auto id = selection ? selection->announcementId : secondaryId;
+      // Instructions are spoken cues, not boundaries of the next musical
+      // section. Quantizing them can delay a mid-bar call by two or more beats.
+      // The existing scheduler plays a secondary cue at this source position.
       // Repeated copies of precisely the same source evidence represent one
       // point. Repeated announcements at different source times remain separate.
       if (secondaryIds.insert(id.toStdString()).second)
         draft.secondaryCues.push_back({id, announcement.secondaryName, segment.text,
-            segment.startSeconds, entrySeconds, segment.confidence, false});
+            segment.startSeconds, segment.startSeconds, segment.confidence, false});
       continue;
     }
     const auto &interpretation = announcement.section;
@@ -549,6 +689,7 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     }
     const int target = requested;
     Candidate candidate;
+    candidate.sourceSegments.push_back(segment);
     auto &suggestion = candidate.suggestion;
     suggestion.type = interpretation.type;
     candidate.ordinal = interpretation.ordinal;
@@ -584,7 +725,7 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
       suggestion.confidenceLevel = ConfidenceLevel::low;
       suggestion.reason += juce::String::fromUTF8(" El anuncio precede al origen musical; revisa la entrada propuesta.");
     }
-    suggestion.id = guideSectionSuggestionId(transcript, segment);
+    suggestion.id = selection ? selection->announcementId : primaryId;
     if (!candidates.empty() && suggestion.startSeconds - candidates.back().suggestion.startSeconds < minimumAcceptedSectionDurationSeconds) {
       const bool near = std::abs(suggestion.startSeconds - candidates.back().suggestion.startSeconds) > epsilon;
       merge(candidates.back(), candidate, near);
@@ -593,6 +734,13 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
   if (candidates.size() > maximumSectionSuggestions) {
     draft.error = juce::String::fromUTF8("La guía excede el límite de 256 secciones del editor. No se ha aplicado ninguna."); return draft;
   }
+  candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [&](const auto &candidate) {
+    if (!candidate.conflict) return false;
+    for (const auto &segment : candidate.sourceSegments)
+      draft.pendingAnnouncements.push_back({guideSectionSuggestionId(transcript, segment), segment.text,
+          segment.startSeconds, segment.endSeconds, guideCatalogChoices(segment, options.learnedMappings)});
+    return true;
+  }), candidates.end());
   std::map<SectionType, int> totals, occurrences;
   for (const auto &candidate : candidates) ++totals[candidate.suggestion.type];
   for (size_t i = 0; i < candidates.size(); ++i) {
@@ -745,6 +893,196 @@ bool discardGuideSecondaryCue(GuideAlignmentDraft &draft, const juce::String &id
   draft.timingIssues.erase(std::remove_if(draft.timingIssues.begin(), draft.timingIssues.end(),
       [&](const auto &issue) { return issue.secondary && issue.id == sourceId; }), draft.timingIssues.end());
   if (draft.timingIssues.size() != before) draft.error = timingIssuesError(draft.timingIssues);
+  return true;
+}
+
+bool chooseGuideCatalogMark(GuideAlignmentDraft &draft, const juce::String &id,
+                            const GuideCatalogChoice &choice, juce::String &error) {
+  error.clear();
+  const auto canonical = canonicalChoice(choice);
+  if (id.trim().isEmpty() || !canonical || !canReviewGuideAlignment(draft)) {
+    error = juce::String::fromUTF8("La marca o la propuesta no son válidas para elegir del catálogo."); return false;
+  }
+  const auto equivalentId = [](const juce::String &first, const juce::String &second) {
+    const auto sourceKey = [](const juce::String &value) {
+      if (value.startsWith("guide-secondary-")) return value.substring(juce::String("guide-secondary-").length());
+      if (value.startsWith("guide-")) return value.substring(juce::String("guide-").length());
+      return value;
+    };
+    return first == second || sourceKey(first) == sourceKey(second);
+  };
+  const auto primary = std::find_if(draft.suggestions.begin(), draft.suggestions.end(),
+      [&](const auto &item) { return item.id == id; });
+  const auto secondary = std::find_if(draft.secondaryCues.begin(), draft.secondaryCues.end(),
+      [&](const auto &item) { return item.id == id; });
+  const auto pending = std::find_if(draft.pendingAnnouncements.begin(), draft.pendingAnnouncements.end(),
+      [&](const auto &item) { return item.id == id; });
+  const auto issue = std::find_if(draft.timingIssues.begin(), draft.timingIssues.end(),
+      [&](const auto &item) { return item.id == id; });
+  if (primary == draft.suggestions.end() && secondary == draft.secondaryCues.end() &&
+      pending == draft.pendingAnnouncements.end() && issue == draft.timingIssues.end()) {
+    error = juce::String::fromUTF8("El anuncio seleccionado ya no existe en esta revisión."); return false;
+  }
+  for (size_t i = 0; i < draft.suggestions.size(); ++i)
+    if ((i > 0 && (draft.suggestions[i].startSeconds <= draft.suggestions[i - 1].startSeconds ||
+          std::abs(draft.suggestions[i - 1].endSeconds - draft.suggestions[i].startSeconds) > epsilon)) ||
+        (i + 1 == draft.suggestions.size() &&
+          std::abs(draft.suggestions[i].endSeconds - draft.durationSeconds) > epsilon)) {
+      error = juce::String::fromUTF8("Las secciones de la revisión tienen límites inconsistentes."); return false;
+    }
+  std::optional<GuideSourceAnnouncement> source;
+  for (const auto &item : draft.sourceAnnouncements) if (item.id == id) {
+    if (source && (source->rawText != item.rawText || source->startSeconds != item.startSeconds ||
+        source->endSeconds != item.endSeconds || source->confidence != item.confidence)) {
+      error = juce::String::fromUTF8("El anuncio tiene más de una evidencia fuente incompatible."); return false;
+    }
+    source = item;
+  }
+  // Legacy review fixtures may predate explicit source records. Preserve their
+  // measured onset and text; the one-ULP interval is not an inferred voice span.
+  if (!source && pending != draft.pendingAnnouncements.end())
+    source = GuideSourceAnnouncement{id, pending->rawText, pending->startSeconds, pending->endSeconds, {}};
+  if (!source && secondary != draft.secondaryCues.end())
+    source = GuideSourceAnnouncement{id, secondary->rawText, secondary->rawTimeSeconds,
+        std::nextafter(secondary->rawTimeSeconds, draft.durationSeconds), secondary->asrConfidence};
+  if (!source && primary != draft.suggestions.end())
+    source = GuideSourceAnnouncement{id, primary->displayName, primary->rawStartSeconds,
+        std::nextafter(primary->rawStartSeconds, draft.durationSeconds), {}};
+  if (!source && issue != draft.timingIssues.end())
+    source = GuideSourceAnnouncement{id, issue->rawText, issue->rawTimeSeconds,
+        std::nextafter(issue->rawTimeSeconds, draft.durationSeconds), {}};
+  if (!source || source->rawText.trim().isEmpty() || !std::isfinite(source->startSeconds) ||
+      !std::isfinite(source->endSeconds) || source->startSeconds < 0.0 ||
+      source->endSeconds <= source->startSeconds || source->endSeconds > draft.durationSeconds + epsilon ||
+      !validConfidence(source->confidence)) {
+    error = juce::String::fromUTF8("No hay evidencia fuente válida para esta marca."); return false;
+  }
+  auto working = draft;
+  const std::optional<SectionSuggestion> previousPrimary = primary == draft.suggestions.end()
+      ? std::nullopt : std::optional<SectionSuggestion>{*primary};
+  const std::optional<GuideSecondaryCueSuggestion> previousSecondary = secondary == draft.secondaryCues.end()
+      ? std::nullopt : std::optional<GuideSecondaryCueSuggestion>{*secondary};
+  working.suggestions.erase(std::remove_if(working.suggestions.begin(), working.suggestions.end(),
+      [&](const auto &item) { return equivalentId(item.id, id); }), working.suggestions.end());
+  working.secondaryCues.erase(std::remove_if(working.secondaryCues.begin(), working.secondaryCues.end(),
+      [&](const auto &item) { return equivalentId(item.id, id); }), working.secondaryCues.end());
+  working.pendingAnnouncements.erase(std::remove_if(working.pendingAnnouncements.begin(), working.pendingAnnouncements.end(),
+      [&](const auto &item) { return equivalentId(item.id, id); }), working.pendingAnnouncements.end());
+  working.timingIssues.erase(std::remove_if(working.timingIssues.begin(), working.timingIssues.end(),
+      [&](const auto &item) { return equivalentId(item.id, id); }), working.timingIssues.end());
+  working.options.catalogueSelections.erase(std::remove_if(working.options.catalogueSelections.begin(),
+      working.options.catalogueSelections.end(), [&](const auto &item) {
+        return equivalentId(item.announcementId, id);
+      }), working.options.catalogueSelections.end());
+  working.options.catalogueSelections.push_back({id, *canonical});
+  if (canonical->kind == GuideAnnouncementKind::section) {
+    const auto gridBars = bars(working);
+    const auto anchor = musicalOnsetAnchor(gridBars, source->startSeconds);
+    const auto next = std::upper_bound(gridBars.begin(), gridBars.end(), anchor.seconds + epsilon,
+        [](double time, const auto &mark) { return time < mark.timeSeconds; });
+    const bool keepManualBoundary = previousPrimary && previousPrimary->userEdited;
+    if (!keepManualBoundary && (next == gridBars.end() ||
+        working.durationSeconds - next->timeSeconds < minimumAcceptedSectionDurationSeconds)) {
+      error = juce::String::fromUTF8("No hay un compás siguiente válido para esta sección; ajusta el origen o elige otra función.");
+      return false;
+    }
+    SectionSuggestion mark = previousPrimary.value_or(SectionSuggestion{});
+    mark.id = id; mark.type = canonical->type;
+    mark.displayName = sectionTypeName(canonical->type);
+    mark.occurrence = canonical->ordinal.value_or(1);
+    if (canonical->ordinal) mark.displayName += " " + juce::String(*canonical->ordinal);
+    mark.rawStartSeconds = source->startSeconds;
+    mark.matchedCueTimeSeconds = source->startSeconds;
+    if (!keepManualBoundary) {
+      mark.startSeconds = next->timeSeconds;
+      mark.startBarIndex = next->barNumber - 1;
+    }
+    mark.quantizationDistanceSeconds = mark.startSeconds - source->startSeconds;
+    mark.guideAnticipationSeconds = mark.quantizationDistanceSeconds;
+    mark.confidenceLevel = ConfidenceLevel::medium;
+    mark.userEdited = true;
+    mark.sources.addIfNotAlreadyThere("catalogue-selection");
+    mark.reason = juce::String::fromUTF8("Marca del catálogo elegida para «") + source->rawText +
+        juce::String::fromUTF8("». Se conservan el anuncio original y su instante fuente.");
+    working.suggestions.push_back(std::move(mark));
+  } else {
+    double time = source->startSeconds;
+    if (previousSecondary && (previousSecondary->userEdited ||
+        (canonical->kind == GuideAnnouncementKind::count && isGuideCountCue(previousSecondary->name))))
+      time = previousSecondary->timeSeconds;
+    working.secondaryCues.push_back({id, canonical->key, source->rawText,
+        source->startSeconds, time, source->confidence, true});
+  }
+  std::stable_sort(working.suggestions.begin(), working.suggestions.end(), [](const auto &first, const auto &second) {
+    return first.startSeconds < second.startSeconds;
+  });
+  const auto gridBars = bars(working);
+  for (size_t i = 0; i < working.suggestions.size(); ++i) {
+    auto &mark = working.suggestions[i];
+    mark.endSeconds = i + 1 < working.suggestions.size()
+        ? working.suggestions[i + 1].startSeconds : working.durationSeconds;
+    mark.endBarIndex = exactBar(gridBars, mark.endSeconds);
+    if (!std::isfinite(mark.startSeconds) || mark.startSeconds < 0.0 ||
+        mark.endSeconds - mark.startSeconds < minimumAcceptedSectionDurationSeconds) {
+      error = juce::String::fromUTF8("La selección colisiona con otra sección o no deja duración suficiente."); return false;
+    }
+  }
+  std::map<SectionType, int> totals, occurrences;
+  for (const auto &mark : working.suggestions) ++totals[mark.type];
+  for (auto &mark : working.suggestions) {
+    const int occurrence = ++occurrences[mark.type];
+    if (mark.userEdited && !mark.sources.contains("catalogue-selection")) continue;
+    std::optional<int> ordinal;
+    const auto selected = std::find_if(working.options.catalogueSelections.begin(),
+        working.options.catalogueSelections.end(), [&](const auto &item) { return item.announcementId == mark.id; });
+    if (selected != working.options.catalogueSelections.end()) ordinal = selected->choice.ordinal;
+    else {
+      const auto original = std::find_if(working.sourceAnnouncements.begin(), working.sourceAnnouncements.end(),
+          [&](const auto &item) { return item.id == mark.id; });
+      if (original != working.sourceAnnouncements.end()) {
+        GuideTranscriptSegment segment;
+        segment.text = original->rawText; segment.startSeconds = original->startSeconds;
+        segment.endSeconds = original->endSeconds; segment.confidence = original->confidence;
+        ordinal = interpretGuideAnnouncement(segment, working.options.learnedMappings).section.ordinal;
+      }
+    }
+    const auto *definition = playworship::guide::findSectionDefinition(mark.type);
+    const bool numberOccurrences = definition &&
+        (definition->numberedVariantLimit > 0 || mark.type == SectionType::refrain);
+    mark.occurrence = ordinal.value_or(occurrence);
+    mark.displayName = sectionTypeName(mark.type);
+    if (ordinal || (numberOccurrences && totals[mark.type] > 1)) mark.displayName += " " + juce::String(mark.occurrence);
+  }
+  std::stable_sort(working.secondaryCues.begin(), working.secondaryCues.end(), [](const auto &first, const auto &second) {
+    return first.timeSeconds < second.timeSeconds;
+  });
+  if (std::none_of(working.sourceAnnouncements.begin(), working.sourceAnnouncements.end(),
+        [&](const auto &item) { return item.id == id; })) working.sourceAnnouncements.push_back(*source);
+  working.error = timingIssuesError(working.timingIssues);
+  if (!canReviewGuideAlignment(working)) {
+    error = juce::String::fromUTF8("La elección deja una propuesta inválida; no se aplicó ningún cambio."); return false;
+  }
+  draft = std::move(working);
+  return true;
+}
+
+bool discardGuidePendingAnnouncement(GuideAlignmentDraft &draft, const juce::String &id,
+                                     juce::String &error) {
+  error.clear();
+  if (id.trim().isEmpty() || !canReviewGuideAlignment(draft)) {
+    error = juce::String::fromUTF8("No se puede descartar este anuncio pendiente."); return false;
+  }
+  const auto pending = std::find_if(draft.pendingAnnouncements.begin(), draft.pendingAnnouncements.end(),
+      [&](const auto &item) { return item.id == id; });
+  if (pending == draft.pendingAnnouncements.end()) {
+    error = juce::String::fromUTF8("El anuncio pendiente ya no existe."); return false;
+  }
+  const auto sourceId = pending->id;
+  draft.pendingAnnouncements.erase(pending);
+  draft.options.catalogueSelections.erase(std::remove_if(draft.options.catalogueSelections.begin(),
+      draft.options.catalogueSelections.end(), [&](const auto &selection) {
+        return selection.announcementId == sourceId;
+      }), draft.options.catalogueSelections.end());
   return true;
 }
 

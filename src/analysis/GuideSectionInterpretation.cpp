@@ -45,8 +45,8 @@ struct SecondaryAlias {
 };
 
 const SecondaryAlias *confirmedSecondaryAlias(const juce::String &text) {
-  // Complete short announcements validated by listening to the bilingual
-  // guide corpus. These are ASR repairs, not canonical names or decoder priors.
+  // Complete short announcements confirmed in corpus/song reviews. These are
+  // ASR repairs, not canonical names or decoder priors.
   static const SecondaryAlias aliases[]{
       {"base", "Bass", GuideAnnouncementKind::instruction},
       {"balsa", "Break", GuideAnnouncementKind::instruction},
@@ -127,6 +127,74 @@ GuideSectionInterpretation interpretPhrase(
           "confirmed-corpus-alias",
           juce::String::fromUTF8("Error de voz corregido mediante escucha confirmada del catálogo de guías. Se conserva el texto ASR original."));
   return {};
+}
+
+GuideAnnouncementInterpretation literalAnnouncement(
+    const juce::String &text, const std::vector<GuideLearnedMapping> &mappings) {
+  GuideAnnouncementInterpretation result;
+  auto cue = normalizeGuideCountCue(0.0, text);
+  result.kind = GuideAnnouncementKind::count;
+  if (!cue) {
+    cue = normalizeGuideUtilityCue(0.0, text);
+    result.kind = GuideAnnouncementKind::instruction;
+  }
+  if (cue) {
+    result.secondaryName = cue->name;
+    result.provenance = "catalog";
+    result.reason = juce::String::fromUTF8("Indicación reconocida en el catálogo; conserva el instante del anuncio.");
+    return result;
+  }
+  if (const auto *alias = confirmedSecondaryAlias(text)) {
+    result.kind = alias->kind;
+    result.secondaryName = alias->name;
+    result.provenance = "confirmed-corpus-alias";
+    result.reason = juce::String::fromUTF8("Equivalencia confirmada de una indicación; se conserva la evidencia original.");
+    return result;
+  }
+  result.section = interpretPhrase(text, mappings);
+  result.kind = result.section.recognized() ? GuideAnnouncementKind::section : GuideAnnouncementKind::unknown;
+  result.provenance = result.section.provenance;
+  result.reason = result.section.reason;
+  return result;
+}
+
+bool plausibleAlternative(const GuideTranscriptAlternative &alternative) {
+  return (alternative.language == "es" || alternative.language == "en") &&
+      std::isfinite(alternative.avgLogProbability) && alternative.avgLogProbability <= 0.0 &&
+      alternative.avgLogProbability >= -1.2 &&
+      std::isfinite(alternative.noSpeechProbability) && alternative.noSpeechProbability >= 0.0 &&
+      alternative.noSpeechProbability <= 0.4;
+}
+
+double selectedDecoderScore(const GuideTranscriptSegment &segment) {
+  double score = -std::numeric_limits<double>::infinity();
+  if (segment.confidence && *segment.confidence > 0.0) score = std::log(*segment.confidence);
+  const auto key = phraseKey(segment.text);
+  if (segment.alternatives.size() <= 16)
+    for (const auto &alternative : segment.alternatives)
+      if (alternative.language == segment.language && phraseKey(alternative.text) == key &&
+          std::isfinite(alternative.avgLogProbability) && alternative.avgLogProbability <= 0.0)
+        score = alternative.avgLogProbability;
+  return score;
+}
+
+bool sameAnnouncement(const GuideAnnouncementInterpretation &first,
+                      const GuideAnnouncementInterpretation &second) {
+  if (first.kind != second.kind) return false;
+  return first.kind == GuideAnnouncementKind::section
+      ? first.section.type == second.section.type && first.section.ordinal == second.section.ordinal
+      : first.secondaryName == second.secondaryName;
+}
+
+bool hasPlausibleSecondaryAlternative(const GuideTranscriptSegment &segment) {
+  if (segment.alternatives.size() > 16) return false;
+  for (const auto &alternative : segment.alternatives) {
+    if (!plausibleAlternative(alternative)) continue;
+    const auto meaning = literalAnnouncement(alternative.text, {});
+    if (meaning.kind == GuideAnnouncementKind::count || meaning.kind == GuideAnnouncementKind::instruction)
+      return true;
+  }
+  return false;
 }
 
 int editDistance(const juce::String &first, const juce::String &second) {
@@ -214,6 +282,137 @@ bool readStore(const juce::File &file, std::vector<GuideLearnedMapping> &out,
 
 bool GuideSectionInterpretation::recognized() const noexcept { return familyKey(type) != nullptr; }
 
+std::vector<GuideCatalogChoice> guideCatalogEntries() {
+  static const auto entries = [] {
+    std::vector<GuideCatalogChoice> result;
+    std::set<std::pair<int, juce::String>> identities;
+    const auto append = [&](GuideCatalogChoice choice) {
+      if (identities.emplace(int(choice.kind), phraseKey(choice.key)).second)
+        result.push_back(std::move(choice));
+    };
+    for (const auto &entry : playworship::guide::sectionDefinitions()) {
+      for (int ordinal = 0; ordinal <= entry.numberedVariantLimit; ++ordinal) {
+        GuideCatalogChoice choice;
+        choice.kind = GuideAnnouncementKind::section;
+        choice.type = entry.family;
+        choice.key = entry.key;
+        choice.label = juce::String::fromUTF8(entry.analysisLabel);
+        if (ordinal > 0) {
+          choice.ordinal = ordinal;
+          choice.key += " " + juce::String(ordinal);
+          choice.label += " " + juce::String(ordinal);
+        }
+        append(std::move(choice));
+      }
+    }
+    for (const auto &entry : playworship::guide::utilityDefinitions()) {
+      GuideCatalogChoice choice;
+      choice.kind = GuideAnnouncementKind::instruction;
+      choice.key = entry.key;
+      choice.label = juce::String::fromUTF8(entry.spanishLabel);
+      append(std::move(choice));
+    }
+    for (const auto *alias : playworship::guide::literalUtilityAliases()) {
+      const auto cue = normalizeGuideUtilityCue(0.0, juce::String::fromUTF8(alias));
+      if (!cue) continue;
+      GuideCatalogChoice choice;
+      choice.kind = GuideAnnouncementKind::instruction;
+      choice.key = choice.label = cue->name;
+      append(std::move(choice));
+    }
+    for (int number = 1; number <= 7; ++number) {
+      GuideCatalogChoice choice;
+      choice.kind = GuideAnnouncementKind::count;
+      choice.key = choice.label = juce::String(number);
+      append(std::move(choice));
+    }
+    return result;
+  }();
+  return entries;
+}
+
+std::vector<GuideCatalogChoice> guideCatalogChoices(
+    const GuideTranscriptSegment &segment, const std::vector<GuideLearnedMapping> &learnedMappings) {
+  auto choices = guideCatalogEntries();
+  if (!validSegment(segment)) return choices;
+  const auto matches = [](const GuideCatalogChoice &choice, const GuideAnnouncementInterpretation &meaning) {
+    if (choice.kind != meaning.kind) return false;
+    if (choice.kind == GuideAnnouncementKind::section)
+      return choice.type == meaning.section.type &&
+          (choice.ordinal == meaning.section.ordinal || !choice.ordinal);
+    return phraseKey(choice.key) == phraseKey(meaning.secondaryName);
+  };
+  const auto direct = literalAnnouncement(segment.text, learnedMappings);
+  const bool blockedLearned = direct.section.provenance == "learned-correction" &&
+      hasPlausibleSecondaryAlternative(segment);
+  const auto rawKey = phraseKey(segment.text);
+  for (auto &choice : choices) {
+    juce::StringArray forms{choice.key, choice.label};
+    if (choice.kind == GuideAnnouncementKind::section) {
+      if (const auto *entry = playworship::guide::findSectionDefinition(choice.type))
+        for (const auto *alias : entry->aliases)
+          forms.add(juce::String::fromUTF8(alias) +
+              (choice.ordinal ? " " + juce::String(*choice.ordinal) : juce::String{}));
+    } else if (choice.kind == GuideAnnouncementKind::instruction) {
+      if (const auto *entry = playworship::guide::findUtilityDefinition(choice.key))
+        for (const auto *alias : entry->aliases) forms.add(juce::String::fromUTF8(alias));
+    } else {
+      static const char *english[]{"one", "two", "three", "four", "five", "six", "seven"};
+      static const char *spanish[]{"uno", "dos", "tres", "cuatro", "cinco", "seis", "siete"};
+      const int number = choice.key.getIntValue();
+      forms.add(english[number - 1]); forms.add(spanish[number - 1]);
+    }
+    if (!rawKey.isEmpty()) for (const auto &form : forms) {
+      const auto normalized = phraseKey(form);
+      if (normalized.isEmpty()) continue;
+      const double similarity = 1.0 - double(editDistance(rawKey, normalized)) /
+          double(std::max(rawKey.length(), normalized.length()));
+      if (similarity >= 0.5 && similarity > choice.score) {
+        choice.score = similarity;
+        choice.evidence = "catalog-text-similarity";
+      }
+    }
+    if (direct.recognized() && !blockedLearned && matches(choice, direct)) {
+      choice.score = 4.0 + (choice.ordinal == direct.section.ordinal ? .001 : 0.0);
+      choice.supported = true;
+      choice.evidence = direct.provenance;
+    }
+  }
+  const double selectedScore = selectedDecoderScore(segment);
+  const auto rankAlternatives = [&](const std::vector<GuideTranscriptAlternative> &alternatives, bool constrained) {
+    if (alternatives.size() > 16) return;
+    for (const auto &alternative : alternatives) {
+      if (!plausibleAlternative(alternative)) continue;
+      const auto meaning = literalAnnouncement(alternative.text, {});
+      if (!meaning.recognized()) continue;
+      const bool supported = !constrained && alternative.avgLogProbability >= selectedScore - 0.2;
+      const double score = (constrained ? 1.5 : supported ? 3.0 : 2.0) +
+          alternative.avgLogProbability * (constrained ? .05 : .1);
+      for (auto &choice : choices) if (matches(choice, meaning) && score > choice.score) {
+        choice.score = score + (choice.ordinal == meaning.section.ordinal ? .001 : 0.0);
+        choice.evidence = constrained ? "constrained-asr" :
+            supported ? "alternative-catalog" : "alternative-catalog-review";
+        choice.supported = supported;
+      }
+    }
+  };
+  rankAlternatives(segment.alternatives, false);
+  rankAlternatives(segment.catalogueAlternatives, true);
+  if (const auto compound = guideCompoundCount(segment.text)) {
+    for (auto &choice : choices) {
+      if (choice.kind != GuideAnnouncementKind::count) continue;
+      if (std::find(compound->counts.begin(), compound->counts.end(), choice.key.getIntValue()) == compound->counts.end()) continue;
+      if (choice.score < 2.5) {
+        choice.score = 2.5; choice.evidence = "compound-count-review"; choice.supported = false;
+      }
+    }
+  }
+  std::stable_sort(choices.begin(), choices.end(), [](const auto &first, const auto &second) {
+    return first.score > second.score;
+  });
+  return choices;
+}
+
 GuideSectionInterpretation interpretGuideSection(
     const GuideTranscriptSegment &segment,
     const std::vector<GuideLearnedMapping> &learnedMappings) {
@@ -221,41 +420,39 @@ GuideSectionInterpretation interpretGuideSection(
     return resolved(SectionType::unknown, {}, "invalid-evidence",
         juce::String::fromUTF8("El anuncio tiene tiempos o confianza inválidos; requiere revisión."));
   auto direct = interpretPhrase(segment.text, learnedMappings);
+  if (direct.provenance == "learned-correction" && hasPlausibleSecondaryAlternative(segment))
+    return resolved(SectionType::unknown, {}, "ambiguous-role",
+        juce::String::fromUTF8("Una alternativa de voz corresponde a una indicación o cuenta; la corrección local no puede convertirla automáticamente en sección."));
   if (direct.recognized() || direct.provenance == "ambiguous" ||
       direct.provenance == "compound-announcements") return direct;
   if (isGuideCountCue(segment.text) || isGuideUtilityCue(segment.text) ||
       confirmedSecondaryAlias(segment.text)) return direct;
 
-  double selectedScore = -std::numeric_limits<double>::infinity();
-  if (segment.confidence && *segment.confidence > 0.0) selectedScore = std::log(*segment.confidence);
-  const auto selectedKey = phraseKey(segment.text);
-  for (const auto &alternative : segment.alternatives)
-    if (alternative.language == segment.language && phraseKey(alternative.text) == selectedKey &&
-        std::isfinite(alternative.avgLogProbability))
-      selectedScore = alternative.avgLogProbability;
-
-  std::optional<GuideSectionInterpretation> interpretation;
-  if (segment.alternatives.size() <= 2) for (const auto &alternative : segment.alternatives) {
-    // Alternatives are evidence, not a licence to replace a clearly stronger
-    // unknown transcription with an expected musical word.
-    if ((alternative.language != "es" && alternative.language != "en") ||
-        !std::isfinite(alternative.avgLogProbability) || alternative.avgLogProbability > 0.0 ||
-        alternative.avgLogProbability < -1.2 ||
-        alternative.avgLogProbability < selectedScore - 0.2 ||
-        !std::isfinite(alternative.noSpeechProbability) || alternative.noSpeechProbability < 0.0 ||
-        alternative.noSpeechProbability > 0.4) continue;
-    auto candidate = interpretPhrase(alternative.text, learnedMappings);
-    if (candidate.provenance == "ambiguous") return candidate;
+  const double selectedScore = selectedDecoderScore(segment);
+  std::optional<GuideAnnouncementInterpretation> interpretation;
+  if (segment.alternatives.size() <= 16) for (const auto &alternative : segment.alternatives) {
+    if (!plausibleAlternative(alternative) || alternative.avgLogProbability < selectedScore - 0.2) continue;
+    auto candidate = literalAnnouncement(alternative.text, learnedMappings);
+    if (candidate.section.provenance == "learned-correction" && hasPlausibleSecondaryAlternative(segment)) continue;
+    if (candidate.provenance == "ambiguous") return candidate.section;
     if (!candidate.recognized()) continue;
-    if (interpretation && (interpretation->type != candidate.type || interpretation->ordinal != candidate.ordinal))
+    if (interpretation && !sameAnnouncement(*interpretation, candidate))
       return resolved(SectionType::unknown, {}, "ambiguous",
-          juce::String::fromUTF8("Las alternativas indican secciones distintas; se conserva el anuncio para revisión."));
+          juce::String::fromUTF8("Las alternativas indican marcas o funciones distintas; se conserva el anuncio para revisión."));
     candidate.provenance = "alternative-" + candidate.provenance;
-    candidate.reason = juce::String::fromUTF8("Interpretación apoyada por una alternativa de voz cercana. ") +
-        candidate.reason + juce::String::fromUTF8(" El texto y tiempo ASR originales se conservan.");
+    candidate.section.provenance = candidate.provenance;
+    candidate.section.reason = juce::String::fromUTF8("Interpretación apoyada por una alternativa de voz cercana. ") +
+        candidate.section.reason + juce::String::fromUTF8(" El texto y tiempo ASR originales se conservan.");
     interpretation = std::move(candidate);
   }
-  if (interpretation) return *interpretation;
+  if (interpretation) {
+    if (interpretation->kind == GuideAnnouncementKind::section) return interpretation->section;
+    return resolved(SectionType::unknown, {}, "alternative-secondary",
+        juce::String::fromUTF8("La alternativa reconocida es una indicación o cuenta y no crea un límite musical."));
+  }
+  if (hasPlausibleSecondaryAlternative(segment))
+    return resolved(SectionType::unknown, {}, "secondary-candidate",
+        juce::String::fromUTF8("Hay una alternativa de indicación o cuenta que requiere revisión en el catálogo."));
   auto tentative = closeCatalogCandidate(segment.text);
   if (tentative.recognized()) return tentative;
   return resolved(SectionType::unknown, {}, "unrecognized",
@@ -268,36 +465,74 @@ bool GuideAnnouncementInterpretation::recognized() const noexcept {
              secondaryName.isNotEmpty();
 }
 
+GuideRecognitionState GuideAnnouncementInterpretation::recognitionState() const {
+  if (recognized()) {
+    for (const auto &entry : guideCatalogEntries()) {
+      if (entry.kind != kind) continue;
+      if (kind == GuideAnnouncementKind::section) {
+        if (entry.type == section.type && entry.ordinal == section.ordinal)
+          return section.tentative ? GuideRecognitionState::tentative : GuideRecognitionState::resolved;
+      } else if (entry.key == secondaryName) {
+        return GuideRecognitionState::resolved;
+      }
+    }
+    return GuideRecognitionState::reviewOnly;
+  }
+  if (provenance == "ambiguous" || provenance == "ambiguous-role" ||
+      provenance == "compound-announcements" || provenance == "invalid-evidence")
+    return GuideRecognitionState::reviewOnly;
+  return GuideRecognitionState::unresolved;
+}
+
 GuideAnnouncementInterpretation interpretGuideAnnouncement(
     const GuideTranscriptSegment &segment,
     const std::vector<GuideLearnedMapping> &learnedMappings) {
+  const auto finish = [&](GuideAnnouncementInterpretation result) {
+    result.candidates = guideCatalogChoices(segment, learnedMappings);
+    return result;
+  };
   GuideAnnouncementInterpretation result;
-  if (validSegment(segment)) {
-    auto cue = normalizeGuideCountCue(segment.startSeconds, segment.text, segment.confidence);
-    result.kind = GuideAnnouncementKind::count;
-    if (!cue) {
-      cue = normalizeGuideUtilityCue(segment.startSeconds, segment.text, segment.confidence);
-      result.kind = GuideAnnouncementKind::instruction;
-    }
-    if (cue) {
-      result.secondaryName = cue->name;
-      result.provenance = "catalog";
-      result.reason = juce::String::fromUTF8("Indicación reconocida en el catálogo; conserva el instante del anuncio.");
-      return result;
-    }
-    if (const auto *alias = confirmedSecondaryAlias(segment.text)) {
-      result.kind = alias->kind;
-      result.secondaryName = alias->name;
-      result.provenance = "confirmed-corpus-alias";
-      result.reason = juce::String::fromUTF8("Error de voz corregido mediante escucha confirmada del catálogo de guías. Se conservan el texto ASR y el instante original.");
-      return result;
-    }
+  if (!validSegment(segment)) {
+    result.section = interpretGuideSection(segment, learnedMappings);
+    result.provenance = result.section.provenance;
+    result.reason = result.section.reason;
+    return finish(std::move(result));
   }
+  auto direct = literalAnnouncement(segment.text, learnedMappings);
+  if (direct.provenance == "compound-announcements" || direct.provenance == "ambiguous")
+    return finish(std::move(direct));
+  const bool blockedLearned = direct.section.provenance == "learned-correction" &&
+      hasPlausibleSecondaryAlternative(segment);
+  if (direct.recognized() && !blockedLearned) return finish(std::move(direct));
+
+  const double selectedScore = selectedDecoderScore(segment);
+  std::optional<GuideAnnouncementInterpretation> alternativeMeaning;
+  if (segment.alternatives.size() <= 16) for (const auto &alternative : segment.alternatives) {
+    if (!plausibleAlternative(alternative) || alternative.avgLogProbability < selectedScore - 0.2) continue;
+    auto meaning = literalAnnouncement(alternative.text, learnedMappings);
+    if (meaning.section.provenance == "learned-correction" && hasPlausibleSecondaryAlternative(segment)) continue;
+    if (!meaning.recognized()) continue;
+    if (alternativeMeaning && !sameAnnouncement(*alternativeMeaning, meaning)) {
+      result.provenance = "ambiguous";
+      result.reason = juce::String::fromUTF8("Las alternativas indican marcas o funciones distintas; elige una opción del catálogo.");
+      result.section.provenance = result.provenance;
+      result.section.reason = result.reason;
+      return finish(std::move(result));
+    }
+    meaning.provenance = "alternative-" + meaning.provenance;
+    meaning.reason = juce::String::fromUTF8("Marca apoyada por una alternativa de voz cercana; conserva el texto y el tiempo originales.");
+    if (meaning.kind == GuideAnnouncementKind::section) {
+      meaning.section.provenance = meaning.provenance;
+      meaning.section.reason = meaning.reason;
+    }
+    alternativeMeaning = std::move(meaning);
+  }
+  if (alternativeMeaning) return finish(std::move(*alternativeMeaning));
   result.section = interpretGuideSection(segment, learnedMappings);
   result.kind = result.section.recognized() ? GuideAnnouncementKind::section : GuideAnnouncementKind::unknown;
   result.provenance = result.section.provenance;
   result.reason = result.section.reason;
-  return result;
+  return finish(std::move(result));
 }
 
 juce::String guideSectionSuggestionId(const GuideTranscript &transcript,
@@ -335,7 +570,7 @@ std::vector<GuideLearnedMapping> guideSectionCorrectionsForConfirmedRenames(
     if (!std::isfinite(suggestion->rawStartSeconds) || !std::isfinite(*suggestion->matchedCueTimeSeconds) ||
         std::abs(segment.startSeconds - suggestion->rawStartSeconds) > evidenceTimeTolerance ||
         std::abs(segment.startSeconds - *suggestion->matchedCueTimeSeconds) > evidenceTimeTolerance ||
-        normalizeGuideCue(0.0, segment.text)) continue;
+        normalizeGuideCue(0.0, segment.text) || hasPlausibleSecondaryAlternative(segment)) continue;
     GuideLearnedMapping mapping{segment.text, target->normalizedType};
     if (!validMapping(mapping)) continue;
     const auto key = phraseKey(mapping.rawText);

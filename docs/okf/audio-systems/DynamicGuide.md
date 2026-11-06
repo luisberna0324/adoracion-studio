@@ -343,19 +343,33 @@ incluyendo el alias `acapella`. La migración legacy aplica las mismas
 condiciones de continuidad y preservación de acciones que las demás utilidades.
 Los cues son inmediatos en su punto; los anuncios de secciones musicales
 conservan el adelanto de un compás. En la detección asistida, el punto de una
-indicación reconocida representa su entrada musical propuesta en el compás
-siguiente al aviso hablado. El tiempo original de voz permanece en el
-borrador. Los conteos conservan sus instantes y no reciben ese desplazamiento.
+indicación reconocida coincide exactamente con el comienzo hablado. Se
+conserva además el tiempo original de voz en el borrador. Modificar el origen
+de las secciones no mueve estas indicaciones ni los conteos medidos.
 El scheduler no resta otro compás a las indicaciones: reproduce el cue en su
 posición confirmada y anticipa las principales una sola vez desde su entrada.
 La detección revisa las propuestas; no modifica los eventos de un arreglo
-guardado al cargarlo. El ajuste de Glorioso Día se comprobó mediante
-alineación nativa desde caché, manteniendo las seis cuentas y sin cambiar el
-scheduler. La evidencia valida los puntos calculados; no es una nueva escucha
-humana ni un guardado del arreglo en la app. Un conteo agrupado tiene `name`
-numérico,
-`countEnd` (hasta 7) y offsets fuente `countOffsetsSec` relativos al primer
-pulso. Esos offsets permiten atravesar cambios de BPM/métrica; el intervalo
+guardado al cargarlo. El contrato activo
+`sections-mvp-9-secondary-spoken-timing` reemplaza para indicaciones la regla
+de compás posterior ensayada en el contrato 8 de Glorioso Día. La corrección
+de principales y el refinamiento de fase de aquel caso siguen vigentes.
+En ALABA, la instrucción Drums In en 191,800 s debe permanecer en ese punto;
+`Submit intensity.` o `Summit intensity` se interpretan como Build y conservan
+el inicio hablado como indicaciones independientes. Es una reparación
+semántica de anuncios completos que no modifica el prior ni la salida cruda
+de Whisper. No exige cambios al scheduler ni a los eventos ya guardados.
+La validación nativa de ALABA desde caché conservó las 27 principales restantes,
+las siete instrucciones en sus inicios y los tres puntos de cuenta, incluido
+un compuesto literal sin desglosar. El replay conservó las 205 referencias y
+eventos originales de los 54 escenarios, con cero extras y sin nuevo ASR.
+App y probes compilaron, la firma estricta se verificó y las ocho suites
+nativas pasaron en 12,39 s. Esa evidencia de cálculo no acredita una escucha
+nueva, una confirmación del arreglo ni una ejecución nueva de la app. Las
+sugerencias se revisan y confirman mediante el flujo existente; el cálculo
+no modifica automáticamente lo ya guardado.
+
+Un conteo agrupado tiene `name` numérico, `countEnd` (hasta 7) y offsets fuente
+`countOffsetsSec` relativos al primer pulso. Esos offsets permiten atravesar cambios de BPM/métrica; el intervalo
 fuente `countIntervalSec` se conserva como fallback legacy. Se expande en
 puntos individuales al publicar y al exportar. Tempo convierte sus puntos fuente a los
 offsets de salida de cada callback, sin cambiar el pitch de la voz.

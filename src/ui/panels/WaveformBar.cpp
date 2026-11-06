@@ -1313,7 +1313,7 @@ WaveformBar::WaveformBar() {
     showSectionAutomationActionsPopover();
   };
 
-  suggestSectionsButton.setButtonText(L10n::tr("Sugerir secciones", "Suggest sections"));
+  suggestSectionsButton.setButtonText(L10n::tr("Detectar secciones", "Detect sections"));
   suggestSectionsButton.setComponentID("suggest-sections");
   suggestSectionsButton.setViewportIgnoreDragFlag(true);
   suggestSectionsButton.onClick = [this] {
@@ -1334,7 +1334,8 @@ WaveformBar::WaveformBar() {
   guideAlignmentCancelButton.setComponentID("guide-alignment-cancel");
   guideAlignmentAcceptButton.onClick = [this] {
     finishGuideAlignmentRename(true);
-    if (guideAlignmentActive && onGuideAlignmentAccept) onGuideAlignmentAccept();
+    if (guideAlignmentActive && guideAlignmentPreview.pendingAnnouncements.empty() &&
+        guideAlignmentPreview.error.isEmpty() && onGuideAlignmentAccept) onGuideAlignmentAccept();
   };
   guideAlignmentCancelButton.onClick = [this] {
     finishGuideAlignmentRename(false);
@@ -2055,6 +2056,21 @@ void WaveformBar::setGuideAlignmentPreview(const playworship::analysis::GuideAli
   guideAlignmentError = draft.error;
   guideAlignmentActive = true;
   sectionDetectionPreview.clear();
+  if (entering && !draft.pendingAnnouncements.empty()) {
+    const double length = getSongLengthSeconds();
+    double firstPending = std::numeric_limits<double>::infinity();
+    for (const auto &pending : draft.pendingAnnouncements)
+      if (std::isfinite(pending.startSeconds) && pending.startSeconds >= 0.0 &&
+          pending.startSeconds <= length)
+        firstPending = std::min(firstPending, pending.startSeconds);
+    if (std::isfinite(length) && length > 0.0 && std::isfinite(firstPending)) {
+      const auto window = getVisibleWindow();
+      const float position = float(firstPending / length);
+      if (position < window.first || position > window.first + window.second)
+        setVisibleWindow(juce::jlimit(0.0f, 1.0f - window.second,
+            position - window.second * 0.25f), window.second);
+    }
+  }
   resized();
   repaint();
 }
@@ -2089,6 +2105,11 @@ void WaveformBar::setOnGuideAlignmentRename(std::function<void(juce::String, juc
   onGuideAlignmentRename = std::move(callback);
 }
 
+void WaveformBar::setOnGuideCatalogSelection(std::function<void(juce::String,
+    playworship::analysis::GuideCatalogChoice)> callback) {
+  onGuideCatalogSelection = std::move(callback);
+}
+
 void WaveformBar::setOnGuideAlignmentRemove(std::function<void(const juce::String &)> callback) {
   onGuideAlignmentRemove = std::move(callback);
 }
@@ -2111,7 +2132,8 @@ void WaveformBar::layoutGuideAlignmentToolbar() {
   guideAlignmentCancelButton.setBounds(row.removeFromRight(compact ? 77 : 88).reduced(2, 0));
   guideAlignmentAcceptButton.setBounds(row.removeFromRight(compact ? 82 : 98).reduced(2, 0));
   guideAlignmentAcceptButton.setEnabled((!guideAlignmentPreview.suggestions.empty() ||
-      !guideAlignmentPreview.secondaryCues.empty()) && guideAlignmentPreview.error.isEmpty());
+      !guideAlignmentPreview.secondaryCues.empty()) && guideAlignmentPreview.pendingAnnouncements.empty() &&
+      guideAlignmentPreview.error.isEmpty());
   rebuildGuideAlignmentMarkers();
 }
 
@@ -2137,9 +2159,10 @@ void WaveformBar::rebuildGuideAlignmentMarkers() {
     guideOriginHit = {originX - 7.0f, ruler.getY(), 14.0f, ruler.getHeight() + 8.0f};
   }
   std::array<float, 3> rightEdges{{-10000, -10000, -10000}};
-  const float primaryHeight = guideAlignmentPreview.secondaryCues.empty()
+  const bool hasPoints = !guideAlignmentPreview.secondaryCues.empty() || !guideAlignmentPreview.pendingAnnouncements.empty();
+  const float primaryHeight = !hasPoints
       ? body.getHeight() : body.getHeight() * 0.5f;
-  const int rowCount = juce::jlimit(1, 3, guideAlignmentPreview.secondaryCues.empty()
+  const int rowCount = juce::jlimit(1, 3, !hasPoints
       ? int((primaryHeight - 20.0f) / 24.0f)
       : 1 + int(juce::jmax(0.0f, primaryHeight - 28.0f) / 24.0f));
   const auto font = makeAppFont(11.5f, AppFontWeight::SemiBold);
@@ -2173,6 +2196,16 @@ void WaveformBar::rebuildGuideAlignmentMarkers() {
     const auto placement = packing.place(x, width);
     guideAlignmentMarkers.push_back({cue.id, placement.label, placement.pointHit,
         x, true, placement.point});
+  }
+  for (const auto &pending : guideAlignmentPreview.pendingAnnouncements) {
+    if (body.getWidth() < 48.0f || body.getHeight() < 64.0f) break;
+    const float x = guideAlignmentTimeX(pending.startSeconds);
+    if (!std::isfinite(x) || x < body.getX() || x > body.getRight()) continue;
+    const auto label = L10n::tr("Elegir marca", "Choose marker");
+    const float width = juce::jmin(174.0f, juce::GlyphArrangement::getStringWidth(secondaryFont, label) + 22.0f);
+    const auto placement = packing.place(x, width);
+    guideAlignmentMarkers.push_back({pending.id, placement.label, placement.pointHit,
+        x, true, placement.point, true});
   }
   if (guideRenamingId.isNotEmpty())
     for (const auto &marker : guideAlignmentMarkers) if (marker.id == guideRenamingId)
@@ -2230,6 +2263,112 @@ void WaveformBar::finishGuideAlignmentRename(const bool save) {
     if (name.isEmpty()) setGuideAlignmentError(L10n::tr("Escribe un nombre para esta marca.", "Enter a marker name."));
     else onGuideAlignmentRename(id, name);
   }
+}
+
+juce::PopupMenu WaveformBar::buildGuideCatalogMenu(const juce::String &id,
+                                                  GuideCatalogMenuItems &items) const {
+  using namespace playworship::analysis;
+  items.clear();
+  juce::PopupMenu menu;
+  const auto entries = guideCatalogEntries();
+  const auto displayName = [](const GuideCatalogChoice &choice) {
+    if (choice.kind == GuideAnnouncementKind::section) {
+      if (const auto *section = playworship::guide::findSectionDefinition(choice.type)) {
+        auto label = L10n::tr(section->spanishLabel, section->englishLabel);
+        if (choice.ordinal) label += " " + juce::String(*choice.ordinal);
+        return label;
+      }
+    } else if (choice.kind == GuideAnnouncementKind::instruction) {
+      if (const auto *utility = playworship::guide::findUtilityDefinition(choice.key))
+        return L10n::tr(utility->spanishLabel, utility->englishLabel);
+    } else if (choice.kind == GuideAnnouncementKind::count) {
+      return countWordLabel(choice.key.getIntValue());
+    }
+    return choice.label.isNotEmpty() ? choice.label : choice.key;
+  };
+  const auto addChoice = [&](juce::PopupMenu &target, const GuideCatalogChoice &choice) {
+    const int itemId = int(items.size()) + 1;
+    items.emplace_back(itemId, choice);
+    target.addItem(itemId, displayName(choice), onGuideCatalogSelection != nullptr);
+  };
+  const auto pending = std::find_if(guideAlignmentPreview.pendingAnnouncements.begin(),
+      guideAlignmentPreview.pendingAnnouncements.end(), [&](const auto &value) { return value.id == id; });
+  if (pending != guideAlignmentPreview.pendingAnnouncements.end()) {
+    bool headingAdded = false;
+    int suggested = 0;
+    for (const auto &choice : pending->candidates) {
+      if (choice.evidence.isEmpty()) continue;
+      const auto valid = std::find_if(entries.begin(), entries.end(), [&](const auto &entry) {
+        return entry.kind == choice.kind && entry.key == choice.key &&
+            entry.type == choice.type && entry.ordinal == choice.ordinal;
+      });
+      if (valid == entries.end()) continue;
+      if (!headingAdded) {
+        menu.addSectionHeader(L10n::tr("Posibles coincidencias", "Possible matches"));
+        headingAdded = true;
+      }
+      addChoice(menu, choice);
+      if (++suggested == 5) break;
+    }
+    if (headingAdded) menu.addSeparator();
+  }
+  menu.addSectionHeader(L10n::tr("Catálogo de marcas", "Marker catalogue"));
+  juce::PopupMenu sections, instructions, counts;
+  for (const auto &definition : playworship::guide::sectionDefinitions()) {
+    juce::PopupMenu variants;
+    int numberOfEntries = 0;
+    for (const auto &entry : entries) if (entry.kind == GuideAnnouncementKind::section && entry.type == definition.family)
+      ++numberOfEntries;
+    for (const auto &entry : entries) if (entry.kind == GuideAnnouncementKind::section && entry.type == definition.family)
+      addChoice(numberOfEntries > 1 ? variants : sections, entry);
+    if (numberOfEntries > 1)
+      sections.addSubMenu(L10n::tr(definition.spanishLabel, definition.englishLabel), variants);
+  }
+  for (const auto &entry : entries) {
+    if (entry.kind == GuideAnnouncementKind::instruction) addChoice(instructions, entry);
+    else if (entry.kind == GuideAnnouncementKind::count) addChoice(counts, entry);
+  }
+  menu.addSubMenu(L10n::tr("Secciones", "Sections"), sections);
+  menu.addSubMenu(L10n::tr("Indicaciones", "Instructions"), instructions);
+  menu.addSubMenu(L10n::tr("Conteos", "Counts"), counts);
+  return menu;
+}
+
+void WaveformBar::dispatchGuideCatalogSelection(const juce::String &id,
+    const playworship::analysis::GuideCatalogChoice &choice) {
+  if (!guideAlignmentActive || !onGuideCatalogSelection) return;
+  const auto hasId = [&](const auto &values) {
+    return std::any_of(values.begin(), values.end(), [&](const auto &value) { return value.id == id; });
+  };
+  if (!hasId(guideAlignmentPreview.pendingAnnouncements) &&
+      !hasId(guideAlignmentPreview.suggestions) && !hasId(guideAlignmentPreview.secondaryCues)) return;
+  const auto catalogue = playworship::analysis::guideCatalogEntries();
+  const auto valid = std::find_if(catalogue.begin(), catalogue.end(), [&](const auto &entry) {
+    return entry.kind == choice.kind && entry.key == choice.key &&
+        entry.type == choice.type && entry.ordinal == choice.ordinal;
+  });
+  if (valid != catalogue.end()) onGuideCatalogSelection(id, choice);
+}
+
+void WaveformBar::showGuideCatalogPicker(const juce::String &id) {
+  if (!guideAlignmentActive || !onGuideCatalogSelection) return;
+  rebuildGuideAlignmentMarkers();
+  const auto marker = std::find_if(guideAlignmentMarkers.begin(), guideAlignmentMarkers.end(),
+      [&](const auto &value) { return value.id == id; });
+  if (marker == guideAlignmentMarkers.end()) return;
+  GuideCatalogMenuItems items;
+  auto menu = buildGuideCatalogMenu(id, items);
+  const auto safe = juce::Component::SafePointer<WaveformBar>(this);
+  menu.showMenuAsync(makeTouchPopupMenuOptions(this)
+      .withTargetScreenArea(localAreaToGlobal(marker->pill.toNearestInt()))
+      .withMinimumWidth(250).withMaximumNumColumns(1),
+      [safe, id, choices = std::move(items)](int result) {
+        if (!safe || result <= 0) return;
+        for (const auto &entry : choices) if (entry.first == result) {
+          safe->dispatchGuideCatalogSelection(id, entry.second);
+          return;
+        }
+      });
 }
 
 bool WaveformBar::applyDetectedSections(const SongArrangementSnapshot &snapshot) {
@@ -3005,7 +3144,7 @@ void WaveformBar::resized() {
     suggestSectionsButton.setEnabled(sectionDetectionAvailable && onSectionDetectionRequest &&
         actionState.localAnalysisAvailable && linearSource);
     suggestSectionsButton.setTooltip(!linearSource
-        ? L10n::tr("Sugiere sobre la canción original antes de copiar o mover regiones.", "Suggest on the original song before copying or moving regions.")
+        ? L10n::tr("Detecta las secciones de la canción original antes de copiar o mover regiones.", "Detect sections on the original song before copying or moving regions.")
         : sectionDetectionUnavailableReason);
 
     const bool tempoMode = timelineViewMode == TimelineViewMode::TempoMap;
@@ -3733,18 +3872,25 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     if (event.mods.isPopupMenu()) {
       if (hit >= 0) {
         const auto id = guideAlignmentMarkers[size_t(hit)].id;
+        const bool pending = guideAlignmentMarkers[size_t(hit)].pending;
         juce::PopupMenu menu;
-        menu.addItem(1, L10n::tr("Renombrar", "Rename"), onGuideAlignmentRename != nullptr);
-        menu.addItem(2, L10n::tr("Descartar sugerencia", "Discard suggestion"), onGuideAlignmentRemove != nullptr);
+        menu.addItem(1, L10n::tr("Elegir del catálogo", "Choose from catalogue"), onGuideCatalogSelection != nullptr);
+        menu.addItem(2, L10n::tr("Renombrar", "Rename"), !pending && onGuideAlignmentRename != nullptr);
+        menu.addItem(3, L10n::tr("Descartar sugerencia", "Discard suggestion"), onGuideAlignmentRemove != nullptr);
         auto safe = juce::Component::SafePointer<WaveformBar>(this);
         menu.showMenuAsync(makeTouchPopupMenuOptions(this).withTargetScreenArea(
             localAreaToGlobal(guideAlignmentMarkers[size_t(hit)].pill.toNearestInt())),
             [safe, id](int action) {
               if (!safe || !safe->guideAlignmentActive) return;
-              if (action == 1) safe->beginGuideAlignmentRename(id);
-              else if (action == 2 && safe->onGuideAlignmentRemove) safe->onGuideAlignmentRemove(id);
+              if (action == 1) safe->showGuideCatalogPicker(id);
+              else if (action == 2) safe->beginGuideAlignmentRename(id);
+              else if (action == 3 && safe->onGuideAlignmentRemove) safe->onGuideAlignmentRemove(id);
             });
       }
+      return;
+    }
+    if (hit >= 0 && guideAlignmentMarkers[size_t(hit)].pending) {
+      showGuideCatalogPicker(guideAlignmentMarkers[size_t(hit)].id);
       return;
     }
     const auto body = getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
@@ -5046,7 +5192,11 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
   if (guideAlignmentActive) {
     rebuildGuideAlignmentMarkers();
     const int hit = hitGuideAlignmentMarker(event.position);
-    if (hit >= 0) beginGuideAlignmentRename(guideAlignmentMarkers[size_t(hit)].id);
+    if (hit >= 0) {
+      const auto &marker = guideAlignmentMarkers[size_t(hit)];
+      if (onGuideCatalogSelection) showGuideCatalogPicker(marker.id);
+      else if (!marker.pending) beginGuideAlignmentRename(marker.id);
+    }
     return;
   }
   if (liveMode) return;
@@ -7858,6 +8008,26 @@ void WaveformBar::drawGuideAlignmentPreview(juce::Graphics &g,
   }
   for (size_t i = 0; i < guideAlignmentMarkers.size(); ++i) {
     const auto &marker = guideAlignmentMarkers[i];
+    if (marker.pending) {
+      const auto colour = juce::Colour::fromRGB(224, 171, 91);
+      const float y = marker.point.y;
+      g.setColour(colour.withAlpha(0.32f));
+      g.drawLine(marker.x, y + 5.0f, marker.x, body.getBottom() - 3.0f, 0.8f);
+      const float labelAnchorX = marker.pill.getX() - 10.0f;
+      if (std::abs(marker.x - labelAnchorX) > 0.5f)
+        g.drawLine(marker.x, y, labelAnchorX, y, 0.8f);
+      g.setColour(UITheme::panelDark.withAlpha(0.94f));
+      g.fillRoundedRectangle(marker.pill, 5.0f);
+      g.setColour(colour.withAlpha(0.65f));
+      g.drawRoundedRectangle(marker.pill.reduced(0.5f), 5.0f, 0.8f);
+      g.setColour(colour);
+      g.fillEllipse(marker.point.x - 4.0f, y - 4.0f, 8.0f, 8.0f);
+      g.setColour(UITheme::textPrimary);
+      g.setFont(makeAppFont(10.5f, AppFontWeight::SemiBold));
+      g.drawFittedText(L10n::tr("Elegir marca", "Choose marker"), marker.pill.toNearestInt().reduced(7, 0),
+                       juce::Justification::centredLeft, 1);
+      continue;
+    }
     if (marker.secondary) {
       const auto cue = std::find_if(guideAlignmentPreview.secondaryCues.begin(), guideAlignmentPreview.secondaryCues.end(),
           [&](const auto &candidate) { return candidate.id == marker.id; });
@@ -7905,6 +8075,11 @@ void WaveformBar::drawGuideAlignmentPreview(juce::Graphics &g,
   // Labels may move along a row to remain readable. Draw the fixed temporal
   // points last so a later packed label cannot hide an earlier cue's instant.
   for (const auto &marker : guideAlignmentMarkers) if (marker.secondary) {
+    if (marker.pending) {
+      g.setColour(juce::Colour::fromRGB(224, 171, 91));
+      g.fillEllipse(marker.point.x - 4.0f, marker.point.y - 4.0f, 8.0f, 8.0f);
+      continue;
+    }
     const auto cue = std::find_if(guideAlignmentPreview.secondaryCues.begin(), guideAlignmentPreview.secondaryCues.end(),
         [&](const auto &candidate) { return candidate.id == marker.id; });
     if (cue == guideAlignmentPreview.secondaryCues.end()) continue;

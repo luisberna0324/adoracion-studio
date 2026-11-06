@@ -1,6 +1,8 @@
 #include "analysis/GuideSectionInterpretation.h"
 
+#include <algorithm>
 #include <cmath>
+#include <set>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -226,6 +228,144 @@ void confirmedBilingualCorpusCorrections() {
   }
 }
 
+void typedBilingualCatalogueAlternatives() {
+  auto raw = segment("uncertain spoken phrase", 12.25);
+  raw.endSeconds = 13.0;
+  raw.confidence = std::exp(-.5);
+  raw.alternatives = {{raw.text, "en", -.5, .01}, {"Entra la bateria", "es", -.55, .01}};
+  const auto original = raw;
+  auto meaning = interpretGuideAnnouncement(raw);
+  expect(meaning.kind == GuideAnnouncementKind::instruction && meaning.secondaryName == "Drums In" &&
+             meaning.provenance == "alternative-catalog" && !interpretGuideSection(raw).recognized(),
+         "a supported secondary alternative is classified by its role rather than ignored by a primary-only interpreter");
+  raw.alternatives[1].text = "Dos";
+  meaning = interpretGuideAnnouncement(raw);
+  expect(meaning.kind == GuideAnnouncementKind::count && meaning.secondaryName == "2" &&
+             !interpretGuideSection(raw).recognized(),
+         "a supported individual count alternative remains a count instead of creating a section boundary");
+  raw.alternatives = {{"Chorus", "en", -.5, .01}, {"Build", "es", -.55, .01}};
+  meaning = interpretGuideAnnouncement(raw);
+  expect(!meaning.recognized() && meaning.provenance == "ambiguous" && !meaning.candidates.empty(),
+         "supported hypotheses with conflicting musical roles require catalogue selection");
+  expect(meaning.recognitionState() == GuideRecognitionState::reviewOnly,
+         "conflicting supported alternatives are protected against automatic replacement");
+
+  raw = original;
+  raw.alternatives[1].avgLogProbability = -.95;
+  meaning = interpretGuideAnnouncement(raw);
+  expect(!meaning.recognized() && !meaning.candidates.empty() &&
+             meaning.candidates.front().key == "Drums In" && !meaning.candidates.front().supported &&
+             meaning.candidates.front().evidence == "alternative-catalog-review",
+         "a plausible secondary outside the existing score margin ranks as a review choice without being autoaccepted");
+  for (const auto alternative : std::vector<GuideTranscriptAlternative>{
+      {"Drums In", "en", -2, .01}, {"Drums In", "en", -.5, .8},
+      {"Drums In", "fr", -.5, .01},
+      {"Drums In", "en", std::numeric_limits<double>::quiet_NaN(), .01}}) {
+    raw = original; raw.alternatives = {alternative};
+    expect(!interpretGuideAnnouncement(raw).recognized(),
+           "invalid or weak secondary alternatives cannot manufacture a recognized catalogue event");
+  }
+  raw = segment("Verse two");
+  raw.alternatives = {{raw.text, "en", -.5, .01}, {"Build", "es", -.55, .01}};
+  meaning = interpretGuideAnnouncement(raw);
+  expect(meaning.kind == GuideAnnouncementKind::section && meaning.section.type == SectionType::verse &&
+             meaning.section.ordinal == 2,
+         "a directly recognized primary label retains its explicit role and ordinal");
+}
+
+void weakBilingualEvidenceRanksWithoutPhraseExceptions() {
+  // A real bilingual disagreement exercises the same generic route as the
+  // fabricated unknown phrases above. Neither selected phrase is an alias.
+  auto raw = segment("Submit intensity.", 195.58);
+  raw.endSeconds = 196.76;
+  raw.confidence = .56852166226233;
+  raw.alternatives = {{"subir intensidad", "es", -.902326901753744, 1.456069639971247e-6},
+                      {raw.text, "en", -.56471586227417, 2.971145534047537e-7}};
+  const auto original = raw;
+  const auto guide = transcript({raw});
+  const auto id = guideSectionSuggestionId(guide, raw);
+  const auto meaning = interpretGuideAnnouncement(raw, {{raw.text, SectionType::chorus}});
+  expect(!meaning.recognized() && !interpretGuideSection(raw, {{raw.text, SectionType::chorus}}).recognized() &&
+             !meaning.candidates.empty() && meaning.candidates.front().kind == GuideAnnouncementKind::instruction &&
+             meaning.candidates.front().key == "Build" && !meaning.candidates.front().supported,
+         "a plausible Spanish utility offers Build for review without a phrase exception or a learned main-family override");
+  expect(raw.text == original.text && raw.startSeconds == original.startSeconds &&
+             raw.endSeconds == original.endSeconds && raw.language == original.language &&
+             raw.confidence == original.confidence && guideSectionSuggestionId(guide, raw) == id,
+         "ranked catalogue review preserves selected ASR text, timing, language, confidence and identity");
+  for (size_t i = 0; i < raw.alternatives.size(); ++i)
+    expect(raw.alternatives[i].text == original.alternatives[i].text &&
+               raw.alternatives[i].avgLogProbability == original.alternatives[i].avgLogProbability,
+           "ranking never overwrites the original bilingual alternatives");
+  for (const auto *text : {"Submit intensity", "Summit intensity", "other unrelated words"})
+    expect(!interpretGuideAnnouncement(segment(text)).recognized(),
+           "reviewed examples are not production aliases and arbitrary speech is never autoaccepted");
+  const auto item = suggestion(guide, 0);
+  expect(guideSectionCorrectionsForConfirmedRenames(guide, {item}, {{item.id, "Coro"}}).empty(),
+         "an instruction alternative prevents teaching its selected unknown text as a primary family");
+
+  auto grammar = segment("unresolved speech");
+  grammar.catalogueAlternatives = {{"Build", "es", -.05, .001}};
+  const auto grammarMeaning = interpretGuideAnnouncement(grammar);
+  expect(!grammarMeaning.recognized() && grammarMeaning.candidates.front().key == "Build" &&
+             grammarMeaning.candidates.front().evidence == "constrained-asr" &&
+             !grammarMeaning.candidates.front().supported,
+         "grammar-conditioned scores rank catalogue candidates without masquerading as independent acoustic confidence");
+  grammar.text = "Perso!";
+  const auto tentative = interpretGuideAnnouncement(grammar);
+  expect(tentative.recognitionState() == GuideRecognitionState::tentative &&
+             !tentative.candidates.front().supported,
+         "a grammar retry can rank a candidate for a tentative parent without resolving it");
+  expect(interpretGuideAnnouncement(segment("Intro 2")).recognitionState() == GuideRecognitionState::reviewOnly,
+         "a recognized family with an unavailable ordinal requires an explicit catalogue choice");
+  expect(interpretGuideAnnouncement(segment("unfamiliar spoken phrase")).recognitionState() == GuideRecognitionState::unresolved,
+         "unidentified speech can still receive independent recognition evidence");
+  for (const auto *text : {"Verse 2", "Entra bateria", "Three"})
+    expect(interpretGuideAnnouncement(segment(text)).recognitionState() == GuideRecognitionState::resolved,
+           "catalogue-backed principal, instruction and count meanings are automatically resolved");
+}
+
+void closedCatalogueCoversEveryManagedChoice() {
+  const auto entries = guideCatalogEntries();
+  const auto choices = guideCatalogChoices(segment("unfamiliar audio"));
+  expect(entries.size() == choices.size() && !entries.empty(),
+         "unresolved audio keeps the complete managed catalogue available rather than returning an arbitrary subset");
+  const auto compoundChoices = guideCatalogChoices(segment("uno, dos, tres, cuatro"));
+  expect(compoundChoices.front().kind == GuideAnnouncementKind::count &&
+             compoundChoices.front().evidence == "compound-count-review" && !compoundChoices.front().supported,
+         "a grouped count ranks its actually spoken catalogue numbers without inventing individual timings");
+  std::set<std::pair<int, juce::String>> identities;
+  for (const auto &entry : entries)
+    expect(entry.kind != GuideAnnouncementKind::unknown && !entry.key.isEmpty() && !entry.label.isEmpty() &&
+               identities.emplace(int(entry.kind), entry.key).second,
+           "catalogue choices have valid typed canonical identities without duplicate entries");
+  const auto has = [&](GuideAnnouncementKind kind, const juce::String &key) {
+    return std::any_of(entries.begin(), entries.end(), [&](const auto &entry) {
+      return entry.kind == kind && entry.key == key;
+    });
+  };
+  for (const auto &entry : playworship::guide::sectionDefinitions()) {
+    expect(has(GuideAnnouncementKind::section, entry.key), "every principal family is selectable");
+    for (int ordinal = 1; ordinal <= entry.numberedVariantLimit; ++ordinal)
+      expect(has(GuideAnnouncementKind::section, juce::String(entry.key) + " " + juce::String(ordinal)),
+             "every managed principal ordinal is selectable without a second hardcoded vocabulary");
+  }
+  for (const auto &entry : playworship::guide::utilityDefinitions())
+    expect(has(GuideAnnouncementKind::instruction, entry.key), "every managed secondary utility is selectable");
+  for (int count = 1; count <= 7; ++count)
+    expect(has(GuideAnnouncementKind::count, juce::String(count)), "every managed individual count is selectable");
+  for (const auto *alias : playworship::guide::literalUtilityAliases()) {
+    const auto normalized = normalizeGuideUtilityCue(0.0, alias);
+    expect(normalized && has(GuideAnnouncementKind::instruction, normalized->name),
+           "declared literal utilities retain their exact managed meaning even without an equivalent voice clip");
+  }
+  auto invalid = segment("Build"); invalid.confidence = std::numeric_limits<double>::quiet_NaN();
+  const auto invalidChoices = guideCatalogChoices(invalid);
+  expect(invalidChoices.size() == entries.size() &&
+             std::none_of(invalidChoices.begin(), invalidChoices.end(), [](const auto &choice) { return choice.supported; }),
+         "invalid evidence cannot support a label while the complete catalogue remains available for review");
+}
+
 void localCorrectionsAndOrdinalIndependence() {
   TemporaryStore store;
   std::vector<GuideLearnedMapping> mappings;
@@ -382,6 +522,9 @@ int main() {
     conservativeAlternativesAndCandidates();
     compoundInstructionsStayReviewable();
     confirmedBilingualCorpusCorrections();
+    typedBilingualCatalogueAlternatives();
+    weakBilingualEvidenceRanksWithoutPhraseExceptions();
+    closedCatalogueCoversEveryManagedChoice();
     localCorrectionsAndOrdinalIndependence();
     confirmationExtractionGuards();
     boundedVersionedStore();

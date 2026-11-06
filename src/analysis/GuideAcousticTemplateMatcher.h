@@ -42,6 +42,15 @@ GuideAcousticTemplateBank loadGuideAcousticTemplates(
 std::optional<juce::StringArray> guideAcousticCompoundPhrases(const juce::String &text);
 bool guideAcousticAnnouncementsMatchParent(const GuideTranscriptSegment &);
 
+// An unresolved short atomic announcement can be compared against every
+// recording in the same catalogue. No guessed ASR label restricts this search.
+// Existing resolved semantics and explicit compounds are never overridden.
+bool guideAcousticAtomicCandidate(const GuideTranscriptSegment &);
+GuideAcousticMatch matchKnownGuideAtomic(
+    const std::vector<float> &sourcePcm16k, double sourceStartSeconds,
+    const GuideTranscriptSegment &parent, const GuideAcousticTemplateBank &,
+    const CancellationCheck &cancelled = {});
+
 // No BPM, beat positions, sequence manifest or expected timestamps enter this
 // API. Source start and all returned positions are absolute source seconds.
 GuideAcousticMatch matchKnownGuideCompound(

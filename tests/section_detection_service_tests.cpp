@@ -453,6 +453,18 @@ void expectGuideMetadata(const GuideTranscriptSegment &actual,
     near(candidate.noSpeechProbability, original.noSpeechProbability, 0,
          "cache roundtrip retains exact no-speech probability");
   }
+  expect(actual.catalogueAlternatives.size() == expected.catalogueAlternatives.size(),
+         "conditioned catalogue hypotheses remain separate from the original ASR alternatives");
+  for (size_t i = 0; i < expected.catalogueAlternatives.size(); ++i) {
+    const auto &candidate = actual.catalogueAlternatives[i];
+    const auto &original = expected.catalogueAlternatives[i];
+    expect(candidate.text == original.text && candidate.language == original.language,
+           "catalogue hypotheses retain literal text, language and their own order");
+    near(candidate.avgLogProbability, original.avgLogProbability, 0,
+         "conditioned token score is retained without replacing parent confidence");
+    near(candidate.noSpeechProbability, original.noSpeechProbability, 0,
+         "conditioned no-speech probability survives an exact cache roundtrip");
+  }
   expect(actual.words.size() == expected.words.size(),
          "metadata retains optional ASR word intervals separately from parent evidence");
   for (size_t i = 0; i < expected.words.size(); ++i) {
@@ -589,6 +601,147 @@ void testGuideRejectsInvalidBilingualMetadata(TemporaryFixtures &fixtures) {
     expect(!request.cacheDirectory.exists(), "invalid bilingual evidence never creates a cache entry");
   }
   expect(guide->calls == int(invalid.size()), "each invalid metadata case reaches the provider exactly once");
+}
+
+GuideTranscriptSegment catalogueSegmentFixture() {
+  auto segment = bilingualSegmentFixture();
+  segment.catalogueAlternatives = {{" Subir intensidad. ", "es", -.75, 0.0},
+                                   {"Build!", "en", -100.0, 1.0}};
+  return segment;
+}
+
+void testGuideCatalogueMetadataRoundTripAndTamper(TemporaryFixtures &fixtures) {
+  auto guide = std::make_shared<FakeGuideTranscriber>();
+  guide->algorithmVersion = "guide-test-11-closed-catalogue";
+  const SectionDetectionService service(nullptr, guide);
+  auto request = guideRequest(fixtures, "guide-catalogue-metadata");
+  request.cacheDirectory = fixtures.directory.getChildFile("catalogue-metadata-cache");
+  const auto expected = catalogueSegmentFixture();
+  guide->inspect = [expected](const auto &, const auto &, const auto &, auto &transcript, auto &) {
+    transcript.segments.front() = expected; return true;
+  };
+  auto outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && outcome.guideTranscript && !outcome.cacheHit && guide->calls == 1 &&
+             outcome.guideTranscript->providerVersion == guide->algorithmVersion,
+         "provider-eleven identity and optional conditioned metadata are validated before publication");
+  expectGuideMetadata(outcome.guideTranscript->segments.front(), expected);
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && outcome.cacheHit && guide->calls == 1,
+         "catalogue hypotheses are read from cache without a fresh ASR call");
+  expectGuideMetadata(outcome.guideTranscript->segments.front(), expected);
+  const auto files = request.cacheDirectory.getChildFile("guide-transcripts-v2")
+      .findChildFiles(juce::File::findFiles, false, "*.json");
+  expect(files.size() == 1, "optional catalogue metadata retains cache schema two");
+  const auto originalJson = files[0].loadFileAsString();
+  const auto original = juce::JSON::parse(originalJson);
+  const auto &stored = original["segments"].getArray()->getReference(0);
+  expect(stored["catalogueAlternatives"].isArray() && stored["catalogueAlternatives"].getArray()->size() == 2 &&
+             stored["alternatives"].getArray()->size() == 2 && double(stored["confidence"]) == *expected.confidence,
+         "the two original hypotheses and confidence are never overwritten by two conditioned hypotheses");
+  expect(!original["segments"].getArray()->getReference(1).hasProperty("catalogueAlternatives"),
+         "segments with no conditioned hypotheses omit the optional property");
+  for (bool explicitEmpty : {false, true}) {
+    auto older = juce::JSON::parse(originalJson);
+    auto *segment = older["segments"].getArray()->getReference(0).getDynamicObject();
+    if (explicitEmpty) segment->setProperty("catalogueAlternatives", juce::Array<juce::var>{});
+    else segment->removeProperty("catalogueAlternatives");
+    expect(files[0].replaceWithText(juce::JSON::toString(older)), "write an older compatible cache without catalogue hypotheses");
+    outcome = Run(service, request).wait();
+    auto expectedOlder = expected; expectedOlder.catalogueAlternatives.clear();
+    expect(outcome.error.isEmpty() && outcome.cacheHit && guide->calls == 1,
+           "absent or explicitly empty optional catalogue metadata remains backward compatible");
+    expectGuideMetadata(outcome.guideTranscript->segments.front(), expectedOlder);
+  }
+  using CacheMutator = std::function<void(juce::DynamicObject &)>;
+  std::vector<CacheMutator> invalid;
+  const auto field = [&](const char *key, juce::var value) {
+    invalid.push_back([key = juce::Identifier(key), value](auto &segment) {
+      segment.getProperty("catalogueAlternatives").getArray()->getReference(0)
+          .getDynamicObject()->setProperty(key, value);
+    });
+  };
+  for (const auto *key : {"text", "language", "avgLogProbability", "noSpeechProbability"})
+    invalid.push_back([key = juce::Identifier(key)](auto &segment) {
+      segment.getProperty("catalogueAlternatives").getArray()->getReference(0)
+          .getDynamicObject()->removeProperty(key);
+    });
+  for (const auto *key : {"avgLogProbability", "noSpeechProbability"}) {
+    field(key, "0.1"); field(key, true); field(key, juce::var{});
+  }
+  for (const auto *key : {"text", "language"}) field(key, 4);
+  field("text", " "); field("text", juce::String::repeatedString("x", 16385));
+  field("language", "fr"); field("language", "ES"); field("language", "es-en"); field("language", "");
+  field("avgLogProbability", .01); field("avgLogProbability", -100.01);
+  field("noSpeechProbability", -.01); field("noSpeechProbability", 1.01);
+  for (const auto &container : {juce::var("not-an-array"), juce::var{}, juce::var(true)})
+    invalid.push_back([container](auto &segment) { segment.setProperty("catalogueAlternatives", container); });
+  invalid.push_back([](auto &segment) {
+    segment.getProperty("catalogueAlternatives").getArray()->getReference(0) = "not-an-object";
+  });
+  invalid.push_back([](auto &segment) {
+    auto *items = segment.getProperty("catalogueAlternatives").getArray(); items->add(items->getReference(0));
+  });
+  for (const auto &mutate : invalid) {
+    auto corrupted = juce::JSON::parse(originalJson);
+    mutate(*corrupted["segments"].getArray()->getReference(0).getDynamicObject());
+    expect(files[0].replaceWithText(juce::JSON::toString(corrupted)), "write malformed conditioned-hypothesis cache metadata");
+    outcome = Run(service, request).wait();
+    expect(outcome.error.isEmpty() && outcome.guideTranscript && !outcome.cacheHit,
+           "malformed or weakly typed conditioned hypotheses are recomputed before reaching review");
+    expectGuideMetadata(outcome.guideTranscript->segments.front(), expected);
+  }
+  const int expectedCalls = 1 + int(invalid.size());
+  expect(guide->calls == expectedCalls, "each malformed catalogue cache triggers one replacement provider call");
+  guide->algorithmVersion = "guide-test-12-next-catalogue";
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && guide->calls == expectedCalls + 1,
+         "a different provider version cannot reuse conditioned metadata under the prior catalogue identity");
+}
+
+void testGuideRejectsInvalidCatalogueMetadata(TemporaryFixtures &fixtures) {
+  auto guide = std::make_shared<FakeGuideTranscriber>();
+  const SectionDetectionService service(nullptr, guide);
+  auto request = guideRequest(fixtures, "guide-invalid-catalogue-metadata");
+  request.cacheDirectory = fixtures.directory.getChildFile("invalid-catalogue-metadata-cache");
+  using Mutator = std::function<void(GuideTranscriptSegment &)>;
+  const std::vector<Mutator> invalid = {
+      [](auto &s) { s.catalogueAlternatives.front().text = " "; },
+      [](auto &s) { s.catalogueAlternatives.front().text = juce::String::repeatedString("x", 16385); },
+      [](auto &s) { s.catalogueAlternatives.front().language = "fr"; },
+      [](auto &s) { s.catalogueAlternatives.front().language = "ES"; },
+      [](auto &s) { s.catalogueAlternatives.front().language = "es-en"; },
+      [](auto &s) { s.catalogueAlternatives.front().avgLogProbability = std::numeric_limits<double>::quiet_NaN(); },
+      [](auto &s) { s.catalogueAlternatives.front().avgLogProbability = std::numeric_limits<double>::infinity(); },
+      [](auto &s) { s.catalogueAlternatives.front().avgLogProbability = -100.01; },
+      [](auto &s) { s.catalogueAlternatives.front().avgLogProbability = .01; },
+      [](auto &s) { s.catalogueAlternatives.front().noSpeechProbability = std::numeric_limits<double>::quiet_NaN(); },
+      [](auto &s) { s.catalogueAlternatives.front().noSpeechProbability = -.01; },
+      [](auto &s) { s.catalogueAlternatives.front().noSpeechProbability = 1.01; },
+      [](auto &s) { s.catalogueAlternatives.resize(3, s.catalogueAlternatives.front()); }};
+  for (const auto &mutate : invalid) {
+    guide->inspect = [mutate](const auto &, const auto &, const auto &, auto &transcript, auto &) {
+      transcript.segments.front() = catalogueSegmentFixture(); mutate(transcript.segments.front()); return true;
+    };
+    const auto outcome = Run(service, request).wait();
+    expect(outcome.error.isNotEmpty() && !outcome.guideTranscript && outcome.result.guideCues.empty() &&
+               outcome.result.suggestions.empty() && !request.cacheDirectory.exists(),
+           "invalid conditioned metadata cannot publish or cache any partial ASR, catalogue choices or sections");
+  }
+  guide->inspect = [](const auto &, const auto &, const auto &, auto &transcript, auto &) {
+    transcript.segments.clear();
+    for (int i = 0; i < 129; ++i) {
+      auto segment = catalogueSegmentFixture();
+      segment.startSeconds = .001 * i; segment.endSeconds = segment.startSeconds + .0005;
+      segment.words.clear();
+      for (auto &candidate : segment.catalogueAlternatives)
+        candidate.text = juce::String::repeatedString("x", 16384);
+      transcript.segments.push_back(std::move(segment));
+    }
+    return true;
+  };
+  const auto oversized = Run(service, request).wait();
+  expect(oversized.error.isNotEmpty() && !oversized.guideTranscript && !request.cacheDirectory.exists(),
+         "conditioned hypotheses count toward the existing four-megabyte aggregate text budget");
 }
 
 void testGuideAcousticMetadataRoundTrip(TemporaryFixtures &fixtures) {
@@ -928,6 +1081,8 @@ int main() {
   testGuideCacheIdentities(fixtures);
   testGuideBilingualMetadataRoundTrip(fixtures);
   testGuideRejectsInvalidBilingualMetadata(fixtures);
+  testGuideCatalogueMetadataRoundTripAndTamper(fixtures);
+  testGuideRejectsInvalidCatalogueMetadata(fixtures);
   testGuideAcousticMetadataRoundTrip(fixtures);
   testGuideRejectsInvalidAcousticMetadata(fixtures);
   testGuideProviderVersionCapture(fixtures);

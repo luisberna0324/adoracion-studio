@@ -216,7 +216,7 @@ bool validGuideTranscript(const GuideTranscript &transcript, double offset,
         segment.endSeconds <= segment.startSeconds || segment.endSeconds > duration + 0.000001 ||
         segment.text.trim().isEmpty() || segment.text.length() > 16384 || !validLanguage(segment.language) ||
         (segment.confidence && (!std::isfinite(*segment.confidence) || *segment.confidence < 0 || *segment.confidence > 1)) ||
-        segment.alternatives.size() > 2 || segment.words.size() > 128 ||
+        segment.alternatives.size() > 2 || segment.catalogueAlternatives.size() > 2 || segment.words.size() > 128 ||
         segment.acousticAnnouncements.size() > 8) {
       error = juce::String::fromUTF8("La transcripción contiene frases o tiempos inválidos."); return false;
     }
@@ -228,6 +228,16 @@ bool validGuideTranscript(const GuideTranscript &transcript, double offset,
           !std::isfinite(alternative.noSpeechProbability) || alternative.noSpeechProbability < 0 ||
           alternative.noSpeechProbability > 1) {
         error = juce::String::fromUTF8("La transcripción contiene alternativas inválidas."); return false;
+      }
+    }
+    for (const auto &alternative : segment.catalogueAlternatives) {
+      textBytes += size_t(alternative.text.getNumBytesAsUTF8());
+      if (alternative.text.trim().isEmpty() || alternative.text.length() > 16384 ||
+          (alternative.language != "es" && alternative.language != "en") ||
+          !std::isfinite(alternative.avgLogProbability) || alternative.avgLogProbability < -100.0 ||
+          alternative.avgLogProbability > 0.0 || !std::isfinite(alternative.noSpeechProbability) ||
+          alternative.noSpeechProbability < 0.0 || alternative.noSpeechProbability > 1.0) {
+        error = juce::String::fromUTF8("La transcripción contiene hipótesis de catálogo inválidas."); return false;
       }
     }
     double previousWordStart = -1.0;
@@ -312,6 +322,18 @@ juce::var guideTranscriptToVar(const GuideTranscript &transcript, double offset)
       alternatives.add(std::move(candidate));
     }
     item.getDynamicObject()->setProperty("alternatives", std::move(alternatives));
+    if (!segment.catalogueAlternatives.empty()) {
+      juce::Array<juce::var> catalogueAlternatives;
+      for (const auto &alternative : segment.catalogueAlternatives) {
+        auto candidate = juce::var(new juce::DynamicObject());
+        candidate.getDynamicObject()->setProperty("text", alternative.text);
+        candidate.getDynamicObject()->setProperty("language", alternative.language);
+        candidate.getDynamicObject()->setProperty("avgLogProbability", alternative.avgLogProbability);
+        candidate.getDynamicObject()->setProperty("noSpeechProbability", alternative.noSpeechProbability);
+        catalogueAlternatives.add(std::move(candidate));
+      }
+      item.getDynamicObject()->setProperty("catalogueAlternatives", std::move(catalogueAlternatives));
+    }
     if (!segment.words.empty()) {
       juce::Array<juce::var> words;
       for (const auto &word : segment.words) {
@@ -391,6 +413,20 @@ bool readGuideCache(const juce::File &file, const GuideTranscript &identity,
       decoded.alternatives.push_back({alternative->getProperty("text").toString(),
           alternative->getProperty("language").toString(), double(alternative->getProperty("avgLogProbability")),
           double(alternative->getProperty("noSpeechProbability"))});
+    }
+    if (segment->hasProperty("catalogueAlternatives")) {
+      const auto *catalogueAlternatives = segment->getProperty("catalogueAlternatives").getArray();
+      if (!catalogueAlternatives || catalogueAlternatives->size() > 2) return false;
+      for (const auto &candidate : *catalogueAlternatives) {
+        const auto *alternative = candidate.getDynamicObject();
+        if (!alternative || !alternative->getProperty("text").isString() ||
+            !alternative->getProperty("language").isString() ||
+            !numeric(alternative->getProperty("avgLogProbability")) ||
+            !numeric(alternative->getProperty("noSpeechProbability"))) return false;
+        decoded.catalogueAlternatives.push_back({alternative->getProperty("text").toString(),
+            alternative->getProperty("language").toString(), double(alternative->getProperty("avgLogProbability")),
+            double(alternative->getProperty("noSpeechProbability"))});
+      }
     }
     if (segment->hasProperty("words")) {
       const auto *words = segment->getProperty("words").getArray();

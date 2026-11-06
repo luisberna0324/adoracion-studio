@@ -42,6 +42,9 @@ struct GuideTranscriptSegment {
   // The raw parent is retained even when these independent points are usable.
   std::vector<GuideAcousticAnnouncement> acousticAnnouncements;
   std::optional<double> acousticResidualRatio;
+  // A bounded catalogue-constrained retry is separate evidence. Its scores
+  // are conditioned by the grammar and never replace literal ASR alternatives.
+  std::vector<GuideTranscriptAlternative> catalogueAlternatives;
 };
 
 struct GuideTranscript {

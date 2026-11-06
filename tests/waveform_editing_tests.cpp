@@ -85,6 +85,25 @@ struct WaveformEditingTestAccess {
   static auto &guideAccept(WaveformBar &wave) { return wave.guideAlignmentAcceptButton; }
   static auto &guideCancel(WaveformBar &wave) { return wave.guideAlignmentCancelButton; }
   static auto &guideRename(WaveformBar &wave) { return wave.guideNameEditor; }
+  static auto guideCatalogItems(WaveformBar &wave, const juce::String &id) {
+    WaveformBar::GuideCatalogMenuItems items;
+    const auto menu = wave.buildGuideCatalogMenu(id, items);
+    expect(menu.getNumItems() >= 3, "catalogue picker includes the existing marker families");
+    return items;
+  }
+  static void guideCatalogChoose(WaveformBar &wave, const juce::String &id,
+      const playworship::analysis::GuideCatalogChoice &choice) {
+    wave.dispatchGuideCatalogSelection(id, choice);
+  }
+  static bool guidePendingPoint(WaveformBar &wave, const juce::String &id) {
+    wave.rebuildGuideAlignmentMarkers();
+    for (const auto &marker : wave.guideAlignmentMarkers)
+      if (marker.id == id) return marker.pending && marker.secondary && marker.point.x == marker.x;
+    return false;
+  }
+  static void guideDiscard(WaveformBar &wave, const juce::String &id) {
+    if (wave.onGuideAlignmentRemove) wave.onGuideAlignmentRemove(id);
+  }
   static auto &suggestSections(WaveformBar &wave) { return wave.suggestSectionsButton; }
   static juce::String bpmText(TopBar &bar) {
     bar.updateBpmDisplay();
@@ -3513,11 +3532,14 @@ void testCalculatedGuideAlignmentReview() {
   GuideTranscript transcript;
   transcript.audioFingerprint = "calculated-review-fixture";
   transcript.durationSeconds = 30;
-  transcript.segments = {{0, 1, "Uno, dos, tres, cuatro"}, {3.1, 3.4, "Coro"},
+  // This fixture isolates origin/boundary gestures. Use one independently
+  // timed count; unresolved compound-count catalogue review is covered below.
+  transcript.segments = {{0, .44, "Uno"}, {3.1, 3.4, "Coro"},
       {9.1, 9.5, "Verso uno"}, {17.1, 17.5, "Final"}};
   GuideAlignmentOptions options;
   auto draft = alignGuideSections(transcript, options);
-  expect(draft.error.isEmpty() && draft.suggestions.size() == 3, "spoken cues create the real calculated review draft");
+  expect(draft.error.isEmpty() && draft.pendingAnnouncements.empty() && draft.suggestions.size() == 3,
+         "supported spoken cues create the real calculated review draft without unrelated pending catalogue choices");
   wave.setGuideAlignmentCallbacks([&](double origin) {
     options.originSeconds = origin;
     draft = alignGuideSections(transcript, options);
@@ -3566,6 +3588,182 @@ void testCalculatedGuideAlignmentReview() {
   expect(fixture.command('Z') && wave.getArrangementSnapshot().parts.empty(), "one undo reverts the calculated confirmation");
 }
 
+void testClosedGuideCatalogueReviewAndRoleSelection() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  wave.setArrangement({}, false);
+  wave.setSize(1200, 360);
+  GuideTranscript transcript;
+  transcript.provider = "catalogue-ui-fixture";
+  transcript.audioFingerprint = "catalogue-ui-source";
+  transcript.durationSeconds = 30;
+  transcript.segments = {{.5,.9,"Intro"}, {3.15,3.7,"uncertain spoken fragment"},
+      {9.1,9.6,"another uncertain fragment"}};
+  transcript.segments[1].language = "en";
+  transcript.segments[1].confidence = .7;
+  transcript.segments[1].alternatives = {{"uncertain spoken fragment","en",-.35,.01},
+      {"subir intensidad","es",-.8,.01}};
+  auto draft = alignGuideSections(transcript, {});
+  expect(draft.suggestions.size() == 1 && draft.pendingAnnouncements.size() == 2 && draft.secondaryCues.empty(),
+         "unresolved speech remains review points beside the known Intro rather than splitting new musical sections");
+  const auto firstId = draft.pendingAnnouncements[0].id;
+  const auto secondId = draft.pendingAnnouncements[1].id;
+  int selections = 0, accepted = 0, discarded = 0;
+  wave.setOnGuideCatalogSelection([&](juce::String id, GuideCatalogChoice choice) {
+    ++selections;
+    juce::String error;
+    expect(chooseGuideCatalogMark(draft, id, choice, error), "catalogue selection uses the role-aware domain operation");
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setOnGuideAlignmentRemove([&](const juce::String &id) {
+    juce::String error;
+    expect(discardGuidePendingAnnouncement(draft, id, error), "discard removes exactly the unresolved source point");
+    ++discarded;
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setGuideAlignmentCallbacks({}, {}, [&] {
+    const auto plan = appendConfirmedGuideSuggestions(wave.getArrangementSnapshot(), draft);
+    expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement),
+           "resolved catalogue choices use the existing atomic confirmation and history");
+    ++accepted;
+    wave.clearGuideAlignmentPreview();
+  }, [&] { wave.clearGuideAlignmentPreview(); });
+  wave.setGuideAlignmentPreview(draft);
+  expect(!WaveformEditingTestAccess::guideAccept(wave).isEnabled() &&
+         WaveformEditingTestAccess::guideMarkerCount(wave) == 3 &&
+         WaveformEditingTestAccess::guidePendingPoint(wave, firstId) &&
+         WaveformEditingTestAccess::guidePendingPoint(wave, secondId),
+         "pending labels are compact temporal points and block confirmation without creating unknown principal blocks");
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  expect(accepted == 0 && fixture.commits == 0, "a pending catalogue choice cannot publish even through a direct button callback");
+  const auto menu = WaveformEditingTestAccess::guideCatalogItems(wave, firstId);
+  const auto catalogue = guideCatalogEntries();
+  for (const auto &entry : catalogue)
+    expect(std::any_of(menu.begin(), menu.end(), [&](const auto &item) {
+      return item.second.kind == entry.kind && item.second.key == entry.key &&
+          item.second.type == entry.type && item.second.ordinal == entry.ordinal;
+    }), "all supported catalogue choices remain available alongside ranked candidates");
+  for (size_t i = 0; i < menu.size(); ++i)
+    for (size_t j = i + 1; j < menu.size(); ++j)
+      expect(menu[i].first != menu[j].first, "native menu IDs never collide between suggestions and the full catalogue");
+  const auto findChoice = [&](GuideAnnouncementKind kind, const juce::String &key) {
+    const auto found = std::find_if(catalogue.begin(), catalogue.end(), [&](const auto &choice) {
+      return choice.kind == kind && choice.key == key;
+    });
+    expect(found != catalogue.end(), "requested UI test choice is part of the live shared catalogue");
+    return *found;
+  };
+  const auto build = findChoice(GuideAnnouncementKind::instruction, "Build");
+  const auto verse = findChoice(GuideAnnouncementKind::section, "Verse 2");
+  const auto chorus = findChoice(GuideAnnouncementKind::section, "Chorus");
+  const auto count = findChoice(GuideAnnouncementKind::count, "3");
+  auto invalid = build; invalid.key = "not-a-catalogue-mark";
+  WaveformEditingTestAccess::guideCatalogChoose(wave, firstId, invalid);
+  WaveformEditingTestAccess::guideCatalogChoose(wave, "obsolete-source-id", build);
+  expect(selections == 0, "the picker rejects arbitrary labels and stale asynchronous source IDs");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_CATALOGUE_CAPTURE_PATH", {});
+  if (capturePath.isNotEmpty()) {
+    const juce::File file(capturePath);
+    expect(file.getParentDirectory().createDirectory().wasOk(), "catalogue preview capture folder is available");
+    auto output = file.createOutputStream();
+    expect(output && juce::PNGImageFormat().writeImageToStream(wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.5f), *output),
+           "pending catalogue choices render in the existing native waveform style");
+  }
+  WaveformEditingTestAccess::guideCatalogChoose(wave, firstId, build);
+  expect(draft.pendingAnnouncements.size() == 1 && draft.secondaryCues.size() == 1 &&
+         draft.secondaryCues[0].name == "Build" && draft.suggestions.size() == 1 &&
+         !WaveformEditingTestAccess::guideAccept(wave).isEnabled(),
+         "choosing an instruction resolves one point without manufacturing a principal boundary");
+  expectNear(draft.secondaryCues[0].timeSeconds, 3.15, "chosen instruction retains its spoken source instant");
+  WaveformEditingTestAccess::guideCatalogChoose(wave, secondId, verse);
+  expect(draft.pendingAnnouncements.empty() && draft.suggestions.size() == 2 &&
+         WaveformEditingTestAccess::guideAccept(wave).isEnabled(), "a named musical choice clears the final pending point");
+  expectNear(draft.suggestions[1].startSeconds, 10, "chosen principal uses the following musical bar rather than instruction timing");
+  WaveformEditingTestAccess::guideCatalogChoose(wave, firstId, chorus);
+  expect(draft.secondaryCues.empty() && draft.suggestions.size() == 3,
+         "the catalogue also corrects an already resolved instruction into a principal with the selected role");
+  expectNear(draft.suggestions[1].startSeconds, 4, "role conversion recomputes the principal's musical destination");
+  WaveformEditingTestAccess::guideCatalogChoose(wave, secondId, count);
+  expect(draft.secondaryCues.size() == 1 && draft.secondaryCues[0].name == "3" && draft.suggestions.size() == 2,
+         "a resolved principal can be corrected into an individual count from the same catalogue");
+  expectNear(draft.secondaryCues[0].timeSeconds, 9.1, "changing to a count restores the measured spoken time");
+  expect(fixture.commits == 0 && wave.getArrangementSnapshot().parts.empty(),
+         "catalogue choices remain provisional until the ordinary confirmation");
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  expect(accepted == 1 && fixture.commits == 1 && wave.getArrangementSnapshot().parts.size() == 2 &&
+         wave.getArrangementSnapshot().cues.size() == 1, "resolved roles publish once through the existing arrangement transaction");
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().parts.empty() && wave.getArrangementSnapshot().cues.empty(),
+         "one undo removes the entire catalogue-reviewed confirmation");
+  const auto selectionCount = selections;
+  WaveformEditingTestAccess::guideCatalogChoose(wave, firstId, build);
+  expect(selections == selectionCount, "a dismissed review cannot accept a late popup result");
+
+  draft = alignGuideSections(transcript, {});
+  wave.setGuideAlignmentPreview(draft);
+  WaveformEditingTestAccess::guideDiscard(wave, firstId);
+  expect(discarded == 1 && draft.pendingAnnouncements.size() == 1 && draft.suggestions.size() == 1 &&
+         !WaveformEditingTestAccess::guideAccept(wave).isEnabled(), "discarding one pending mark preserves the others and their confirmation requirement");
+  WaveformEditingTestAccess::guideDiscard(wave, secondId);
+  expect(discarded == 2 && draft.pendingAnnouncements.empty() && WaveformEditingTestAccess::guideAccept(wave).isEnabled(),
+         "discarding unresolved speech is an explicit review decision rather than an unknown musical section");
+  wave.clearGuideAlignmentPreview();
+}
+
+void testPendingGuideReviewFocusesOnlyOnEntry() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  wave.setArrangement({}, false);
+  wave.setSize(1200, 360);
+  double playbackSeconds = 24.0;
+  int seeks = 0;
+  wave.setTransportProviders([&] { return playbackSeconds; }, [] { return 30.0; }, [] { return false; });
+  wave.setSeekCallback([&](double seconds) { ++seeks; playbackSeconds = seconds; });
+  auto draft = guideDraftFixture();
+  // Source order need not be display order: the earliest unresolved call must
+  // become visible when arriving from a zoomed region near the song's end.
+  draft.pendingAnnouncements = {{"later-pending", "later call", 22.3, 22.8, {}},
+      {"first-pending", "count interval", 1.88, 3.78, {}}};
+  WaveformEditingTestAccess::setVisibleWindow(wave, .6f, .2f);
+  const auto previousWindow = WaveformEditingTestAccess::visibleWindow(wave);
+  wave.setGuideAlignmentPreview(draft);
+  const auto focused = WaveformEditingTestAccess::visibleWindow(wave);
+  expectNear(focused.second, previousWindow.second, "initial pending focus preserves the user's zoom span");
+  expectNear(focused.first, 1.88 / 30.0 - double(previousWindow.second) * .25,
+             "the first pending source point is placed a quarter of the way into the existing viewport");
+  expect(WaveformEditingTestAccess::guidePendingPoint(wave, "first-pending") &&
+         !WaveformEditingTestAccess::guideAccept(wave).isEnabled(),
+         "the pending marker responsible for disabled confirmation is visible on arrival");
+  expect(seeks == 0 && playbackSeconds == 24.0 && fixture.commits == 0,
+         "review focus changes only the viewport, never playback, seeking or arrangement persistence");
+
+  WaveformEditingTestAccess::setVisibleWindow(wave, .55f, .2f);
+  const auto manuallyPanned = WaveformEditingTestAccess::visibleWindow(wave);
+  draft.options.originSeconds = .25;
+  wave.setGuideAlignmentPreview(draft);
+  expect(WaveformEditingTestAccess::visibleWindow(wave) == manuallyPanned,
+         "rebuilding an active review respects the user's pan rather than repeatedly centring pending marks");
+  expect(seeks == 0 && playbackSeconds == 24.0 && fixture.commits == 0,
+         "rebuilds after manual navigation also preserve playback and the saved arrangement");
+
+  wave.clearGuideAlignmentPreview();
+  WaveformEditingTestAccess::setVisibleWindow(wave, .04f, .2f);
+  const auto alreadyVisible = WaveformEditingTestAccess::visibleWindow(wave);
+  wave.setGuideAlignmentPreview(draft);
+  expect(WaveformEditingTestAccess::visibleWindow(wave) == alreadyVisible,
+         "entering review does not pan when the earliest pending marker is already visible");
+  wave.clearGuideAlignmentPreview();
+  draft.pendingAnnouncements[1].startSeconds = .02;
+  WaveformEditingTestAccess::setVisibleWindow(wave, .7f, .2f);
+  wave.setGuideAlignmentPreview(draft);
+  expectNear(WaveformEditingTestAccess::visibleWindow(wave).first, 0,
+             "initial pending focus clamps at source zero while preserving the zoom span");
+  expectNear(WaveformEditingTestAccess::visibleWindow(wave).second, .2,
+             "source-edge focus never widens the viewport");
+  wave.clearGuideAlignmentPreview();
+}
+
 void testGuideAlignmentWaveformReview() {
   Fixture fixture;
   auto &wave = fixture.waveform;
@@ -3582,8 +3780,8 @@ void testGuideAlignmentWaveformReview() {
   wave.setSectionDetectionAvailability(true);
   wave.setOnSectionDetectionRequest([&] { ++entryCalls; });
   auto &entry = WaveformEditingTestAccess::suggestSections(wave);
-  expect(entry.isVisible() && entry.isEnabled() && entry.getButtonText() == "Sugerir secciones",
-         "suggestion entry uses the existing edit toolbar and exact requested label");
+  expect(entry.isVisible() && entry.isEnabled() && entry.getButtonText() == "Detectar secciones",
+         "detection entry uses the existing edit toolbar and the user-facing action label");
   entry.onClick(); expect(entryCalls == 1, "edit suggestion button dispatches the existing entry callback");
   wave.triggerEditToggleFromMidi();
   juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
@@ -3847,8 +4045,8 @@ void testViLaLuzSecondaryAlongsideSectionDuringPlayback() {
   const auto &allIn = draft.secondaryCues.front();
   expect(allIn.name == "All In", "Toda la banda resolves to the existing native All In instruction");
   expectNear(allIn.rawTimeSeconds, 50.71, "All In retains its own observed voice onset");
-  expectNear(allIn.timeSeconds, .02 + 25 * 240.0 / 116,
-             "All In uses the next musical bar independently of its spoken onset");
+  expectNear(allIn.timeSeconds, 50.71,
+             "All In remains at its measured spoken onset without a following-bar delay");
   const auto interlude = std::find_if(draft.suggestions.begin(), draft.suggestions.end(),
       [](const auto &suggestion) { return suggestion.type == SectionType::interlude; });
   expect(interlude != draft.suggestions.end(), "the Interlude proposal remains present beside All In");
@@ -3875,7 +4073,7 @@ void testViLaLuzSecondaryAlongsideSectionDuringPlayback() {
     expect(WaveformEditingTestAccess::guideMarkerCount(wave) == 4 &&
                body.contains(point) && body.contains(label) && body.contains(sectionLabel),
            "All In remains visible in the screenshot's bar range alongside Interlude and the other sections");
-    expectNear(point.x, expectedX(allIn.timeSeconds), "the secondary point uses its proposed musical entry coordinate");
+    expectNear(point.x, expectedX(allIn.timeSeconds), "the secondary point uses its exact measured source-time coordinate");
     expect(WaveformEditingTestAccess::guideHitId(wave, point) == allIn.id &&
                WaveformEditingTestAccess::guideHitId(wave, label.getCentre()) == allIn.id,
            "the All In point and label both retain their independent editable target");
@@ -4404,6 +4602,8 @@ int main() {
   run("section detection preview, safe confirmation and undo", testDetectedSectionsReviewAndHistory);
   run("guide waveform review, origin and marker gestures, confirmation and undo", testGuideAlignmentWaveformReview);
   run("calculated guide grid, live origin and boundary edits, atomic confirmation", testCalculatedGuideAlignmentReview);
+  run("closed guide catalogue, pending points, role selection and atomic history", testClosedGuideCatalogueReviewAndRoleSelection);
+  run("pending guide review focuses once without changing zoom or playback", testPendingGuideReviewFocusesOnlyOnEntry);
   run("secondary guide points, isolated gestures and provisional review", testGuideSecondaryWaveformReview);
   run("dense primary guide labels remain readable above compact secondary lane", testDenseGuideLabelsWithSecondaryLane);
   run("All In stays independently visible alongside Interlude while playing and after confirmation", testViLaLuzSecondaryAlongsideSectionDuringPlayback);

@@ -395,6 +395,12 @@ GuideTranscript guide(double duration, std::vector<GuideTranscriptSegment> segme
   transcript.language="es"; transcript.durationSeconds=duration; transcript.segments=std::move(segments);
   return transcript;
 }
+GuideCatalogChoice catalogChoice(GuideAnnouncementKind kind, const juce::String &key) {
+  for (const auto &choice : guideCatalogEntries())
+    if (choice.kind==kind && choice.key==key) return choice;
+  expect(false,"the requested test choice must be an existing canonical catalogue entry");
+  return {};
+}
 const GuideGridMark *gridMark(const GuideAlignmentDraft &draft, double seconds) {
   for (const auto &mark : draft.grid) if (close(mark.timeSeconds,seconds)) return &mark;
   return nullptr;
@@ -494,7 +500,6 @@ void testGloriosoDiaEntrancesPreserveCounts() {
   const int entryBarIndices[]{6,14,18,26,30,38,44,48,56,60,68,74,82,90,97,105,112,113,117};
   const double instructionTimes[]{68.72,168,195.28,237.8};
   const char *instructionNames[]{"All In","Breakdown","Build","Breakdown"};
-  const int instructionBarIndices[]{32,78,90,110};
   auto transcript=guide(265.27791383219954,{});
   for(size_t i=0;i<6;++i)transcript.segments.push_back({countTimes[i],countTimes[i]+.4,countNames[i]});
   for(double time:mainTimes)transcript.segments.push_back({time,time+.4,"Verse"});
@@ -520,9 +525,9 @@ void testGloriosoDiaEntrancesPreserveCounts() {
            "all six correct count cues remain exactly where the original voice pronounced them");
   for(size_t i=0;i<4;++i)
     expect(draft.secondaryCues[i+6].name==instructionNames[i] &&
-           close(draft.secondaryCues[i+6].timeSeconds,instructionBarIndices[i]*bar) &&
+           close(draft.secondaryCues[i+6].timeSeconds,instructionTimes[i]) &&
            close(draft.secondaryCues[i+6].rawTimeSeconds,instructionTimes[i]),
-           "midbar and near-boundary instructions each target the next bar rather than adding an entire duration blindly");
+           "midbar and near-boundary instructions retain their measured spoken times without musical-entry quantization");
   const auto plan=appendConfirmedGuideSuggestions({},draft);
   expect(plan.error.isEmpty() && plan.arrangement.parts.size()==19 && plan.arrangement.cues.size()==10,
          "corrected entrances and unchanged counts confirm together through the existing additive transaction");
@@ -530,97 +535,123 @@ void testGloriosoDiaEntrancesPreserveCounts() {
     expect(close(resolveArrangementCueSeconds(plan.arrangement,plan.arrangement.cues[i]),countTimes[i]),
            "confirmed counts preserve their absolute source positions across section-relative anchoring");
   for(size_t i=0;i<4;++i)
-    expect(close(resolveArrangementCueSeconds(plan.arrangement,plan.arrangement.cues[i+6]),instructionBarIndices[i]*bar),
-           "instruction musical entries retain their proposed times after native arrangement anchoring");
+    expect(close(resolveArrangementCueSeconds(plan.arrangement,plan.arrangement.cues[i+6]),instructionTimes[i]),
+           "instruction spoken times survive native arrangement anchoring without adding a bar delay");
 
   auto moved=options;moved.originSeconds=.005;
   const auto rebuilt=alignGuideSections(transcript,moved);
   expect(rebuilt.secondaryCues.size()==10 && rebuilt.secondaryCues[6].id==draft.secondaryCues[6].id &&
          close(rebuilt.secondaryCues[6].rawTimeSeconds,68.72) &&
-         close(rebuilt.secondaryCues[6].timeSeconds,.005+32*bar),
-         "rebuilding from a manually moved grid preserves utility source identity while recomputing its proposed entry");
+         close(rebuilt.secondaryCues[6].timeSeconds,68.72),
+         "rebuilding from a manually moved grid preserves utility identity and its exact source position");
   juce::String error;
   expect(moveGuideSecondaryCue(draft,draft.secondaryCues[6].id,70.123,false,error) &&
          close(draft.secondaryCues[6].timeSeconds,70.123) && close(draft.secondaryCues[6].rawTimeSeconds,68.72),
-         "explicit free adjustment remains available after an automatic following-bar instruction proposal");
+         "explicit free adjustment remains available while preserving the instruction source evidence");
 }
 
-void testInstructionEntriesAtBoundariesAndSourceEnd() {
-  for(double onset:{3.98,3.985,4.0,4.015,4.02}) {
+void testInstructionsKeepSourceOnsetsAtBoundariesAndSourceEnd() {
+  for(double onset:{3.965,3.98,3.985,4.0,4.015,4.02}) {
     const auto draft=alignGuideSections(guide(12,{{onset,onset+.3,"All In"}}),{});
     expect(draft.error.isEmpty() && draft.suggestions.empty() && draft.secondaryCues.size()==1 &&
-           close(draft.secondaryCues[0].timeSeconds,6) && close(draft.secondaryCues[0].rawTimeSeconds,onset),
-           "instruction entrances share the bounded onset tolerance without becoming primary boundaries");
+           close(draft.secondaryCues[0].timeSeconds,onset) && close(draft.secondaryCues[0].rawTimeSeconds,onset),
+           "an instruction stays at its spoken onset on either side of a bar without section-boundary snapping");
   }
-  const auto outside=alignGuideSections(guide(12,{{3.965,4.3,"All In"}}),{});
-  expect(outside.error.isEmpty() && close(outside.secondaryCues[0].timeSeconds,4),
-         "instructions outside the twenty-millisecond window retain the containing-bar distinction");
-  const auto unavailable=alignGuideSections(guide(9.9,{{9.8,9.85,"Build"}}),{});
-  expect(unavailable.error.isNotEmpty() && unavailable.secondaryCues.size()==1 &&
-         close(unavailable.secondaryCues[0].rawTimeSeconds,9.8) && close(unavailable.secondaryCues[0].timeSeconds,9.8),
-         "an unavailable next-bar instruction remains visible at its source evidence with a blocking error");
-  const auto rejected=appendConfirmedGuideSuggestions({},unavailable);
-  expect(rejected.error.isNotEmpty() && rejected.arrangement.parts.empty() && rejected.arrangement.cues.empty(),
-         "a late instruction cannot be silently clamped or partially confirmed");
+  const auto late=alignGuideSections(guide(9.9,{{9.8,9.85,"Build"}}),{});
+  expect(late.error.isEmpty() && late.timingIssues.empty() && late.secondaryCues.size()==1 &&
+         close(late.secondaryCues[0].rawTimeSeconds,9.8) && close(late.secondaryCues[0].timeSeconds,9.8),
+         "a valid spoken instruction near EOF needs no unavailable following bar");
+  const auto accepted=appendConfirmedGuideSuggestions({},late);
+  expect(accepted.error.isEmpty() && accepted.arrangement.parts.empty() && accepted.arrangement.cues.size()==1 &&
+         close(accepted.arrangement.cues[0].positionSec,9.8),
+         "a late instruction confirms at its measured source position without clamping or inventing a musical section");
 }
 
-void testPendingInstructionReviewIsResolvedPerSourceId() {
+void testSecondaryReviewPreservesUnresolvedPrincipalErrors() {
   const auto transcript=guide(9.9,{{.1,.4,"One"},{1,1.4,"Verse"},
-      {9.1,9.3,"Build"},{9.5,9.8,"All In"}});
+      {9.05,9.25,"Build"},{9.35,9.55,"Final"},{9.7,9.85,"All In"}});
   auto draft=alignGuideSections(transcript,{});
-  expect(canReviewGuideAlignment(draft) && draft.timingIssues.size()==2 && draft.error.isNotEmpty() &&
-         draft.secondaryCues.size()==3 && appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
-         "pending automatic instruction entries remain editable but block confirmation");
+  expect(canReviewGuideAlignment(draft) && draft.timingIssues.size()==1 &&
+         !draft.timingIssues[0].secondary && draft.error.contains("Final") && draft.secondaryCues.size()==3,
+         "only a principal without a following bar remains unresolved while late spoken instructions remain reviewable");
   const auto buildId=draft.secondaryCues[1].id, allInId=draft.secondaryCues[2].id;
   juce::String error;
-  expect(moveGuideSecondaryCue(draft,buildId,8.75,false,error) && draft.timingIssues.size()==1 &&
-         draft.error.contains("All In") && !draft.error.contains("Build") &&
-         close(draft.secondaryCues[1].rawTimeSeconds,9.1) && close(draft.secondaryCues[1].timeSeconds,8.75) &&
-         draft.secondaryCues[1].userEdited && appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
-         "an explicit instruction adjustment resolves only its own source issue and leaves other entries blocking");
-  expect(discardGuideSecondaryCue(draft,allInId,error) && draft.timingIssues.empty() && draft.error.isEmpty() &&
-         draft.secondaryCues.size()==2 && close(draft.secondaryCues[0].timeSeconds,.1),
-         "discarding the remaining pending instruction clears its own issue without moving a count");
-  const auto accepted=appendConfirmedGuideSuggestions({},draft);
-  expect(accepted.error.isEmpty() && accepted.arrangement.parts.size()==1 && accepted.arrangement.cues.size()==2,
-         "all explicitly resolved secondary timing issues allow the ordinary atomic confirmation");
-  expect(!discardGuideSecondaryCue(draft,allInId,error) && draft.secondaryCues.size()==2 && draft.error.isEmpty(),
-         "a stale discarded source ID cannot erase another point or recreate a timing issue");
-
+  expect(moveGuideSecondaryCue(draft,buildId,8.5,false,error) &&
+         discardGuideSecondaryCue(draft,allInId,error) && draft.timingIssues.size()==1 &&
+         draft.error.contains("Final") && close(draft.secondaryCues[0].timeSeconds,.1) &&
+         close(draft.secondaryCues[1].rawTimeSeconds,9.05) && close(draft.secondaryCues[1].timeSeconds,8.5) &&
+         appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "editing and discarding independent points cannot hide a principal timing failure or move a count");
+  expect(!discardGuideSecondaryCue(draft,allInId,error) && draft.secondaryCues.size()==2 && draft.timingIssues.size()==1,
+         "a stale discarded ID cannot remove another point or clear the remaining principal error");
   auto rebuilt=alignGuideSections(transcript,{});
-  expect(canReviewGuideAlignment(rebuilt) && moveGuideSecondaryCue(rebuilt,buildId,8.75,false,error) &&
-         discardGuideSecondaryCue(rebuilt,allInId,error) && rebuilt.error.isEmpty() &&
-         close(rebuilt.secondaryCues[1].timeSeconds,8.75),
-         "review decisions can be reapplied by stable source ID before a rebuilt pending draft is accepted");
-  auto explicitSame=alignGuideSections(transcript,{});
-  expect(moveGuideSecondaryCue(explicitSame,buildId,9.1,false,error) &&
-         explicitSame.secondaryCues[1].userEdited && explicitSame.timingIssues.size()==1,
-         "explicitly choosing the retained source point also resolves that source's automatic-entry issue");
+  expect(canReviewGuideAlignment(rebuilt) && moveGuideSecondaryCue(rebuilt,buildId,8.5,false,error) &&
+         discardGuideSecondaryCue(rebuilt,allInId,error) && rebuilt.timingIssues.size()==1 && rebuilt.error.contains("Final"),
+         "explicit point edits can be reapplied by source ID without suppressing unresolved musical entries");
   auto alias=alignGuideSections(transcript,{});
-  expect(discardGuideSecondaryCue(alias,alias.secondaryCues[1].id,error) && alias.timingIssues.size()==1 &&
-         alias.error.contains("All In") && !alias.error.contains("Build"),
-         "discard remains safe when the supplied ID is a reference into the point being removed");
-
-  auto mixed=alignGuideSections(guide(9.9,{{1,1.4,"Verse"},{9.05,9.25,"Build"},
-      {9.35,9.55,"Final"},{9.7,9.85,"All In"}}),{});
-  const auto mixedBuild=mixed.secondaryCues[0].id, mixedBand=mixed.secondaryCues[1].id;
-  expect(mixed.timingIssues.size()==3 && moveGuideSecondaryCue(mixed,mixedBuild,8.5,false,error) &&
-         discardGuideSecondaryCue(mixed,mixedBand,error) && mixed.timingIssues.size()==1 &&
-         !mixed.timingIssues[0].secondary && mixed.error.contains("Final") &&
-         appendConfirmedGuideSuggestions({},mixed).error.isNotEmpty(),
-         "resolving every secondary issue cannot hide an unavailable principal entry");
+  expect(discardGuideSecondaryCue(alias,alias.secondaryCues[1].id,error) && alias.secondaryCues.size()==2 &&
+         alias.timingIssues.size()==1 && alias.error.contains("Final"),
+         "discard is safe when its ID references the point being removed and preserves the principal issue");
   auto fatal=alignGuideSections(transcript,{});fatal.error="Unrelated structural failure";
   expect(!canReviewGuideAlignment(fatal) && !moveGuideSecondaryCue(fatal,buildId,8.5,false,error) &&
          !discardGuideSecondaryCue(fatal,allInId,error) && fatal.error=="Unrelated structural failure" &&
-         fatal.timingIssues.size()==2 && fatal.secondaryCues.size()==3,
-         "unrelated validation errors are never cleared or bypassed by timing review actions");
+         fatal.timingIssues.size()==1 && fatal.secondaryCues.size()==3,
+         "point review cannot erase or bypass unrelated validation failures");
   auto invalid=alignGuideSections(transcript,{});invalid.grid[0].timeSeconds=std::numeric_limits<double>::quiet_NaN();
   expect(!canReviewGuideAlignment(invalid) && !moveGuideSecondaryCue(invalid,buildId,8.5,false,error) &&
          !discardGuideSecondaryCue(invalid,allInId,error),
-         "pending instruction state cannot turn an invalid musical grid into an editable draft");
+         "independent instruction review cannot make an invalid musical grid editable");
   auto hidden=alignGuideSections(transcript,{});hidden.error.clear();
   expect(!canReviewGuideAlignment(hidden) && appendConfirmedGuideSuggestions({},hidden).error.isNotEmpty(),
-         "clearing a presentation string cannot bypass structured unresolved entry state");
+         "clearing an error label cannot bypass the unresolved principal timing state");
+}
+
+void testAlabaSecondaryAnnouncementsKeepSpokenTiming() {
+  // Instruction and surrounding section times come from ALABA. Independent
+  // atomic count controls isolate this timing regression from compound-word
+  // alignment: the previous next-bar policy delayed Drums In by about two
+  // quarter notes at 127 BPM.
+  const double countTimes[]{0,.94,1.88,2.36,2.82,3.30};
+  auto transcript=guide(296.7045804988662,{{0,.44,"Uno."},{.94,1.4,"DOS"},
+      {1.88,2.28,"Uno"},{2.36,2.76,"Dos"},{2.82,3.22,"Tres"},{3.30,3.70,"Cuatro"},
+      {183.3,184,"Coro uno"},{191.8,192.86,juce::String::fromUTF8("Entra a batería.")},
+      {195.58,196.76,"Submit intensity."},{198.42,199,"Coro uno"}});
+  transcript.segments[8].confidence=.56852166226233;
+  transcript.segments[8].alternatives={{"subir intensidad","es",-.902326901753744,1.456069639971247e-6},
+      {"Submit intensity.","en",-.56471586227417,2.971145534047537e-7}};
+  GuideAlignmentOptions options;options.bpm=127;
+  auto draft=alignGuideSections(transcript,options);
+  expect(draft.error.isEmpty() && draft.suggestions.size()==2 && draft.secondaryCues.size()==7 &&
+         draft.pendingAnnouncements.size()==1 && !draft.pendingAnnouncements[0].candidates.empty() &&
+         draft.pendingAnnouncements[0].candidates.front().key=="Build" &&
+         !draft.pendingAnnouncements[0].candidates.front().supported &&
+         appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "ALABA's weak Spanish alternative ranks Build for explicit selection without creating an intensity section");
+  const auto pendingId=draft.pendingAnnouncements[0].id;
+  juce::String choiceError;
+  expect(chooseGuideCatalogMark(draft,pendingId,catalogChoice(GuideAnnouncementKind::instruction,"Build"),choiceError) &&
+         draft.pendingAnnouncements.empty() && draft.secondaryCues.size()==8 && draft.suggestions.size()==2,
+         "explicitly choosing Build resolves the uncertain announcement into a secondary point only");
+  const double pulse=60.0/127;
+  for(size_t i=0;i<6;++i)
+    expect(close(draft.secondaryCues[i].timeSeconds,countTimes[i]),
+           "the corrected instruction policy preserves the six independent count positions exactly");
+  const auto &drums=draft.secondaryCues[6];
+  const auto &build=draft.secondaryCues[7];
+  expect(drums.name=="Drums In" && close(drums.timeSeconds,191.8) && close(drums.rawTimeSeconds,191.8) &&
+         drums.rawText==juce::String::fromUTF8("Entra a batería."),
+         "Entra a bateria uses its exact spoken source time instead of the next bar two quarter notes later");
+  expect(build.name=="Build" && close(build.timeSeconds,195.58) && close(build.rawTimeSeconds,195.58) &&
+         build.rawText=="Submit intensity.",
+         "Submit intensity becomes Build at its measured onset while the raw Whisper phrase remains intact");
+  expect(close(draft.suggestions[0].startSeconds,98*4*pulse) &&
+         close(draft.suggestions[1].startSeconds,106*4*pulse),
+         "repairing an intensity instruction leaves both surrounding principal next-bar entries intact");
+  const auto accepted=appendConfirmedGuideSuggestions({},draft);
+  expect(accepted.error.isEmpty() && accepted.arrangement.parts.size()==2 && accepted.arrangement.cues.size()==8 &&
+         close(resolveArrangementCueSeconds(accepted.arrangement,accepted.arrangement.cues[6]),191.8) &&
+         close(resolveArrangementCueSeconds(accepted.arrangement,accepted.arrangement.cues[7]),195.58),
+         "native confirmation preserves both exact instruction times without creating an intensity section");
 }
 
 void testGuideAlignmentOriginAndMeter() {
@@ -676,39 +707,41 @@ void testGuideAlignmentTempoPhaseAndCapacity() {
 void testGuideAlignmentReviewAndAnticipation() {
   const auto transcript=guide(14,{{.1,.8,"1, 2, 3, 4"},{2.3,2.7,"anuncio sin etiqueta"},{6.1,6.7,"Perso dos"},{10.1,10.6,"Coro"}});
   auto draft=alignGuideSections(transcript,{});
-  expect(draft.error.isEmpty() && draft.suggestions.size()==3 && draft.suggestions[0].displayName=="Revisar: anuncio sin etiqueta" &&
-         draft.suggestions[1].displayName=="Revisar: Perso dos" && draft.suggestions[0].type==SectionType::unknown,
-         "unrecognized speech is preserved as editable proposals instead of disappearing");
-  for (const auto &suggestion : draft.suggestions)
-    expect(suggestion.confidenceLevel!=ConfidenceLevel::high,"speech labels do not certify the musical entry");
-  const auto fingerprintId=draft.suggestions[0].id;
-  auto changed=transcript; changed.audioFingerprint="changed-audio";
-  expect(alignGuideSections(changed,{}).suggestions[0].id!=fingerprintId,"source fingerprint participates in stable proposal identities");
-  for (double origin : {.25,.5,.75}) {
-    GuideAlignmentOptions options; options.originSeconds=origin;
+  expect(draft.error.isEmpty() && draft.suggestions.size()==1 && draft.pendingAnnouncements.size()==3 &&
+         draft.secondaryCues.empty() && draft.suggestions[0].type==SectionType::chorus,
+         "unresolved speech and unsplit count phrases remain pending points without becoming musical boundaries");
+  expect(draft.pendingAnnouncements[1].rawText=="anuncio sin etiqueta" &&
+         draft.pendingAnnouncements[2].rawText=="Perso dos" &&
+         draft.pendingAnnouncements[1].candidates.size()==guideCatalogEntries().size() &&
+         appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "pending speech preserves its source text and offers the whole catalogue while blocking automatic confirmation");
+  const auto fingerprintId=draft.pendingAnnouncements[1].id;
+  auto changed=transcript;changed.audioFingerprint="changed-audio";
+  expect(alignGuideSections(changed,{}).pendingAnnouncements[1].id!=fingerprintId,
+         "source fingerprint participates in stable pending identities");
+  for(double origin:{.25,.5,.75}) {
+    GuideAlignmentOptions options;options.originSeconds=origin;
     const auto result=alignGuideSections(guide(12,{{2.2,2.4,"Coro"}}),options);
     expect(result.error.isEmpty() && close(result.suggestions[0].startSeconds,origin+2),
-           "the automatic entry always uses the following bar when the origin changes");
+           "known principal entries keep their following-bar policy when the origin changes");
   }
   draft=alignGuideSections(guide(12,{{1.1,1.3,"Coro"},{1.4,1.6,"Puente"},{4.1,4.3,"Coro"},{4.4,4.7,"Coro!"}}),{});
-  expect(draft.error.isEmpty() && draft.suggestions.size()==2 && draft.suggestions[0].displayName.contains("Coro") &&
-         draft.suggestions[0].displayName.contains("Puente") && draft.suggestions[0].displayName.startsWith("Revisar:") &&
-         draft.suggestions[0].confidenceLevel==ConfidenceLevel::low,
-         "different announcements colliding on an entry preserve both texts for review");
-  expect(draft.suggestions[1].type==SectionType::chorus && draft.suggestions[1].reason.contains("Coro!"),
-         "matching labels colliding on an entry merge without losing the raw announcements");
-  expect(draft.suggestions[0].sources.contains(juce::String::fromUTF8(mergedGuideAnnouncementsSource)) &&
-         draft.suggestions[1].sources.contains(juce::String::fromUTF8(mergedGuideAnnouncementsSource)),
-         "merged evidence is marked so name corrections cannot teach an ambiguous multi-announcement phrase");
+  expect(draft.error.isEmpty() && draft.suggestions.size()==1 && draft.pendingAnnouncements.size()==2 &&
+         draft.pendingAnnouncements[0].rawText=="Coro" && draft.pendingAnnouncements[1].rawText=="Puente",
+         "different labels colliding at one musical entry remain separate pending source points");
+  expect(draft.suggestions[0].type==SectionType::chorus && draft.suggestions[0].reason.contains("Coro!") &&
+         draft.suggestions[0].sources.contains(juce::String::fromUTF8(mergedGuideAnnouncementsSource)),
+         "matching labels at the same entry can still merge their compatible evidence");
+  expect(appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "a compatible merged section cannot bypass other unresolved collision points");
   draft=alignGuideSections(guide(9.9,{{9.7,9.8,"Final"}}),{});
   expect(draft.error.isNotEmpty() && draft.suggestions.empty(),
-         "a late announcement cannot be moved backwards to make a following-bar entry fit");
+         "a late known principal is not moved backwards to force a following-bar entry");
   const auto counts=alignGuideSections(guide(12,{{1,2,"uno dos tres cuatro"},{3,4,"1, 2, 3, 4"}}),{});
-  expect(counts.error.isEmpty() && counts.suggestions.empty() && counts.secondaryCues.size()==2 &&
-         counts.secondaryCues[0].name=="uno dos tres cuatro" && counts.secondaryCues[1].name=="1, 2, 3, 4",
-         "compound counts remain independent literal points without inventing musical sections");
+  expect(counts.error.isEmpty() && counts.suggestions.empty() && counts.secondaryCues.empty() &&
+         counts.pendingAnnouncements.size()==2 && appendConfirmedGuideSuggestions({},counts).error.isNotEmpty(),
+         "compound counts without temporal evidence remain pending instead of free-text cues or invented pulses");
 }
-
 void testGuideMusicalOnsetBoundaryTolerance() {
   const auto atZero=alignGuideSections(guide(14,{{0,.4,"Intro"}}),{});
   expect(atZero.error.isEmpty() && close(atZero.suggestions[0].startSeconds,2),
@@ -775,9 +808,9 @@ void testGuideTimingRegressionAndLateReview() {
   }
   expect(changed==9,"twenty millisecond classification corrects precisely nine of fourteen measured boundary cases");
   expect(draft.secondaryCues.size()==2 && close(draft.secondaryCues[0].timeSeconds,1.74) &&
-         close(draft.secondaryCues[1].timeSeconds,22*240.0/69) &&
+         close(draft.secondaryCues[1].timeSeconds,74.78) &&
          close(draft.secondaryCues[1].rawTimeSeconds,74.78),
-         "counts keep source time while utility entries use the following bar and retain raw evidence");
+         "counts and utilities retain their exact source times during musical boundary correction");
   const auto retained=alignGuideSections(guide(9.9,{{1.0,1.5,"Verse"},{9.7,9.8,"Final"},{9.8,9.85,"Hold"}}),{});
   expect(retained.error.isNotEmpty() && retained.error.contains("Final") && retained.suggestions.size()==1 &&
          close(retained.suggestions[0].startSeconds,2) && retained.secondaryCues.size()==1 &&
@@ -841,9 +874,9 @@ void testCorrectedAnnouncementsKeepTheirMusicalRoles() {
   const juce::StringArray raw{"Thor","Base.","Swin."};
   for (size_t i=0;i<draft.secondaryCues.size();++i)
     expect(draft.secondaryCues[i].name==names[int(i)] && draft.secondaryCues[i].rawText==raw[int(i)] &&
-           close(draft.secondaryCues[i].timeSeconds,i==0 ? 3.99 : 6+4*i) &&
+           close(draft.secondaryCues[i].timeSeconds,3.99+4*i) &&
            close(draft.secondaryCues[i].rawTimeSeconds,3.99+4*i),
-           "corrected count keeps its onset while utilities use the following bar without becoming sections");
+           "corrected counts and utilities keep their spoken onsets without becoming musical sections");
   juce::String error;
   const auto id=draft.suggestions[0].id;
   expect(moveGuideSectionBoundary(draft,id,5.25,false,error) &&
@@ -861,33 +894,30 @@ void testLearnedInterpretationKeepsGuideEvidenceIdentity() {
   GuideAlignmentOptions options;
   options.learnedMappings.push_back({"frase de ensayo",SectionType::bridge});
   const auto interpreted=alignGuideSections(transcript,options);
-  expect(original.error.isEmpty() && interpreted.error.isEmpty() &&
-         original.suggestions[0].type==SectionType::unknown && interpreted.suggestions[0].type==SectionType::bridge &&
-         interpreted.suggestions[0].displayName=="Puente",
-         "the review's learned mappings resolve a musical family through the shared interpretation helper");
-  expect(original.suggestions[0].id==interpreted.suggestions[0].id &&
+  expect(original.error.isEmpty() && interpreted.error.isEmpty() && original.suggestions.empty() &&
+         original.pendingAnnouncements.size()==1 && interpreted.suggestions.size()==1 &&
+         interpreted.suggestions[0].type==SectionType::bridge && interpreted.suggestions[0].displayName=="Puente",
+         "a supported learned family resolves a pending phrase into an existing catalogue section");
+  expect(original.pendingAnnouncements[0].id==interpreted.suggestions[0].id &&
          close(interpreted.suggestions[0].rawStartSeconds,3.985) &&
          close(interpreted.suggestions[0].startSeconds,6) &&
          transcript.segments[0].text=="frase de ensayo" && close(transcript.segments[0].startSeconds,3.985),
-         "semantic correction and tolerant timing preserve source identity and literal ASR evidence");
+         "learned interpretation retains the pending source identity, timing and literal ASR text");
   const auto tentative=alignGuideSections(guide(16,{{1.1,1.7,"Prefrain"}}),{});
-  expect(tentative.error.isEmpty() && tentative.suggestions.size()==1 &&
-         tentative.suggestions[0].type==SectionType::refrain && tentative.suggestions[0].displayName.startsWith("Posible ") &&
-         tentative.suggestions[0].confidenceLevel==ConfidenceLevel::low &&
-         tentative.suggestions[0].sources.contains(juce::String::fromUTF8(tentativeGuideInterpretationSource)) &&
-         tentative.suggestions[0].reason.contains("Prefrain"),
-         "a cautious lexical candidate stays visibly tentative and retains its literal source evidence");
+  expect(tentative.error.isEmpty() && tentative.suggestions.empty() && tentative.pendingAnnouncements.size()==1 &&
+         tentative.pendingAnnouncements[0].rawText=="Prefrain" &&
+         std::any_of(tentative.pendingAnnouncements[0].candidates.begin(),tentative.pendingAnnouncements[0].candidates.end(),
+             [](const auto &choice){return choice.kind==GuideAnnouncementKind::section && choice.type==SectionType::refrain;}),
+         "a fuzzy family is a pending catalogue choice rather than an automatically created section");
   const auto confirmedAliasTranscript=guide(16,{{1.1,1.7,"Foraframe!"}});
   const auto confirmedAlias=alignGuideSections(confirmedAliasTranscript,{});
-  expect(confirmedAlias.error.isEmpty() && confirmedAlias.suggestions.size()==1 &&
+  expect(confirmedAlias.error.isEmpty() && confirmedAlias.suggestions.size()==1 && confirmedAlias.pendingAnnouncements.empty() &&
          confirmedAlias.suggestions[0].type==SectionType::refrain &&
          confirmedAlias.suggestions[0].displayName=="Refrain" &&
          confirmedAlias.suggestions[0].sources.contains("confirmed-alias") &&
          confirmedAlias.suggestions[0].id==guideSectionSuggestionId(confirmedAliasTranscript,confirmedAliasTranscript.segments[0]) &&
-         close(confirmedAlias.suggestions[0].rawStartSeconds,1.1) &&
-         confirmedAlias.suggestions[0].reason.contains("Foraframe!") &&
-         confirmedAliasTranscript.segments[0].text=="Foraframe!",
-         "the confirmed ASR alias resolves strongly without changing its literal evidence or suggestion identity");
+         close(confirmedAlias.suggestions[0].rawStartSeconds,1.1) && confirmedAliasTranscript.segments[0].text=="Foraframe!",
+         "the previously confirmed ASR alias remains an existing canonical family without modifying its evidence");
 }
 void testRepeatedUnnumberedGuideNames() {
   const auto transcript=guide(44,{{1.1,1.7,"Intro"},{5.1,5.7,"Intro"},
@@ -895,58 +925,58 @@ void testRepeatedUnnumberedGuideNames() {
       {17.1,17.7,"Verso"},{21.1,21.7,"Verso"},
       {25.1,25.7,"Refrain"},{29.1,29.7,"Refrain"},
       {33.1,33.7,"Verse two"},{37.1,37.7,"Intro dos"}});
-  const auto draft=alignGuideSections(transcript,{});
+  auto draft=alignGuideSections(transcript,{});
   const juce::StringArray expected{"Intro","Intro","Interludio","Interludio",
-      "Verso 1","Verso 2","Refrain 1","Refrain 2","Verso 2","Intro 2"};
-  expect(draft.error.isEmpty() && draft.suggestions.size()==size_t(expected.size()),
-         "repeated announcements remain distinct musical entries without manufacturing extra variants");
-  for (size_t i=0;i<draft.suggestions.size();++i) {
+      "Verso 1","Verso 2","Refrain 1","Refrain 2","Verso 2"};
+  expect(draft.error.isEmpty() && draft.suggestions.size()==size_t(expected.size()) &&
+         draft.pendingAnnouncements.size()==1 && draft.pendingAnnouncements[0].rawText=="Intro dos",
+         "known families and allowed variants align while an unsupported Intro ordinal remains pending");
+  for(size_t i=0;i<draft.suggestions.size();++i)
     expect(draft.suggestions[i].displayName==expected[int(i)] &&
-               close(draft.suggestions[i].rawStartSeconds,transcript.segments[i].startSeconds),
-           "unnumbered Intro and Interlude keep their names while recorded variants, Refrains and explicit ordinals remain numbered");
-  }
+           close(draft.suggestions[i].rawStartSeconds,transcript.segments[i].startSeconds),
+           "repeated unnumbered families and supported explicit ordinals preserve their source identities");
+  expect(appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "an unsupported ordinal is not silently accepted alongside otherwise known sections");
+  juce::String error;
+  expect(discardGuidePendingAnnouncement(draft,draft.pendingAnnouncements[0].id,error),
+         "an unsupported source ordinal can be explicitly discarded without removing known sections");
   const auto plan=appendConfirmedGuideSuggestions({},draft);
   expect(plan.error.isEmpty() && plan.arrangement.parts.size()==draft.suggestions.size(),
-         "unnumbered repeated names pass the existing atomic confirmation contract");
-  for (size_t i=0;i<plan.arrangement.parts.size();++i)
-    expect(plan.arrangement.parts[i].name==expected[int(i)] &&
-               plan.arrangement.parts[i].id==draft.suggestions[i].id,
-           "confirmed names preserve repeated unnumbered labels and source identities");
+         "known repeated names confirm after the unsupported source announcement is resolved");
+  for(size_t i=0;i<plan.arrangement.parts.size();++i)
+    expect(plan.arrangement.parts[i].name==expected[int(i)] && plan.arrangement.parts[i].id==draft.suggestions[i].id,
+           "confirmed canonical names preserve their occurrence labels and source identities");
 }
-void testTentativeAcceptanceUsesCanonicalGuideNames() {
+void testPendingCatalogueSelectionsUseCanonicalGuideNames() {
   auto draft=alignGuideSections(guide(16,{{1.1,1.7,"Prefrain"},{7.1,7.7,"Prefrain"}}),{});
-  expect(draft.error.isEmpty() && draft.suggestions.size()==2 &&
-         draft.suggestions[0].displayName=="Posible Refrain 1" &&
-         draft.suggestions[1].displayName=="Posible Refrain 2",
-         "repeated tentative sections are visibly labelled for review before confirmation");
+  expect(draft.error.isEmpty() && draft.suggestions.empty() && draft.pendingAnnouncements.size()==2 &&
+         appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "repeated fuzzy candidates cannot become accepted sections without an explicit catalogue choice");
+  const auto firstId=draft.pendingAnnouncements[0].id,secondId=draft.pendingAnnouncements[1].id;
+  const auto choice=catalogChoice(GuideAnnouncementKind::section,"Refrain");
+  juce::String error;
+  expect(chooseGuideCatalogMark(draft,firstId,choice,error) && draft.pendingAnnouncements.size()==1 &&
+         appendConfirmedGuideSuggestions({},draft).error.isNotEmpty(),
+         "choosing one fuzzy announcement leaves the other unresolved and blocking");
+  expect(chooseGuideCatalogMark(draft,secondId,choice,error) && draft.pendingAnnouncements.empty() &&
+         draft.suggestions.size()==2 && draft.suggestions[0].displayName=="Refrain 1" &&
+         draft.suggestions[1].displayName=="Refrain 2",
+         "explicit catalogue choices create numbered canonical occurrences with stable source IDs");
   const auto confirmed=appendConfirmedGuideSuggestions({},draft);
   expect(confirmed.error.isEmpty() && confirmed.arrangement.parts.size()==2 &&
-         confirmed.arrangement.parts[0].name=="Refrain 1" && confirmed.arrangement.parts[1].name=="Refrain 2",
-         "confirming tentative families persists canonical native guide keys with their occurrences");
-  expect(draft.suggestions[0].displayName=="Posible Refrain 1" &&
-         confirmed.arrangement.parts[0].id==draft.suggestions[0].id &&
-         close(draft.suggestions[0].rawStartSeconds,1.1) &&
-         close(confirmed.arrangement.parts[0].startSec,draft.suggestions[0].startSeconds),
-         "canonical confirmation leaves the review label, source evidence, identity and chosen position intact");
-  juce::String error;
-  expect(moveGuideSectionBoundary(draft,draft.suggestions[1].id,9,false,error) &&
-         draft.suggestions[1].userEdited && close(draft.suggestions[1].startSeconds,9),
-         "a tentative candidate can be manually moved before confirmation");
+         confirmed.arrangement.parts[0].name=="Refrain 1" && confirmed.arrangement.parts[1].name=="Refrain 2" &&
+         confirmed.arrangement.parts[0].id==firstId && close(draft.suggestions[0].rawStartSeconds,1.1),
+         "confirmation persists only canonical guide names after all pending decisions are explicit");
+  expect(moveGuideSectionBoundary(draft,secondId,9,false,error) && draft.suggestions[1].userEdited &&
+         close(draft.suggestions[1].startSeconds,9),
+         "a catalogue-selected boundary remains editable before confirmation");
   const auto moved=appendConfirmedGuideSuggestions({},draft);
-  expect(moved.error.isEmpty() && moved.arrangement.parts[1].name=="Refrain 2" &&
-         close(moved.arrangement.parts[1].startSec,9) && draft.suggestions[1].displayName=="Posible Refrain 2",
-         "moving a tentative candidate does not persist its temporary review prefix");
-  auto renamed=draft;
-  renamed.suggestions[1].type=SectionType::custom;
-  renamed.suggestions[1].displayName="Posible Refrain 2";
-  const auto freeform=appendConfirmedGuideSuggestions({},renamed);
-  expect(freeform.error.isEmpty() && freeform.arrangement.parts[1].name=="Posible Refrain 2",
-         "an explicit custom name preserves the user's literal Posible prefix");
-  const auto single=alignGuideSections(guide(16,{{1.1,1.7,"Prefrain"}}),{});
-  const auto singlePlan=appendConfirmedGuideSuggestions({},single);
-  expect(singlePlan.error.isEmpty() && singlePlan.arrangement.parts[0].name=="Refrain" &&
-         single.suggestions[0].displayName=="Posible Refrain",
-         "an unnumbered generated tentative label keeps its canonical unnumbered family on acceptance");
+  expect(moved.error.isEmpty() && close(moved.arrangement.parts[1].startSec,9),
+         "confirmation preserves the explicit boundary adjustment of a selected canonical section");
+  auto single=alignGuideSections(guide(16,{{1.1,1.7,"Prefrain"}}),{});
+  expect(chooseGuideCatalogMark(single,single.pendingAnnouncements[0].id,choice,error) &&
+         appendConfirmedGuideSuggestions({},single).arrangement.parts[0].name=="Refrain",
+         "one explicitly selected family persists without manufacturing an ordinal");
 }
 void testGuideUtilitiesDoNotDivideMusicalSections() {
   auto draft=alignGuideSections(guide(16,{{1.1,1.3,"Chorus"},{1.6,1.9,"Drums in"},
@@ -961,10 +991,10 @@ void testGuideUtilitiesDoNotDivideMusicalSections() {
          draft.suggestions[2].type==SectionType::refrain && close(draft.suggestions[2].startSeconds,12),
          "a mixed-language guide preserves musical order and newly recognized refrain boundaries");
   expect(draft.secondaryCues.size()==2 && draft.secondaryCues[0].name=="Drums In" &&
-         close(draft.secondaryCues[0].timeSeconds,2) && draft.secondaryCues[1].name=="Build" &&
-         close(draft.secondaryCues[1].timeSeconds,6) && close(draft.secondaryCues[0].rawTimeSeconds,1.6) &&
+         close(draft.secondaryCues[0].timeSeconds,1.6) && draft.secondaryCues[1].name=="Build" &&
+         close(draft.secondaryCues[1].timeSeconds,4.2) && close(draft.secondaryCues[0].rawTimeSeconds,1.6) &&
          close(draft.secondaryCues[1].rawTimeSeconds,4.2),
-         "known utilities target independent following-bar entries and retain their spoken evidence");
+         "known utilities retain independent measured onsets and do not divide musical sections");
 }
 
 GuideSecondaryCueSuggestion secondary(juce::String id, juce::String name, double time) {
@@ -1000,10 +1030,10 @@ void testSecondarySourceTimingAndMoves() {
     GuideAlignmentOptions options; options.originSeconds=origin;
     const auto rebuilt=alignGuideSections(transcript,options);
     expect(rebuilt.error.isEmpty() && rebuilt.secondaryCues[0].id==id &&
-           close(rebuilt.secondaryCues[0].timeSeconds,origin+2) &&
-           close(rebuilt.secondaryCues[1].timeSeconds,origin+(origin<.2 ? 6 : 4)) &&
+           close(rebuilt.secondaryCues[0].timeSeconds,1.6) &&
+           close(rebuilt.secondaryCues[1].timeSeconds,4.2) &&
            close(rebuilt.secondaryCues[0].rawTimeSeconds,1.6) && close(rebuilt.secondaryCues[1].rawTimeSeconds,4.2),
-           "changing the origin recomputes utility entries without changing source identities or spoken times");
+           "changing the bar origin cannot shift utility source onsets or their stable identities");
   }
   const auto primary=draft.suggestions;
   juce::String error;
@@ -1011,7 +1041,7 @@ void testSecondarySourceTimingAndMoves() {
          "secondary dragging snaps to a pulse, breaking an exact tie forward");
   expect(moveGuideSecondaryCue(draft,id,2.375,false,error) && close(draft.secondaryCues[0].timeSeconds,2.375) &&
          close(draft.secondaryCues[0].rawTimeSeconds,1.6) && draft.secondaryCues[0].userEdited &&
-         close(draft.secondaryCues[1].timeSeconds,6),"free secondary dragging changes one point and preserves raw onset and other instruction entries");
+         close(draft.secondaryCues[1].timeSeconds,4.2),"free secondary dragging changes one point and preserves raw onset and other instructions");
   expect(draft.suggestions[0].startSeconds==primary[0].startSeconds && draft.suggestions[0].endSeconds==primary[0].endSeconds &&
          draft.suggestions[1].startSeconds==primary[1].startSeconds && draft.suggestions[1].endSeconds==primary[1].endSeconds,
          "moving secondary points never divides, stretches or moves musical sections");
@@ -1047,9 +1077,9 @@ void testGuideIndividualCountPoints() {
   const double times[]{0,1.74,4.34,5.2,6.08,8.1};
   for (size_t i=0;i<draft.secondaryCues.size();++i)
     expect(draft.secondaryCues[i].name==names[int(i)] &&
-           close(draft.secondaryCues[i].timeSeconds,i<5 ? times[i] : 3*240.0/69) &&
+           close(draft.secondaryCues[i].timeSeconds,times[i]) &&
            close(draft.secondaryCues[i].rawTimeSeconds,times[i]),
-           "counts retain measured onsets while the utility entry targets its following bar");
+           "counts and utilities retain their measured onsets without adding absent counts or bar delays");
   expect(draft.secondaryCues[0].rawText=="Uno." && draft.secondaryCues[0].asrConfidence==.62 &&
          draft.secondaryCues[1].id!=draft.secondaryCues[2].id &&
          draft.secondaryCues[1].rawText==draft.secondaryCues[2].rawText,
@@ -1059,14 +1089,10 @@ void testGuideIndividualCountPoints() {
     const auto rebuilt=alignGuideSections(transcript,changed);
     expect(rebuilt.error.isEmpty() && rebuilt.secondaryCues.size()==draft.secondaryCues.size(),
            "changing section-grid settings preserves all independent count occurrences");
-    for (size_t i=0;i<5;++i)
+    for (size_t i=0;i<draft.secondaryCues.size();++i)
       expect(rebuilt.secondaryCues[i].id==draft.secondaryCues[i].id &&
              rebuilt.secondaryCues[i].timeSeconds==draft.secondaryCues[i].timeSeconds,
-             "count IDs and source positions remain independent of the chosen origin");
-    expect(rebuilt.secondaryCues[5].id==draft.secondaryCues[5].id &&
-           close(rebuilt.secondaryCues[5].timeSeconds,origin+3*240.0/69) &&
-           close(rebuilt.secondaryCues[5].rawTimeSeconds,8.1),
-           "the same source utility recalculates its musical entry as the grid moves");
+             "count and utility IDs and source positions remain independent of the chosen origin");
   }
   const auto accepted=appendConfirmedGuideSuggestions({},draft);
   expect(accepted.error.isEmpty() && accepted.arrangement.parts.size()==2 && accepted.arrangement.cues.size()==6 &&
@@ -1088,19 +1114,21 @@ void testGuideIndividualCountPoints() {
 }
 
 void testGuideCompoundCountPreservationAndCapacity() {
-  const auto compound=alignGuideSections(guide(12,{{0,2,"uno dos tres cuatro"},{3,4,"ocho"},
+  auto compound=alignGuideSections(guide(12,{{0,2,"uno dos tres cuatro"},{3,4,"ocho"},
       {5,6,"Count-in"},{7,8,"1, 2, 3, 4"},{9,10,"0"}}),{});
-  expect(compound.error.isEmpty() && compound.suggestions.empty() && compound.secondaryCues.size()==5,
-         "compound and unsupported count announcements stay visible as one reviewable point per source segment");
-  const auto accepted=appendConfirmedGuideSuggestions({},compound);
-  const juce::StringArray names{"uno dos tres cuatro","ocho","Count-in","1, 2, 3, 4","0"};
-  expect(accepted.error.isEmpty() && accepted.arrangement.parts.empty() && accepted.arrangement.cues.size()==5 &&
-         arrangementCueEventCount(accepted.arrangement)==5,"compound counts can be confirmed without musical sections and never invent subword times");
-  for (size_t i=0;i<accepted.arrangement.cues.size();++i)
-    expect(accepted.arrangement.cues[i].name==names[int(i)] && accepted.arrangement.cues[i].countEnd==0 &&
-           accepted.arrangement.cues[i].countOffsetsSec.empty() &&
-           accepted.arrangement.cues[i].color==juce::Colour::fromRGB(91,169,218).toString(),
-           "unsupported and compound counts retain their literal names, single event and preview blue after confirmation");
+  expect(compound.error.isEmpty() && compound.suggestions.empty() && compound.secondaryCues.empty() &&
+         compound.pendingAnnouncements.size()==5,
+         "unsplit, generic and unsupported count announcements remain pending instead of free-text playback cues");
+  expect(appendConfirmedGuideSuggestions({},compound).error.isNotEmpty(),
+         "pending count text cannot be confirmed as a playable free-text event");
+  const auto original=compound.pendingAnnouncements;
+  juce::String pendingError;
+  for(const auto &pending:original)
+    expect(discardGuidePendingAnnouncement(compound,pending.id,pendingError),
+           "an unsupported count announcement can be explicitly discarded by source ID");
+  expect(compound.pendingAnnouncements.empty() && compound.secondaryCues.empty() &&
+         appendConfirmedGuideSuggestions({},compound).error.isNotEmpty(),
+         "discarding unresolved counts does not fabricate another event or permit an empty acceptance");
 
   GuideAlignmentDraft renamed; renamed.durationSeconds=12;
   renamed.secondaryCues={secondary("manual-count","Dos",0)};
@@ -1295,8 +1323,9 @@ void testWordCountIntervalsUseUniqueMusicalPulses() {
   invalid.segments[2].words[2].startSeconds=2.8;
   invalid.segments[2].words[2].endSeconds=3.7;
   auto rejected=alignGuideSections(invalid,options);
-  expect(rejected.secondaryCues.size()==2 && rejected.suggestions[0].type==SectionType::unknown,
-         "two possible pulses preserve the entire compound for review instead of guessing one");
+  expect(rejected.secondaryCues.size()==2 && rejected.suggestions.size()==1 &&
+         rejected.pendingAnnouncements.size()==1 && rejected.pendingAnnouncements[0].rawText==transcript.segments[2].text,
+         "ambiguous word pulses preserve the intact parent as pending without inventing a musical boundary");
   invalid=transcript; invalid.segments[2].words[1].startSeconds=2.7;
   rejected=alignGuideSections(invalid,options);
   expect(rejected.secondaryCues.size()==2,
@@ -1310,6 +1339,52 @@ void testWordCountIntervalsUseUniqueMusicalPulses() {
   invalid=transcript; invalid.segments[2].words.clear();
   expect(alignGuideSections(invalid,options).secondaryCues.size()==2,
          "the old cached phrase without word evidence stays reviewable and is not evenly distributed");
+}
+
+void testCountWordBoundariesFollowUniqueEvidencedRun() {
+  auto transcript = guide(8, {{1.70, 3.58, "uno, dos, tres, cuatro."}});
+  auto &segment = transcript.segments.front();
+  segment.words = {{"uno,", 1.71, 1.77, .64}, {"dos,", 1.95, 2.22, .99},
+                   {"tres,", 2.42, 2.76, .99}, {"cuatro.", 3.00, 3.43, .98}};
+  GuideAlignmentOptions options;
+  options.bpm = 140;
+  auto draft = alignGuideSections(transcript, options);
+  expect(draft.pendingAnnouncements.empty() && draft.secondaryCues.size() == 4,
+         "a boundary including the next beat by 1.43 ms resolves when the preceding words anchor one run");
+  for (size_t i = 0; i < draft.secondaryCues.size(); ++i)
+    expect(close(draft.secondaryCues[i].timeSeconds, double(4 + i) * 60.0 / 140.0) &&
+           close(draft.secondaryCues[i].rawTimeSeconds, segment.words[i].startSeconds),
+           "count proposals use evidenced grid pulses and preserve the measured word onsets");
+
+  segment.startSeconds = 1.88;
+  segment.endSeconds = 3.78;
+  segment.words = {{"uno,", 1.89, 1.95, .73}, {"dos,", 2.13, 2.40, .99},
+                   {"tres,", 2.58, 2.94, .99}, {"cuatro.", 3.12, 3.68, .98}};
+  options.bpm = 127;
+  draft = alignGuideSections(transcript, options);
+  expect(draft.pendingAnnouncements.empty() && draft.secondaryCues.size() == 4 &&
+         close(draft.secondaryCues.front().timeSeconds, 4.0 * 60.0 / 127.0) &&
+         close(draft.secondaryCues.back().timeSeconds, 7.0 * 60.0 / 127.0),
+         "a word edge 0.236 ms past its beat retains the run supported by three other words");
+
+  segment.words.front().startSeconds = 1.895;
+  draft = alignGuideSections(transcript, options);
+  expect(draft.secondaryCues.empty() && draft.pendingAnnouncements.size() == 1,
+         "a word more than half a timestamp tick from the nearest pulse stays pending");
+
+  auto uncertain = guide(5, {{0, 2.1, "one two three four"}});
+  uncertain.segments.front().words = {{"one", 0, .5, .99}, {"two", .5, 1, .99},
+                                       {"three", 1, 1.5, .99}, {"four", 1.5, 2, .99}};
+  options.bpm = 120;
+  draft = alignGuideSections(uncertain, options);
+  expect(draft.secondaryCues.empty() && draft.pendingAnnouncements.size() == 1,
+         "two equally supported consecutive runs cannot resolve a grouped count");
+
+  uncertain.segments.front().words = {{"one", .001, .20, .99}, {"two", .501, .70, .99},
+                                       {"three", 1.001, 1.20, .99}, {"four", 1.501, 1.70, .99}};
+  draft = alignGuideSections(uncertain, options);
+  expect(draft.secondaryCues.empty() && draft.pendingAnnouncements.size() == 1,
+         "rounding every interval cannot by itself prove the phase of a count");
 }
 
 void testKnownVoiceEvidenceKeepsRawParentAndOverlappingCounts() {
@@ -1357,6 +1432,114 @@ void testKnownVoiceEvidenceKeepsRawParentAndOverlappingCounts() {
            "incomplete, weak or semantically incompatible acoustic evidence keeps the whole ASR parent reviewable");
   }
 }
+void testCatalogueRoleSelectionPreservesSourceAndManualEdits() {
+  const auto transcript=guide(30,{{.1,.4,"One"},{1.1,1.7,"unidentified announcement"},
+      {9.1,9.6,"Verse"},{17.1,17.7,"Chorus"}});
+  auto draft=alignGuideSections(transcript,{});
+  expect(draft.pendingAnnouncements.size()==1 && draft.suggestions.size()==2 && draft.secondaryCues.size()==1,
+         "an unknown source remains pending beside known musical and count events");
+  const auto id=draft.pendingAnnouncements[0].id,knownId=draft.suggestions[0].id,countId=draft.secondaryCues[0].id;
+  juce::String error;
+  expect(moveGuideSectionBoundary(draft,knownId,10.25,false,error),
+         "an unrelated known section can be adjusted while another source awaits catalogue selection");
+  auto invalid=catalogChoice(GuideAnnouncementKind::instruction,"Build");invalid.key="non-catalogue instruction";
+  expect(!chooseGuideCatalogMark(draft,id,invalid,error) && !error.isEmpty() &&
+         draft.pendingAnnouncements.size()==1 && draft.options.catalogueSelections.empty() &&
+         close(draft.suggestions[0].startSeconds,10.25),
+         "an invalid catalogue identity cannot partially consume pending state or alter a manual boundary");
+  expect(!chooseGuideCatalogMark(draft,"stale-source-id",catalogChoice(GuideAnnouncementKind::count,"4"),error) &&
+         draft.pendingAnnouncements.size()==1 && draft.secondaryCues.size()==1,
+         "a stale source ID cannot manufacture a catalogue mark");
+  expect(chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::instruction,"Build"),error) &&
+         draft.pendingAnnouncements.empty() && draft.secondaryCues.size()==2 && draft.suggestions.size()==2,
+         "a pending phrase can explicitly become an instruction without dividing musical sections");
+  auto selected=std::find_if(draft.secondaryCues.begin(),draft.secondaryCues.end(),[&](const auto &cue){return cue.id==id;});
+  expect(selected!=draft.secondaryCues.end() && selected->name=="Build" && selected->rawText=="unidentified announcement" &&
+         close(selected->rawTimeSeconds,1.1) && close(selected->timeSeconds,1.1),
+         "the instruction choice retains the pending source ID, literal phrase and measured time");
+  expect(moveGuideSecondaryCue(draft,id,1.23,false,error) &&
+         chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::count,"4"),error),
+         "an explicit catalogue role can change while retaining a manually adjusted point");
+  selected=std::find_if(draft.secondaryCues.begin(),draft.secondaryCues.end(),[&](const auto &cue){return cue.id==id;});
+  expect(selected!=draft.secondaryCues.end() && selected->name=="4" && close(selected->timeSeconds,1.23) &&
+         close(selected->rawTimeSeconds,1.1) && selected->rawText=="unidentified announcement",
+         "switching a selected instruction to a count preserves its explicit edit and source evidence");
+  expect(chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::section,"Bridge 2"),error) &&
+         draft.suggestions.size()==3 && draft.secondaryCues.size()==1 && draft.secondaryCues[0].id==countId &&
+         close(draft.secondaryCues[0].timeSeconds,.1),
+         "choosing a principal replaces only this source mark while retaining independent counts");
+  const auto principal=std::find_if(draft.suggestions.begin(),draft.suggestions.end(),[&](const auto &item){return item.id==id;});
+  const auto manual=std::find_if(draft.suggestions.begin(),draft.suggestions.end(),[&](const auto &item){return item.id==knownId;});
+  expect(principal!=draft.suggestions.end() && principal->type==SectionType::bridge && principal->displayName=="Puente 2" &&
+         close(principal->rawStartSeconds,1.1) && close(principal->startSeconds,2) &&
+         manual!=draft.suggestions.end() && close(manual->startSeconds,10.25) && manual->userEdited,
+         "a principal choice follows musical timing and preserves an unrelated manual section boundary");
+  expect(appendConfirmedGuideSuggestions({},draft).error.isEmpty() &&
+         transcript.segments[1].text=="unidentified announcement" && close(transcript.segments[1].startSeconds,1.1),
+         "fully resolved catalogue choices confirm without rewriting the original transcript");
+  auto options=draft.options;options.originSeconds=.25;
+  const auto rebuilt=alignGuideSections(transcript,options);
+  const auto replayed=std::find_if(rebuilt.suggestions.begin(),rebuilt.suggestions.end(),[&](const auto &item){return item.id==id;});
+  expect(rebuilt.pendingAnnouncements.empty() && replayed!=rebuilt.suggestions.end() &&
+         replayed->type==SectionType::bridge && close(replayed->startSeconds,2.25) && close(replayed->rawStartSeconds,1.1),
+         "a source-ID catalogue choice survives rebuilding with an explicitly changed origin");
+}
+
+void testWordCountCatalogueOverrideSurvivesOriginRebuild() {
+  auto transcript=guide(12,{{0,1.9,"one two three four"},{7.1,7.6,"Verse"}});
+  transcript.segments[0].words={{"one",0,.4,.8},{"two",.45,.95,.8},
+      {"three",.96,1.45,.8},{"four",1.46,1.9,.8}};
+  auto draft=alignGuideSections(transcript,{});
+  expect(draft.pendingAnnouncements.empty() && draft.secondaryCues.size()==4,
+         "complete word evidence creates four supported count points before an explicit role correction");
+  const auto id=draft.secondaryCues[1].id;
+  juce::String error;
+  expect(chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::instruction,"Drums In"),error),
+         "a supported word-count point can be explicitly reclassified through the catalogue");
+  const auto changed=std::find_if(draft.secondaryCues.begin(),draft.secondaryCues.end(),[&](const auto &cue){return cue.id==id;});
+  expect(changed!=draft.secondaryCues.end() && changed->name=="Drums In" && changed->rawText=="two" &&
+         close(changed->rawTimeSeconds,.45) && close(changed->timeSeconds,.45),
+         "reclassifying a word count uses its measured word boundary rather than the previous proposed pulse");
+  auto options=draft.options;options.originSeconds=.01;
+  const auto rebuilt=alignGuideSections(transcript,options);
+  const auto preserved=std::find_if(rebuilt.secondaryCues.begin(),rebuilt.secondaryCues.end(),[&](const auto &cue){return cue.id==id;});
+  expect(rebuilt.pendingAnnouncements.empty() && rebuilt.secondaryCues.size()==4 && preserved!=rebuilt.secondaryCues.end() &&
+         preserved->name=="Drums In" && preserved->rawText=="two" && close(preserved->timeSeconds,.45) &&
+         close(preserved->rawTimeSeconds,.45) && transcript.segments[0].text=="one two three four" &&
+         close(transcript.segments[0].words[1].startSeconds,.45),
+         "a word-source catalogue decision survives origin rebuilding without duplicating the original count or changing ASR");
+}
+
+void testCatalogueSelectionCapacityAndPendingDiscard() {
+  auto draft=alignGuideSections(guide(12,{{1.1,1.7,"unidentified announcement"}}),{});
+  const auto id=draft.pendingAnnouncements[0].id;
+  for(size_t i=0;i<kMaxArrangementCueEvents;++i)
+    draft.secondaryCues.push_back(secondary("capacity-"+juce::String(int(i)),"Build",.01*double(i)));
+  juce::String error;
+  expect(canReviewGuideAlignment(draft) &&
+         !chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::instruction,"Build"),error) &&
+         draft.secondaryCues.size()==kMaxArrangementCueEvents && draft.pendingAnnouncements.size()==1 &&
+         draft.pendingAnnouncements[0].id==id && draft.options.catalogueSelections.empty() && !error.isEmpty(),
+         "a catalogue selection exceeding cue capacity is rejected atomically without consuming its pending source");
+  draft.secondaryCues.pop_back();
+  expect(chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::instruction,"Build"),error) &&
+         draft.secondaryCues.size()==kMaxArrangementCueEvents && draft.pendingAnnouncements.empty() &&
+         appendConfirmedGuideSuggestions({},draft).error.isEmpty(),
+         "the same pending instruction fits exactly at the declared event capacity");
+  auto pending=alignGuideSections(guide(12,{{1.1,1.7,"unidentified first"},{5.1,5.7,"unidentified second"},{9.1,9.6,"Verse"}}),{});
+  expect(pending.pendingAnnouncements.size()==2 && appendConfirmedGuideSuggestions({},pending).error.isNotEmpty(),
+         "unresolved sources cannot be automatically accepted alongside a known principal");
+  const auto firstId=pending.pendingAnnouncements[0].id,secondId=pending.pendingAnnouncements[1].id;
+  expect(discardGuidePendingAnnouncement(pending,firstId,error) && pending.pendingAnnouncements.size()==1 &&
+         pending.pendingAnnouncements[0].id==secondId && appendConfirmedGuideSuggestions({},pending).error.isNotEmpty(),
+         "discarding one pending source preserves other unresolved choices and keeps confirmation blocked");
+  expect(!discardGuidePendingAnnouncement(pending,firstId,error) && pending.pendingAnnouncements.size()==1 &&
+         discardGuidePendingAnnouncement(pending,pending.pendingAnnouncements[0].id,error) &&
+         pending.pendingAnnouncements.empty() && pending.suggestions.size()==1 &&
+         appendConfirmedGuideSuggestions({},pending).error.isEmpty(),
+         "a stale discard is harmless and resolving the final pending source enables canonical-only acceptance");
+}
+
 } // namespace
 int main() {
   testSpeechNormalization(); testBilingualCatalogAndUtilities(); testBilingualCatalogCacheCompatibility();
@@ -1365,18 +1548,23 @@ int main() {
   testGuideAnticipationAndRepetitions(); testConfirmedGridAndMeters();
   testAcceptancePreservesManualState(); testTimebaseCancellationAndCodec();
   testInitialGuideGridPhaseFromObservedCounts(); testGloriosoDiaEntrancesPreserveCounts();
-  testInstructionEntriesAtBoundariesAndSourceEnd(); testPendingInstructionReviewIsResolvedPerSourceId();
+  testInstructionsKeepSourceOnsetsAtBoundariesAndSourceEnd(); testSecondaryReviewPreservesUnresolvedPrincipalErrors();
+  testAlabaSecondaryAnnouncementsKeepSpokenTiming();
   testGuideAlignmentOriginAndMeter(); testGuideAlignmentTempoPhaseAndCapacity();
   testGuideAlignmentReviewAndAnticipation(); testGuideUtilitiesDoNotDivideMusicalSections();
   testGuideMusicalOnsetBoundaryTolerance(); testGuideTimingRegressionAndLateReview();
   testGuideFixedNextBarAcrossTempoAndMeter(); testCorrectedAnnouncementsKeepTheirMusicalRoles();
   testLearnedInterpretationKeepsGuideEvidenceIdentity();
   testRepeatedUnnumberedGuideNames();
-  testTentativeAcceptanceUsesCanonicalGuideNames();
+  testPendingCatalogueSelectionsUseCanonicalGuideNames();
   testSecondarySourceTimingAndMoves(); testGuideSecondaryAcceptance(); testGuideSecondaryCapacityAndAtomicity();
   testGuideIndividualCountPoints(); testGuideCompoundCountPreservationAndCapacity();
   testWordCountIntervalsUseUniqueMusicalPulses();
+  testCountWordBoundariesFollowUniqueEvidencedRun();
   testKnownVoiceEvidenceKeepsRawParentAndOverlappingCounts();
+  testCatalogueRoleSelectionPreservesSourceAndManualEdits();
+  testWordCountCatalogueOverrideSurvivesOriginRebuild();
+  testCatalogueSelectionCapacityAndPendingDiscard();
   testGuideBoundaryEditingAndInvalidInput();
   std::cout << "Section detection: " << checks << " checks passed.\n";
 }

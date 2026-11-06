@@ -12,6 +12,11 @@ struct GuideGridMark {
   bool strong = true;
 };
 
+struct GuideCatalogSelection {
+  juce::String announcementId;
+  GuideCatalogChoice choice;
+};
+
 struct GuideAlignmentOptions {
   double originSeconds = 0.0;
   double bpm = 120.0;
@@ -20,11 +25,12 @@ struct GuideAlignmentOptions {
   // Semantic corrections are local to review. Raw speech and stable source
   // identities are retained regardless of the chosen musical interpretation.
   std::vector<GuideLearnedMapping> learnedMappings;
+  std::vector<GuideCatalogSelection> catalogueSelections;
 };
 
 // A spoken instruction/count is a point, independent of musical boundaries.
-// Instructions propose the next musical bar; counts retain their measured
-// position. Both retain the original spoken time separately.
+// Instructions and counts retain their measured source position; an explicit
+// visual correction is stored separately from the original spoken time.
 // Individual counts use numeric names 1..7. A compound count without word
 // timestamps remains one literal point; no missing pulses are synthesized.
 // Its source onset remains available after a visual correction. For a compound
@@ -46,6 +52,20 @@ struct GuideEntryTimingIssue {
   bool secondary = false;
 };
 
+// Unresolved speech remains a point in the review, never an unknown musical
+// section. Every selectable candidate belongs to the shared app catalogue.
+struct GuidePendingAnnouncement {
+  juce::String id, rawText;
+  double startSeconds = 0.0, endSeconds = 0.0;
+  std::vector<GuideCatalogChoice> candidates;
+};
+
+struct GuideSourceAnnouncement {
+  juce::String id, rawText;
+  double startSeconds = 0.0, endSeconds = 0.0;
+  std::optional<double> confidence;
+};
+
 struct GuideAlignmentDraft {
   GuideAlignmentOptions options;
   double durationSeconds = 0.0;
@@ -53,14 +73,16 @@ struct GuideAlignmentDraft {
   std::vector<SectionSuggestion> suggestions;
   std::vector<GuideSecondaryCueSuggestion> secondaryCues;
   std::vector<GuideEntryTimingIssue> timingIssues;
+  std::vector<GuidePendingAnnouncement> pendingAnnouncements;
+  std::vector<GuideSourceAnnouncement> sourceAnnouncements;
   juce::String error;
 };
 
 // Source time only; output is transient and never changes a song or its tempo.
 // Main sections always start at the bar following the announcement's bar,
 // after a bounded onset-boundary tolerance. Only explicit visual editing can
-// override that proposed entry. Instructions use that entry policy as points;
-// counts keep their measured timing.
+// override that proposed entry. Independent instructions/counts keep their
+// measured timing instead of inheriting a musical section's anticipation.
 GuideAlignmentDraft alignGuideSections(const GuideTranscript &,
                                       const GuideAlignmentOptions &);
 
@@ -91,6 +113,14 @@ bool canReviewGuideAlignment(const GuideAlignmentDraft &);
 // other unresolved entries. Does not alter section boundaries or source audio.
 bool discardGuideSecondaryCue(GuideAlignmentDraft &, const juce::String &id,
                               juce::String &error);
+
+// Explicit role-aware catalogue selection, retaining the source identity and
+// existing manual edits. The chosen role determines its musical timing.
+bool chooseGuideCatalogMark(GuideAlignmentDraft &, const juce::String &id,
+                            const GuideCatalogChoice &, juce::String &error);
+
+bool discardGuidePendingAnnouncement(GuideAlignmentDraft &, const juce::String &id,
+                                     juce::String &error);
 
 // Pure atomic plan for both families. Existing sections/cues remain immutable;
 // new cues use [0, duration), existing cue capacity and the final section anchors.

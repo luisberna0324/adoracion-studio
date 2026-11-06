@@ -1640,30 +1640,56 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         guideReviewSecondaryTimes[id] = cue.timeSeconds;
       waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
     });
+    waveformBarRaw->setOnGuideCatalogSelection([this](juce::String id,
+        playworship::analysis::GuideCatalogChoice choice) {
+      if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
+      juce::String error;
+      if (!playworship::analysis::chooseGuideCatalogMark(guideReviewDraft, id, choice, error)) {
+        waveformBarPtr->setGuideAlignmentError(error); return;
+      }
+      guideReviewNames.erase(id); guideReviewSecondaryTimes.erase(id);
+      for (const auto &part : guideReviewDraft.suggestions)
+        if (part.id == id) guideReviewNames[id] = part.displayName;
+      for (const auto &cue : guideReviewDraft.secondaryCues)
+        if (cue.id == id) {
+          guideReviewNames[id] = cue.name;
+          if (cue.userEdited) guideReviewSecondaryTimes[id] = cue.timeSeconds;
+        }
+      waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+    });
     waveformBarRaw->setOnGuideAlignmentRename([this](const juce::String &id, const juce::String &name) {
       if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
       const auto cleaned = name.trim();
       if (cleaned.isEmpty() || cleaned.length() > 128) {
         waveformBarPtr->setGuideAlignmentError(L10n::tr("Escribe un nombre de hasta 128 caracteres.", "Enter a name of up to 128 characters.")); return;
       }
-      for (auto &suggestion : guideReviewDraft.suggestions) if (suggestion.id == id) {
-        applyReviewedGuideSectionName(suggestion, cleaned);
-        guideReviewNames[id] = cleaned;
-        waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
-        return;
-      }
-      for (auto &cue : guideReviewDraft.secondaryCues) if (cue.id == id) {
-        const auto count = playworship::analysis::normalizeGuideCountCue(cue.timeSeconds, cleaned);
-        const auto utility = playworship::analysis::normalizeGuideUtilityCue(cue.timeSeconds, cleaned);
-        cue.name = count ? count->name : utility ? utility->name : cleaned;
-        cue.userEdited = true;
-        guideReviewNames[id] = cue.name;
-        waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
-        return;
-      }
+      const auto key = playworship::guide::normalizedWords(cleaned);
+      for (const auto &entry : playworship::analysis::guideCatalogEntries())
+        if (key == playworship::guide::normalizedWords(entry.key) ||
+            key == playworship::guide::normalizedWords(entry.label)) {
+          juce::String error;
+          if (!playworship::analysis::chooseGuideCatalogMark(guideReviewDraft, id, entry, error)) {
+            waveformBarPtr->setGuideAlignmentError(error); return;
+          }
+          guideReviewNames.erase(id); guideReviewSecondaryTimes.erase(id);
+          for (const auto &part : guideReviewDraft.suggestions) if (part.id == id) guideReviewNames[id] = part.displayName;
+          for (const auto &cue : guideReviewDraft.secondaryCues) if (cue.id == id) guideReviewNames[id] = cue.name;
+          waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft); return;
+        }
+      waveformBarPtr->setGuideAlignmentError(L10n::tr("Elige una marca del catálogo.", "Choose a mark from the catalogue."));
     });
     waveformBarRaw->setOnGuideAlignmentRemove([this](const juce::String &id) {
       if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr) return;
+      if (std::any_of(guideReviewDraft.pendingAnnouncements.begin(), guideReviewDraft.pendingAnnouncements.end(),
+            [&](const auto &pending) { return pending.id == id; })) {
+        juce::String error;
+        if (!playworship::analysis::discardGuidePendingAnnouncement(guideReviewDraft, id, error)) {
+          waveformBarPtr->setGuideAlignmentError(error); return;
+        }
+        guideReviewDiscarded.insert(id.toStdString());
+        guideReviewNames.erase(id); guideReviewSecondaryTimes.erase(id);
+        waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft); return;
+      }
       const auto found = std::find_if(guideReviewDraft.suggestions.begin(), guideReviewDraft.suggestions.end(),
           [&id](const auto &suggestion) { return suggestion.id == id; });
       if (found == guideReviewDraft.suggestions.end()) {
@@ -4491,6 +4517,15 @@ void MTControlsAudioProcessorEditor::rebuildGuideSectionReview(
   }
   rebuilt.suggestions.erase(std::remove_if(rebuilt.suggestions.begin(), rebuilt.suggestions.end(),
       [this](const auto &suggestion) { return guideReviewDiscarded.count(suggestion.id.toStdString()) != 0; }), rebuilt.suggestions.end());
+  std::vector<juce::String> discardedPending;
+  for (const auto &pending : rebuilt.pendingAnnouncements)
+    if (guideReviewDiscarded.count(pending.id.toStdString())) discardedPending.push_back(pending.id);
+  for (const auto &id : discardedPending) {
+    juce::String error;
+    if (!playworship::analysis::discardGuidePendingAnnouncement(rebuilt, id, error)) {
+      waveformBarPtr->setGuideAlignmentError(error); return;
+    }
+  }
   for (size_t i = 0; i < rebuilt.suggestions.size(); ++i) {
     auto &suggestion = rebuilt.suggestions[i];
     suggestion.endSeconds = i + 1 < rebuilt.suggestions.size()
@@ -4537,6 +4572,10 @@ void MTControlsAudioProcessorEditor::finishGuideSectionReview(bool confirm) {
       playbackSession.isRemote() || !waveformBarPtr) return;
   if (guideReviewDraft.error.isNotEmpty()) {
     waveformBarPtr->setGuideAlignmentError(guideReviewDraft.error); return;
+  }
+  if (!guideReviewDraft.pendingAnnouncements.empty()) {
+    waveformBarPtr->setGuideAlignmentError(L10n::tr("Elige una marca del catálogo para cada anuncio pendiente.",
+        "Choose a catalogue mark for each pending announcement.")); return;
   }
   if (guideReviewDraft.suggestions.empty() && guideReviewDraft.secondaryCues.empty()) {
     waveformBarPtr->setGuideAlignmentError(L10n::tr("No hay sugerencias para confirmar.", "There are no suggestions to confirm.")); return;

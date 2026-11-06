@@ -27,7 +27,7 @@ public:
   // The editor retains ownership; presentation covers its top-level host.
   // Keeping this explicit leaves diagnostic component fixtures non-modal.
   void showModal(juce::Component &source);
-  // Called explicitly by the editor's Sugerir secciones entry. Constructors do
+  // Called explicitly by the editor's Detectar secciones entry. Constructors do
   // not start work or download anything implicitly.
   void beginSuggestionFlow();
   void paint(juce::Graphics &) override;
@@ -83,6 +83,7 @@ private:
   juce::ProgressBar spinner{progress};
   bool busy = false, reviewing = false, reviewModified = false, transcriptReview = false;
   bool modalPresented = false, cancelling = false;
+  bool modelDownloadPrompt = false;
   juce::Component::SafePointer<juce::Component> modalHost;
   juce::Rectangle<int> cardBounds, lastAvailableBounds;
   juce::uint64 operationGeneration = 0;

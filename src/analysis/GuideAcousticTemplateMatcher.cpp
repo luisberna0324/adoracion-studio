@@ -498,7 +498,7 @@ std::optional<juce::StringArray> guideAcousticCompoundPhrases(const juce::String
 }
 
 bool guideAcousticAnnouncementsMatchParent(const GuideTranscriptSegment &parent) {
-  if (parent.acousticAnnouncements.size() < 2 || parent.acousticAnnouncements.size() > 8 ||
+  if (parent.acousticAnnouncements.empty() || parent.acousticAnnouncements.size() > 8 ||
       !parent.acousticResidualRatio || !std::isfinite(*parent.acousticResidualRatio) ||
       *parent.acousticResidualRatio < 0 || *parent.acousticResidualRatio > guideAcousticMaximumResidual ||
       !std::isfinite(parent.startSeconds) || !std::isfinite(parent.endSeconds) ||
@@ -517,7 +517,76 @@ bool guideAcousticAnnouncementsMatchParent(const GuideTranscriptSegment &parent)
         announcement.correlation > 1.0) return false;
     previous = announcement.startSeconds;
   }
+  if (parent.acousticAnnouncements.size() == 1) {
+    const auto actual = meaning(parent.acousticAnnouncements.front().text);
+    if (actual.isEmpty() || hintPhrases(parent.text)) return false;
+    const auto observed = meaning(parent.text);
+    if (observed.isNotEmpty()) return observed == actual;
+    return guideAcousticAtomicCandidate(parent);
+  }
   return sequenceMatches(parent.text, parent.acousticAnnouncements);
+}
+
+bool guideAcousticAtomicCandidate(const GuideTranscriptSegment &parent) {
+  if (parent.text.trim().isEmpty() || parent.text.length() > 512 ||
+      !std::isfinite(parent.startSeconds) || !std::isfinite(parent.endSeconds) ||
+      parent.startSeconds < 0.0 || parent.endSeconds <= parent.startSeconds ||
+      parent.endSeconds - parent.startSeconds > 3.0 ||
+      (parent.confidence && (!std::isfinite(*parent.confidence) ||
+          *parent.confidence < 0.0 || *parent.confidence > 1.0)) ||
+      hintPhrases(parent.text) || meaning(parent.text).isNotEmpty()) return false;
+  auto original = parent;
+  original.acousticAnnouncements.clear(); original.acousticResidualRatio.reset();
+  const auto state = interpretGuideAnnouncement(original).recognitionState();
+  return state == GuideRecognitionState::unresolved || state == GuideRecognitionState::tentative;
+}
+
+GuideAcousticMatch matchKnownGuideAtomic(const std::vector<float> &source,
+    double sourceStart, const GuideTranscriptSegment &parent,
+    const GuideAcousticTemplateBank &bank, const CancellationCheck &cancelled) {
+  GuideAcousticMatch result;
+  if (cancelledNow(cancelled)) { result.cancelled = true; return result; }
+  if (!guideAcousticAtomicCandidate(parent) || source.size() < 1280 ||
+      source.size() > maximumSamples || !std::isfinite(sourceStart) || sourceStart < 0.0 ||
+      bank.templates.empty() || bank.templates.size() > maximumTemplates) return result;
+  for (auto sample : source) if (!std::isfinite(sample)) return result;
+  size_t maximumPattern = 1280;
+  std::map<juce::String, juce::String> labels;
+  for (const auto &reference : bank.templates) {
+    for (auto sample : reference.samples) if (!std::isfinite(sample)) return result;
+    const auto key = meaning(reference.text);
+    if (key.isNotEmpty()) labels.emplace(key, reference.text);
+    maximumPattern = std::max(maximumPattern, reference.samples.size());
+  }
+  SourceCorrelations correlations(source, maximumPattern);
+  std::vector<Candidate> candidates;
+  for (const auto &label : labels) {
+    auto matches = candidatesFor(source, correlations, label.second, bank, cancelled);
+    candidates.insert(candidates.end(), matches.begin(), matches.end());
+  }
+  if (cancelledNow(cancelled)) { result.cancelled = true; return result; }
+  std::stable_sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+    return a.score > b.score;
+  });
+  if (candidates.empty() || candidates.front().score < guideAcousticMinimumCorrelation) return result;
+  const auto &winner = candidates.front();
+  for (const auto &candidate : candidates)
+    if (meaning(candidate.reference->text) != meaning(winner.reference->text) &&
+        winner.score - candidate.score < .08) {
+      result.ambiguous = true; return result;
+    }
+  const auto complete = fit(source, {winner});
+  result.residualRatio = complete.residual;
+  if (!complete.valid || complete.conditional.size() != 1) return result;
+  const double start = sourceStart + double(winner.offset) / rate;
+  GuideAcousticAnnouncement announcement{winner.reference->text, winner.reference->language,
+      winner.reference->identity, start, start + double(winner.reference->samples.size()) / rate,
+      complete.conditional.front()};
+  auto checked = parent;
+  checked.acousticAnnouncements = {announcement};
+  checked.acousticResidualRatio = complete.residual;
+  if (guideAcousticAnnouncementsMatchParent(checked)) result.announcements.push_back(std::move(announcement));
+  return result;
 }
 
 GuideAcousticMatch matchKnownGuideCompound(const std::vector<float> &source,

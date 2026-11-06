@@ -29,6 +29,35 @@ GuideSectionInterpretation interpretGuideSection(
 
 enum class GuideAnnouncementKind { unknown, section, instruction, count };
 
+// Only resolved announcements can become automatic marks. Unknown and
+// tentative meanings can still receive independent recognition evidence.
+// reviewOnly protects conflicts and out-of-catalogue identities.
+enum class GuideRecognitionState { unresolved, tentative, resolved, reviewOnly };
+
+// A choice is generated from the shared catalogue, never from a song-specific
+// correction. key is a canonical selectable name, including an ordinal when
+// present (for example Verse 2, Build or 1); label is its Spanish display name.
+// score only orders review choices. supported means the observed hypothesis
+// satisfies the existing decoder gates; it is not a calibrated probability.
+struct GuideCatalogChoice {
+  GuideAnnouncementKind kind = GuideAnnouncementKind::unknown;
+  SectionType type = SectionType::unknown;
+  std::optional<int> ordinal;
+  juce::String key, label;
+  double score = 0.0;
+  juce::String evidence;
+  bool supported = false;
+};
+
+std::vector<GuideCatalogChoice> guideCatalogEntries();
+
+// Returns every canonical section/allowed ordinal, utility, declared literal
+// utility and individual count exactly once, with evidence-supported matches
+// first. Unsupported choices remain available for explicit visual selection.
+std::vector<GuideCatalogChoice> guideCatalogChoices(
+    const GuideTranscriptSegment &,
+    const std::vector<GuideLearnedMapping> &learnedMappings = {});
+
 // Post-ASR interpretation used by both waveform alignment and corpus evaluation.
 // Corrections to a count or an instruction must never become a musical boundary.
 // The original transcript remains the only source of text, timing and identity.
@@ -36,7 +65,9 @@ struct GuideAnnouncementInterpretation {
   GuideAnnouncementKind kind = GuideAnnouncementKind::unknown;
   GuideSectionInterpretation section;
   juce::String secondaryName, provenance, reason;
+  std::vector<GuideCatalogChoice> candidates;
   bool recognized() const noexcept;
+  GuideRecognitionState recognitionState() const;
 };
 
 GuideAnnouncementInterpretation interpretGuideAnnouncement(

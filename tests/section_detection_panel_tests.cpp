@@ -235,6 +235,12 @@ struct SectionDetectionPanelTestAccess {
     return p.viewport.isVisible() && p.chooseModel.isVisible() &&
         p.guideLanguage.isVisible() && p.transcribe.isVisible() && p.transcribe.isEnabled();
   }
+  static bool downloadPromptVisible(const SectionDetectionPanel &p) {
+    return p.title.isVisible() && p.status.isVisible() && p.transcribe.isVisible() &&
+        p.transcribe.isEnabled() && p.cancel.isVisible() && p.cancel.isEnabled() &&
+        !p.help.isVisible() && !p.viewport.isVisible() && !p.chooseModel.isVisible() &&
+        !p.guideLanguage.isVisible() && !p.modelStatus.isVisible() && !p.spinner.isVisible();
+  }
   static bool busyDetailsVisible(const SectionDetectionPanel &p) {
     return p.title.isVisible() && p.status.isVisible() && p.spinner.isVisible() && p.cancel.isVisible();
   }
@@ -510,7 +516,7 @@ void guideWaveformHandoff(const juce::File &root, const ImportedSongData &song) 
   const auto model = root.getChildFile("handoff-model.bin");
   expect(model.replaceWithText("synthetic model identity"), "handoff UI has an explicit local model");
   SectionDetectionPanelTestAccess::model(panel, model);
-  expect(SectionDetectionPanelTestAccess::transcribe(panel).getButtonText() == "Sugerir secciones" &&
+  expect(SectionDetectionPanelTestAccess::transcribe(panel).getButtonText() == "Detectar secciones" &&
              SectionDetectionPanelTestAccess::help(panel).contains("arrastra") &&
              !SectionDetectionPanelTestAccess::analyze(panel).isVisible() &&
              !SectionDetectionPanelTestAccess::add(panel).isVisible() &&
@@ -600,6 +606,19 @@ void modelPreparationIntegrity(const juce::File &root) {
          "failure and cancellation remove every temporary download file");
 }
 
+void captureModelFlow(SectionDetectionPanel &panel, const char *environmentVariable) {
+  const auto requested = juce::SystemStats::getEnvironmentVariable(environmentVariable, {});
+  if (requested.isEmpty()) return;
+  expect(juce::File::isAbsolutePath(requested), "model flow capture path is absolute");
+  const juce::File file(requested);
+  expect(file.getParentDirectory().createDirectory().wasOk(), "model flow capture directory opens");
+  auto output = file.createOutputStream();
+  expect(output && output->setPosition(0) && output->truncate().wasOk() &&
+             juce::PNGImageFormat().writeImageToStream(
+                 panel.createComponentSnapshot(panel.getLocalBounds(), true, 1.5f), *output),
+         "the production model modal renders to a complete PNG");
+}
+
 void modelDownloadContinuesSuggestionFlow(const juce::File &root, const ImportedSongData &song) {
   auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
   auto guide = std::make_shared<FakeGuideTranscriber>(); guide->release = true;
@@ -623,20 +642,75 @@ void modelDownloadContinuesSuggestionFlow(const juce::File &root, const Imported
   panel.beginSuggestionFlow();
   expect(!SectionDetectionPanelTestAccess::busy(panel) && source->calls == 0 && !guide->entered,
          "opening the suggestion flow never silently downloads a missing model");
-  expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::setupReady(panel),
-         "the missing model and guide controls are presented inside the same modal");
+  expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::downloadPromptVisible(panel),
+         "a missing model presents only the download consent and its two actions");
+  expect(SectionDetectionPanelTestAccess::state(panel).contains(
+             juce::String::fromUTF8("¿Descargar el modelo para detectar las secciones?")) &&
+             SectionDetectionPanelTestAccess::state(panel).contains("57 MiB"),
+         "download consent explains the model's purpose without requiring configuration");
+  const auto card = SectionDetectionPanelTestAccess::card(panel);
+  expect(card.getWidth() <= 480 && card.getHeight() <= 300 &&
+             card.contains(SectionDetectionPanelTestAccess::transcribe(panel).getBounds()) &&
+             card.contains(SectionDetectionPanelTestAccess::cancel(panel).getBounds()),
+         "download consent and its actions fit in the compact card");
   expect(SectionDetectionPanelTestAccess::transcribe(panel).isEnabled() &&
-             SectionDetectionPanelTestAccess::transcribe(panel).getButtonText() == "Descargar y continuar",
-         "a missing model presents one explicit download-and-continue action");
+             SectionDetectionPanelTestAccess::transcribe(panel).getButtonText() == "Descargar modelo" &&
+             SectionDetectionPanelTestAccess::cancel(panel).getButtonText() == "Ahora no",
+         "download consent offers an explicit download action and a way to decline");
+  captureModelFlow(panel, "PW_SECTION_CONSENT_CAPTURE_PATH");
   click(SectionDetectionPanelTestAccess::transcribe(panel));
   pumpUntil([&] { return source->entered.load(); }, "explicit download reaches the local fake stream source");
   expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::busy(panel) &&
              SectionDetectionPanelTestAccess::setupHidden(panel),
          "model downloading keeps the same modal blocker and hides configuration while busy");
+  expect(SectionDetectionPanelTestAccess::busyDetailsVisible(panel) &&
+             SectionDetectionPanelTestAccess::state(panel).contains(
+                 juce::String::fromUTF8("Descargando modelo")),
+         "model downloading shows its status and progress bar");
+  captureModelFlow(panel, "PW_SECTION_DOWNLOAD_CAPTURE_PATH");
+  click(SectionDetectionPanelTestAccess::cancel(panel));
+  pumpUntil([&] { return !SectionDetectionPanelTestAccess::busy(panel); },
+            "a cancelled download returns without blocking the UI");
+  expect(panel.isCurrentlyModal(false) && SectionDetectionPanelTestAccess::downloadPromptVisible(panel) &&
+             SectionDetectionPanelTestAccess::state(panel) == juce::String::fromUTF8("Descarga cancelada.") &&
+             !guide->entered && reviewed == 0 && closed == 0,
+         "download cancellation returns to compact consent for an explicit retry");
+  source->entered = false;
+  click(SectionDetectionPanelTestAccess::transcribe(panel));
+  pumpUntil([&] { return source->calls == 2 && source->entered.load(); },
+            "retry opens a fresh model request after cancellation");
   source->release = true;
   pumpUntil([&] { return reviewed == 1 && closed == 1; }, "native download continues automatically into waveform review");
-  expect(source->calls == 1 && guide->entered && !SectionDetectionPanelTestAccess::transcriptVisible(panel),
-         "one model request is followed by local guide inference without a transcript list");
+  expect(source->calls == 2 && guide->entered && !SectionDetectionPanelTestAccess::transcriptVisible(panel),
+         "the successful retried download proceeds to local guide inference and waveform review");
+}
+
+void modelDownloadConsentCanBeDeclined(const juce::File &root, const ImportedSongData &song) {
+  auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
+  auto guide = std::make_shared<FakeGuideTranscriber>();
+  auto source = std::make_shared<FakeModelSource>();
+  juce::Component host; host.setSize(1000, 700); host.setVisible(true);
+  int reviewed = 0, closed = 0;
+  SectionDetectionPanel::Actions actions;
+  actions.reviewGuide = [&](const GuideTranscript &) { ++reviewed; };
+  actions.close = [&] { ++closed; };
+  SectionDetectionPanel panel(song, actions, unavailable, guide);
+  const auto model = root.getChildFile("declined-download-model.bin");
+  SectionDetectionPanelTestAccess::cache(panel, root.getChildFile("declined-download-cache"));
+  SectionDetectionPanelTestAccess::model(panel, model);
+  SectionDetectionPanelTestAccess::downloadSource(panel, source, source->asset());
+  panel.showModal(host);
+  panel.beginSuggestionFlow();
+  expect(SectionDetectionPanelTestAccess::downloadPromptVisible(panel) && source->calls == 0 &&
+             !guide->entered && !model.exists(),
+         "model consent waits for explicit approval before creating or requesting anything");
+  click(SectionDetectionPanelTestAccess::cancel(panel));
+  pump();
+  expect(closed == 1 && reviewed == 0 && !panel.isCurrentlyModal(false) &&
+             !SectionDetectionPanelTestAccess::modal(panel) &&
+             !SectionDetectionPanelTestAccess::busy(panel) && source->calls == 0 &&
+             !guide->entered && !model.exists(),
+         "declining closes consent without downloading, transcribing or reviewing the song");
 }
 
 void guideHandoffOwnerCanClose(const ImportedSongData &song) {
@@ -974,6 +1048,7 @@ int main(int argc, char **argv) {
     guideHandoffOwnerCanClose(song);
     std::cout << "PASS: raw guide handoff to waveform review, deferred close and owner lifetime\n";
     modelPreparationIntegrity(temporary.file);
+    modelDownloadConsentCanBeDeclined(temporary.file, song);
     modelDownloadContinuesSuggestionFlow(temporary.file, song);
     std::cout << "PASS: model preparation integrity, offline reuse, cancellation and automatic suggestion continuation\n";
     guideCancellationAfterQueuedSuccess(temporary.file, song);

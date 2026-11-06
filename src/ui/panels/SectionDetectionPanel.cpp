@@ -1,6 +1,7 @@
 #include "SectionDetectionPanel.h"
 #include "PracticeTimelineRuler.h"
 #include "../components/AppModal.h"
+#include "../../data/Localization.h"
 #include <cmath>
 
 using namespace playworship::analysis;
@@ -53,7 +54,9 @@ SectionDetectionPanel::SectionDetectionPanel(ImportedSongData s, Actions a,
   for (auto *component : std::initializer_list<juce::Component *>{&title,&status,&help,&gridConfirmed,&analyze,&cancel,&add,&acceptSelected,&selectAll,&viewport,&spinner,&transcribe,&chooseModel,&guideLanguage,&modelStatus,&showTracks})
     addAndMakeVisible(component);
   addChildComponent(transcript);
-  title.setText(juce::String::fromUTF8(actions.reviewGuide ? "Sugerir secciones · " : "Detectar secciones · ") + song.title, juce::dontSendNotification);
+  title.setText(actions.reviewGuide ? L10n::tr("Detectar secciones", "Detect sections")
+                                   : juce::String::fromUTF8("Detectar secciones · ") + song.title,
+                juce::dontSendNotification);
   title.setFont(makeAppFont(20.0f, AppFontWeight::SemiBold));
   help.setText(juce::String::fromUTF8(actions.reviewGuide
       ? "Elige la pista Guía. Al terminar, revisa las sugerencias sobre la onda y arrastra sus marcas antes de confirmar."
@@ -78,7 +81,8 @@ SectionDetectionPanel::SectionDetectionPanel(ImportedSongData s, Actions a,
   acceptSelected.setButtonText("Confirmar seleccionadas"); selectAll.setButtonText("Seleccionar todas");
   for (auto *legacy : std::initializer_list<juce::Component *>{&gridConfirmed, &analyze, &add, &acceptSelected, &selectAll})
     legacy->setVisible(!actions.reviewGuide);
-  transcribe.setButtonText(juce::String::fromUTF8(actions.reviewGuide ? "Sugerir secciones" : "Transcribir guía"));
+  transcribe.setButtonText(actions.reviewGuide ? L10n::tr("Detectar secciones", "Detect sections")
+                                             : juce::String::fromUTF8("Transcribir guía"));
   transcribe.setComponentID("section-guide-transcribe");
   chooseModel.setButtonText(juce::String::fromUTF8("Modelo de voz…"));
   chooseModel.setComponentID("section-guide-model");
@@ -210,10 +214,15 @@ void SectionDetectionPanel::beginSuggestionFlow() {
     return row->role.getSelectedId() == 2;
   });
   if (guideCount != 1) {
-    status.setText(juce::String::fromUTF8("Elige una sola pista como Guía para sugerir secciones."), juce::dontSendNotification); return;
+    status.setText(L10n::tr("Elige una sola pista como Guía para detectar las secciones.",
+                           "Choose one Guide track to detect sections."), juce::dontSendNotification); return;
   }
   if (!guideModelFile.existsAsFile()) {
-    status.setText(juce::String::fromUTF8("Descarga una vez el modelo de voz (57 MiB) para continuar."), juce::dontSendNotification); return;
+    modelDownloadPrompt = bool(actions.reviewGuide);
+    setBusy(false);
+    status.setText(L10n::tr("¿Descargar el modelo para detectar las secciones?\nSolo se necesita una vez · 57 MiB.",
+                           "Download the model to detect sections?\nOnly needed once · 57 MiB."), juce::dontSendNotification);
+    return;
   }
   start(true);
 }
@@ -226,9 +235,10 @@ void SectionDetectionPanel::paint(juce::Graphics &g) {
   g.setColour(juce::Colours::white.withAlpha(0.2f)); g.drawRect(getLocalBounds());
 }
 void SectionDetectionPanel::resized() {
-  const bool compact = modalPresented && busy;
+  const bool compact = modalPresented && (busy || modelDownloadPrompt);
   for (auto *component : std::initializer_list<juce::Component *>{&help, &chooseModel,
        &guideLanguage, &transcribe, &modelStatus}) component->setVisible(!compact);
+  if (compact && !busy) transcribe.setVisible(true);
   for (auto *legacy : std::initializer_list<juce::Component *>{&gridConfirmed, &analyze,
        &add, &acceptSelected, &selectAll}) legacy->setVisible(!compact && !actions.reviewGuide);
   spinner.setVisible(busy);
@@ -247,10 +257,15 @@ void SectionDetectionPanel::resized() {
                                     juce::jmin(20, cardBounds.getHeight() / 10));
     auto footer = inner.removeFromBottom(juce::jmin(48, juce::jmax(0, inner.getHeight() / (compact ? 3 : 5))));
     if (compact) {
-      cancel.setBounds(footer.removeFromRight(juce::jmin(140, footer.getWidth())));
+      if (busy) cancel.setBounds(footer.removeFromRight(juce::jmin(140, footer.getWidth())));
+      else {
+        transcribe.setBounds(footer.removeFromRight(juce::jmin(190, footer.getWidth() / 2)));
+        footer.removeFromRight(10);
+        cancel.setBounds(footer.removeFromRight(juce::jmin(140, footer.getWidth())));
+      }
       title.setBounds(inner.removeFromTop(juce::jmin(30, inner.getHeight())));
       inner.removeFromTop(juce::jmin(8, inner.getHeight()));
-      status.setBounds(inner.removeFromTop(juce::jmin(48, inner.getHeight() / 2)));
+      status.setBounds(inner.removeFromTop(juce::jmin(busy ? 48 : 84, inner.getHeight())));
       inner.removeFromTop(juce::jmin(14, inner.getHeight()));
       spinner.setBounds(inner.removeFromTop(juce::jmin(22, inner.getHeight())));
       return;
@@ -318,8 +333,10 @@ void SectionDetectionPanel::setBusy(bool value) {
   spinner.setVisible(value);
   const bool modelPresent = guideModelFile.existsAsFile();
   transcribe.setEnabled(!busy && service.guideAvailable());
-  transcribe.setButtonText(juce::String::fromUTF8(!modelPresent ? "Descargar y continuar" :
-      actions.reviewGuide ? "Sugerir secciones" : "Transcribir guía"));
+  transcribe.setButtonText(actions.reviewGuide
+      ? !modelPresent ? L10n::tr("Descargar modelo", "Download model")
+                      : L10n::tr("Detectar secciones", "Detect sections")
+      : juce::String::fromUTF8(!modelPresent ? "Descargar y continuar" : "Transcribir guía"));
   chooseModel.setEnabled(!busy); guideLanguage.setEnabled(!busy);
   showTracks.setVisible(transcriptReview); showTracks.setEnabled(!busy);
   modelStatus.setText(modelPresent ? "Modelo local listo" : juce::String::fromUTF8("Descarga única · 57 MiB"), juce::dontSendNotification);
@@ -332,7 +349,8 @@ void SectionDetectionPanel::setBusy(bool value) {
   analyze.setEnabled(!busy && service.available());
   analyze.setTooltip(service.available() ? "Analizar estructura musical" : service.unavailableReason());
   analyze.setButtonText(reviewing ? "Analizar de nuevo" : "Analizar");
-  cancel.setButtonText(busy ? "Cancelar" : modalPresented ? "Cerrar" : "Descartar / cerrar");
+  cancel.setButtonText(!busy && modelDownloadPrompt ? L10n::tr("Ahora no", "Not now")
+      : busy ? L10n::tr("Cancelar", "Cancel") : modalPresented ? "Cerrar" : "Descartar / cerrar");
   cancel.setEnabled(!cancelling);
   add.setEnabled(!busy && reviewing); acceptSelected.setEnabled(!busy && reviewing); selectAll.setEnabled(!busy && reviewing);
   gridConfirmed.setEnabled(!busy && !reviewing && !transcriptReview && song.bpm > 0 && song.timeSignature.isNotEmpty());
@@ -355,7 +373,7 @@ void SectionDetectionPanel::prepareGuideModel() {
   if (busy) return;
   const auto generation = ++operationGeneration;
   progress = 0; setBusy(true);
-  status.setText(juce::String::fromUTF8("Descargando modelo de voz · 57 MiB · tu audio permanece en este equipo"), juce::dontSendNotification);
+  status.setText(L10n::tr("Descargando modelo…", "Downloading model…"), juce::dontSendNotification);
   auto safe = juce::Component::SafePointer<SectionDetectionPanel>(this);
   modelTask = prepareWhisperGuideModel(guideModelFile, [safe, generation](double value) {
     juce::MessageManager::callAsync([safe, generation, value] {
@@ -372,10 +390,20 @@ void SectionDetectionPanel::prepareGuideModel() {
       safe->modelTask.reset();
       if (cancelled || outcome.error.isNotEmpty()) {
         ++safe->operationGeneration;
+        safe->modelDownloadPrompt = safe->actions.reviewGuide && !safe->guideModelFile.existsAsFile();
         safe->setBusy(false);
-        safe->status.setText(cancelled ? "Cancelado" : outcome.error, juce::dontSendNotification); return;
+        auto message = cancelled ? juce::String("Cancelado") : outcome.error;
+        if (safe->actions.reviewGuide)
+          message = cancelled ? L10n::tr("Descarga cancelada.", "Download cancelled.")
+                              : L10n::tr("No se pudo descargar el modelo. Inténtalo de nuevo.",
+                                         "Couldn't download the model. Please try again.");
+        safe->status.setText(message, juce::dontSendNotification);
+        safe->status.setTooltip(outcome.error);
+        return;
       }
       safe->guideModelFile = outcome.modelFile;
+      safe->modelDownloadPrompt = false;
+      safe->status.setTooltip({});
       // Keep the compact modal throughout download -> local transcription.
       // No editable setup state is exposed between the two workers.
       safe->start(true, true);

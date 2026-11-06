@@ -3,7 +3,7 @@ type: Analysis Contract
 title: Assisted Section Detection
 description: Propuestas locales revisables sin reemplazar el arreglo existente
 resource: src/analysis/SectionDetectionService.h
-timestamp: 2026-11-04T00:00:00-03:00
+timestamp: 2026-11-06
 ---
 
 # Detectar secciones
@@ -121,7 +121,7 @@ indicaciones en español e inglés ayuda a interpretar el texto; no sustituye
 una transcripción por una secuencia esperada de una canción particular.
 Los casos desconocidos continúan revisables.
 
-La versión actual usa `1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-10-acoustic-compounds`
+La versión actual usa `1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-12-recognition-states`
 y añade `:pack-<SHA256>` (o `:pack-unavailable`) a su identidad. La versión
 del proveedor distingue este reconocimiento de las inferencias anteriores en
 la identidad de caché. Cambiar de modo o de versión no reutiliza un resultado
@@ -210,6 +210,17 @@ Hay un máximo de ocho anuncios, márgenes entre candidatos competidores y
 rechazo de silencio, energía constante, ruido no coincidente, datos no finitos,
 ambigüedad o límites agotados.
 
+La recuperación atómica añade la búsqueda `matchKnownGuideAtomic` contra el
+pack completo para un anuncio breve aún no resuelto. Requiere un único hijo
+físico, correlación de al menos 0,94, residuo de hasta 0,12 y margen de 0,08
+frente a otro significado. No anula una alternativa ordinaria ya respaldada
+ni toma una palabra de un compuesto como si fuera todo el anuncio. Si no hay
+coincidencia, un reintento acotado usa `GuideCatalogueGrammar`, generado desde
+el catálogo compartido. Sus hipótesis se guardan en `catalogueAlternatives`,
+separadas del ASR literal y con uso exclusivo para revisión. Una probabilidad
+condicionada por gramática no se promociona a evidencia suficiente de voz.
+El contrato completo está en [CatalogueRecognition.md](CatalogueRecognition.md).
+
 El padre ASR conserva exactamente su texto, rango, idioma, alternativas,
 confianza y palabras. La evidencia adicional se guarda en
 `acousticAnnouncements` con texto, idioma del asset, identidad de grabación,
@@ -217,10 +228,10 @@ inicio/final fuente y correlación; `acousticResidualRatio` conserva el residuo
 conjunto. Los finales pueden solaparse realmente aunque los comienzos sean
 estrictamente crecientes. Esos hijos no se insertan en `transcript.segments`,
 cuyo contrato conserva frases sin solapamiento. La alineación expande una copia
-revalidada, conserva los tiempos medidos como evidencia y propone el compás
-siguiente para principales e indicaciones reconocidas. Las cuentas mantienen
-su instante medido. No presenta correlación como confianza ASR
-de los hijos. Las sugerencias musicales añaden la fuente
+revalidada y propone el compás siguiente sólo para las principales. Las
+indicaciones reconocidas y las cuentas mantienen su instante medido exacto.
+No presenta correlación como confianza ASR de los hijos. Las sugerencias
+musicales añaden la fuente
 `known-guide-recording`; el padre permanece disponible para revisión.
 
 La evidencia es opcional en la caché de esquema 2 y está acotada a ocho puntos,
@@ -245,8 +256,9 @@ invalida la entrega al panel; no confirma secciones.
 
 ### Preparar el modelo una vez
 
-En el flujo nativo `Sugerir secciones`, si falta el modelo local se ofrece
-`Descargar y continuar`. Esa acción explícita prepara el modelo una vez mediante
+En el flujo nativo `Detectar secciones`, si falta el modelo local se pide
+autorización mediante una tarjeta compacta con `Descargar modelo` y `Ahora no`.
+La primera acción prepara el modelo una vez mediante
 `GuideModelProvisioner`, con progreso y cancelación en un worker; no bloquea el
 hilo de interfaz. La descarga es únicamente un GET del asset fijado: no lee ni
 sube la guía, los stems o el proyecto. Después se puede transcribir sin red.
@@ -288,6 +300,11 @@ y [puntero Git LFS del modelo fijado](https://huggingface.co/ggerganov/whisper.c
 `alignGuideSections(transcript, options)` devuelve `GuideAlignmentDraft`, con
 cuadrícula y propuestas transitorias; no modifica `ImportedSongData`, BPM,
 mapa de tempo ni el arreglo confirmado.
+El contrato activo de interpretación/alineación se identifica como
+`sections-mvp-11-count-word-boundaries`: principales al compás siguiente,
+indicaciones en su inicio hablado y cuentas sin desplazamiento. Los anuncios
+sin resolución suficiente quedan como puntos pendientes para elegir una
+marca del catálogo, sin crear un bloque principal desconocido.
 `makeInitialGuideAlignmentOptions(transcript, musicalContext)` toma el comienzo
 del primer fragmento hablado como candidato a `originSeconds`, incluso si ese
 fragmento es un conteo, y puede refinar su fase mediante las cuentas realmente
@@ -324,9 +341,9 @@ hasta la duración. Admite hasta 250000 marcas; exceder el límite devuelve un
 error y elimina la cuadrícula parcial. Un mapa inválido, desordenado o
 superpuesto se rechaza. No se sustituyen metadatos inválidos por tempo supuesto.
 
-La propuesta automática de una sección principal o indicación reconocida se
-ubica en el compás siguiente al que contiene el anuncio. No equivale a sumar
-una duración completa de compás a una voz que empieza a mitad del compás.
+La propuesta automática de una sección principal se ubica en el compás
+siguiente al que contiene el anuncio. No equivale a sumar una duración
+completa de compás a una voz que empieza a mitad del compás.
 No hay selector de cero/dos compases; los ajustes explícitos de
 origen y arrastre de una marca siguen disponibles en la revisión visual.
 Antes de clasificarlo se ajusta únicamente el ancla de cálculo a la frontera
@@ -336,19 +353,21 @@ original no cambia. Así, un anuncio situado 10 ms antes de una línea se
 considera sobre esa línea y la anticipación de uno propone la siguiente. Esto
 es una elección revisable, no una medición de la anticipación real de la voz.
 Una sección fuera del rango o que no deje al menos 0,25 s produce un error de
-revisión; una indicación requiere un punto posterior dentro de la duración
-fuente. No se retrocede a un compás anterior ni se recorta el destino para
-hacerlo caber. El error impide confirmar la revisión completa. El resto del
+revisión. Una indicación válida requiere su inicio hablado dentro de la
+duración fuente, sin buscar un compás posterior. No se retrocede a un compás
+anterior ni se recorta el destino de una principal para hacerlo caber. El
+error impide confirmar la revisión completa. El resto del
 borrador permanece visible para ajustar el origen. El inicio hablado original,
 desplazamiento y anticipación resultante permanecen en la propuesta.
 
-Los destinos ausentes se identifican por anuncio en
+Los destinos musicales ausentes de las principales se identifican por anuncio en
 `GuideAlignmentDraft::timingIssues`, un vector de `GuideEntryTimingIssue`
 con `id`, `rawText`, `rawTimeSeconds` y `secondary`. `canReviewGuideAlignment`
 distingue esos problemas corregibles de los errores estructurales del
-borrador. Una indicación tardía puede moverse con `moveGuideSecondaryCue` o
-descartarse con `discardGuideSecondaryCue`: cada operación resuelve sólo el
-problema de ese ID y conserva los restantes. La UI reaplica movimientos y
+borrador. Una indicación cuyo inicio hablado es válido no genera una incidencia
+por falta de un compás posterior, aunque esté cerca del final. Los helpers
+`moveGuideSecondaryCue` y `discardGuideSecondaryCue` conservan los gestos por ID
+y cualquier incidencia restante de otros anuncios. La UI reaplica movimientos y
 descartes por ID al reconstruir, antes de validar el error final. La aceptación
 atómica rechaza cualquier `timingIssues` pendiente aunque se haya vaciado
 manualmente el texto de `error`; borrar el aviso no valida un destino ausente.
@@ -379,14 +398,13 @@ después de aplicar una confirmación válida; cancelar no escribe correcciones.
 El store usa formato versionado y reemplazo atómico; un archivo inválido o de
 versión desconocida no se sobrescribe. Las anotaciones fusionadas ambiguas
 no enseñan equivalencias a partir de una única corrección de nombre.
-Las variantes nuevas de una sola palabra pueden proponer una familia con
-distancia de edición uno y separación suficiente respecto de las demás.
-Se presentan como `Posible <sección>`, con confianza baja; los empates y las
-frases largas permanecen desconocidos. Confirmar esa propuesta enseña la
-equivalencia local; descartarla o cancelarla no escribe nada. Las alternativas
-ASR se conservan y las reparaciones acústicas de la interpretación no modifican
-el selector acústico. Los alias ordinarios del catálogo sí participan en su
-prior léxico acotado y requieren una nueva versión del proveedor al cambiar.
+Las variantes próximas a una familia pueden ordenar opciones de revisión,
+pero un candidato tentativo no crea una sección. Queda en
+`pendingAnnouncements` y requiere elección explícita o descarte. Las
+alternativas ASR se conservan y las reparaciones de interpretación no
+reescriben el texto elegido por el decoder. Los alias ordinarios del catálogo
+sí participan en su prior léxico acotado y requieren una nueva versión del
+proveedor al cambiar.
 
 `interpretGuideAnnouncement` clasifica primero conteos e indicaciones y luego
 secciones, con la misma ruta en la alineación nativa y la evaluación del corpus.
@@ -397,7 +415,11 @@ frases largas ni cambian el texto, tiempos, confianza o identidad ASR.
 La revisión de MI TESTIMONIO añade `Balsa`→Break (Pausa) y
 `Entra a batería`→Drums In como anuncios completos; conservan su instante
 hablado como evidencia y no crean un límite musical. Su destino propuesto
-sigue la política de entrada de las indicaciones secundarias.
+coincide con ese inicio hablado, salvo una corrección visual explícita.
+Las equivalencias específicas de intensidad ensayadas durante la revisión de
+ALABA en el contrato 9 se retiraron. La resolución usa alternativas tipadas,
+evidencia acústica del catálogo o una elección explícita de revisión, sin una
+tabla de errores añadida para esa canción.
 `Adlib`, `Subetono`, `Teclados`, `Pulsos` y `Coros` se resuelven como variantes
 ordinarias del catálogo; las vocales acentuadas mayúsculas y descompuestas se
 normalizan también, incluido `Última vez`. La frase errónea que enumeraba
@@ -407,19 +429,36 @@ Sin esa evidencia, queda pendiente de revisión. Estas adaptaciones proceden
 del informe humano; la aplicación no importa el HTML ni sus respuestas al
 almacén de aprendizaje local.
 
-Un texto desconocido se conserva como `Revisar: <texto>` para poder corregirlo;
-no se descarta por un error de reconocimiento. Los conteos puros y las
-indicaciones de utilidad se excluyen como límites de sección: por ejemplo,
-una entrada de instrumento o una indicación de intensidad no divide la canción.
-Su clasificación usa `isGuideUtilityCue` y el catálogo compartido, también para
-sus alias en inglés. No se deducen Intro o Final de silencios o de la posición.
+`guideCatalogEntries()` genera el conjunto cerrado desde `GuideVocabulary.h`:
+17 familias y sus ordinales permitidos, 26 utilidades, utilidades literales
+declaradas y cuentas 1–7. `guideCatalogChoices` ordena todas las opciones por
+evidencia. `interpretGuideAnnouncement` puede usar alternativas ordinarias
+ES/EN para resolver cualquiera de los tres roles, con las mismas puertas de
+voz: puntuación finita entre −1,2 y 0, no-voz entre 0 y 0,4 y diferencia máxima
+de 0,2 respecto del texto seleccionado. Alternativas débiles, similitud de
+texto y alternativas condicionadas por gramática sólo ordenan opciones con
+`supported=false`; su ranking no es confianza de reconocimiento.
+
+Un desconocido, compuesto sin resolver, candidato tentativo o principal con
+tipo/ordinal fuera del catálogo se conserva en `pendingAnnouncements`, con
+ID, texto crudo, rango fuente y candidatos. La onda lo muestra como un punto
+**Elegir marca**, sin dividir la canción. `chooseGuideCatalogMark` exige una
+entrada canónica y aplica el tiempo de su rol: próxima entrada de compás sólo
+para principales; inicio fuente para indicaciones o cuentas. Las elecciones
+se guardan por ID en `GuideAlignmentOptions::catalogueSelections` y se
+reaplican al mover el origen, junto a ediciones manuales y descartes.
+`discardGuidePendingAnnouncement` retira únicamente ese anuncio. Confirmar
+queda bloqueado mientras haya pendientes, aun si el texto de error está
+vacío. No se deducen Intro o Final de silencios o de la posición. Véase
+[CatalogueRecognition.md](CatalogueRecognition.md).
 
 Las indicaciones reconocidas se conservan además como `secondaryCues` en el
 borrador. `normalizeGuideUtilityCue` devuelve su nombre canónico de guía
 (`Drums In`, `All In`, `Build`, `Breakdown`, etc.), el texto original, su
 tiempo hablado y la confianza ASR opcional. `rawTimeSeconds` retiene ese
-tiempo; `timeSeconds` es la entrada musical propuesta en el compás siguiente,
-o su corrección visual explícita. No equivale a convertirlas en
+tiempo; `timeSeconds` empieza exactamente en ese mismo instante, o en su
+corrección visual explícita. No se cuantiza ni retrasa al compás siguiente.
+No equivale a convertirlas en
 secciones musicales: cada una es un punto independiente y no cambia los
 límites ni la numeración de las propuestas principales. Los conteos se
 distinguen con `isGuideCountCue` y también se conservan en `secondaryCues`.
@@ -427,18 +466,23 @@ distinguen con `isGuideCountCue` y también se conservan en `secondaryCues`.
 inglés o dígitos del 1 al 7 en su clave numérica nativa. Conserva exactamente
 el texto, tiempo y confianza originales. Cada anuncio es un punto individual:
 dos «dos» en tiempos distintos son dos marcas, sin añadir un «uno» ausente.
-Una frase de conteo compuesta o genérica, o fuera del rango de grabaciones,
-permanece como una sola marca con su texto literal para revisión. Sin tiempos
-por palabra no se inventan subdivisiones de esa frase.
+Una frase de conteo compuesta o genérica sin resolución temporal suficiente,
+o fuera del rango de marcas, permanece como un punto pendiente con su texto
+literal para elegir o descartar. Sin tiempos por palabra o evidencia acústica
+no se inventan subdivisiones ni se guarda un cue ajeno al catálogo.
 
 Una cuenta compuesta con intervalos de palabras admite propuestas individuales
 sólo para los números explícitos del 1 al 7, mínimo dos y máximo ocho. Puede
 precederla una etiqueta exacta sin variantes numeradas, como Intro. El texto
 por palabra debe reproducir todo el padre y cada cuenta necesita suficiente
-evidencia y **un único pulso de la cuadrícula dentro de su intervalo**; los
-pulsos deben avanzar y quedar antes del final de la fuente. Si falta un pulso,
-hay más de uno, o falla cualquier palabra, se conserva todo el compuesto para
-revisión. No se completan secuencias ni se reparten palabras uniformemente.
+confianza. La primera opción es el único pulso dentro de cada intervalo, en
+orden creciente y antes del final de la fuente. Si falla esa asignación,
+los números consecutivos pueden recuperarse como grupo. Se requiere al menos
+una palabra con un único pulso exacto y una sola secuencia contigua compatible
+con todas las palabras. Para un intervalo sin pulso se admite una distancia de
+hasta 5 ms (medio paso del reloj de Whisper), dentro del rango del anuncio. Un
+intervalo con dos pulsos exige que al menos uno quede a 5 ms o menos de su
+borde. Una ambigüedad mayor o la falta de intervalos deja el grupo en revisión.
 El padre permanece en la transcripción; su etiqueta usa el instante y la
 identidad originales. `rawTimeSeconds` de estas cuentas es el límite inferior
 del intervalo ASR y `timeSeconds` es el pulso propuesto, sin presentarlo como
@@ -447,9 +491,9 @@ de la evidencia; los cambios manuales y descartes se reaplican por ID estable.
 Renombrar la etiqueta recuperada nunca enseña el compuesto entero como alias.
 
 Los conteos individuales conservan el comienzo hablado en segundos fuente.
-Las instrucciones reconocidas usan el destino de compás posterior: cambiar
-el origen recalcula sus posiciones propuestas, conservando el tiempo hablado
-original. Las correcciones manuales de posición se reaplican por ID estable.
+Las instrucciones reconocidas también conservan exactamente ese comienzo:
+cambiar el origen no mueve ninguno de esos puntos medidos. Las correcciones
+manuales de posición se reaplican por ID estable.
 `moveGuideSecondaryCue` permite ajustar una sola indicación al pulso más cercano
 de la cuadrícula o libremente con Alt. Conserva el tiempo ASR original y rechaza
 tiempos no finitos o fuera de la duración fuente. Los nombres y posiciones
@@ -1036,7 +1080,13 @@ fronteras principales ni arreglos del usuario. Véase
 [GuideRapidRecognition.md](GuideRapidRecognition.md) para procedencia, revisión
 humana del informe anterior, reproducción y límites de las voces conocidas.
 
-### Alineación revisada tras Glorioso Día
+### Histórico: Glorioso Día y contrato 8 de entrada musical — 4 de noviembre
+
+La regla de indicaciones al compás siguiente descrita en este apartado y en
+su replay de contrato 2 fue reemplazada el 5 de noviembre por
+`sections-mvp-9-secondary-spoken-timing`. Se conserva la evidencia anterior;
+sus resultados no describen el tiempo activo de las indicaciones. El
+refinamiento de fase y la regla de las principales sí continúan vigentes.
 
 El arreglo guardado de Glorioso Día (110 BPM, 4/4) permitió reproducir los
 19 destinos principales con el origen inicial ASR de 0,020 s. Los inicios
@@ -1045,10 +1095,10 @@ fuera de la tolerancia de 20 ms; por ello la propuesta quedaba en esa misma
 frontera. Guía Dyn anticipaba después un compás desde esa entrada ya
 adelantada. Las seis cuentas mantenían sus tiempos correctos.
 
-El refinamiento de fase inicial conserva el margen de frontera de 20 ms y usa
-consenso temporal de las cuentas, sin moverlas. Las cuatro indicaciones
-reconocidas tienen ahora un destino musical posterior independiente del
-instante hablado; siguen siendo cues y no dividen la canción. El scheduler
+El refinamiento de fase inicial conservó el margen de frontera de 20 ms y usó
+consenso temporal de las cuentas, sin moverlas. En este contrato histórico,
+las cuatro indicaciones reconocidas recibieron un destino musical posterior
+independiente del instante hablado; seguían siendo cues sin dividir la canción. El scheduler
 existente anuncia las principales una sola vez un compás antes de su entrada
 y reproduce cada cue en su punto confirmado.
 
@@ -1063,13 +1113,13 @@ nuevas y para los casos ambiguos o sin consenso.
 El probe admite `--require-cache-hit 1` para comprobar la alineación sin una
 nueva inferencia. Esta opción exige una entrada válida de la caché y rechaza
 su ausencia antes de llamar al decoder; no basta con comprobar `cacheHit`
-después de ejecutar Whisper. El replay de los 54 audios debe conservar sus
-referencias históricas y producir una evaluación separada del contrato nuevo,
-en el que 43 indicaciones usan la entrada musical posterior. Ese replay
-evalúa alineación a partir del ASR guardado; no acredita reconocimiento de voz
+después de ejecutar Whisper. El replay histórico de los 54 audios conservó
+sus referencias anteriores y produjo una evaluación separada del contrato 2,
+en el que 43 indicaciones usaban la entrada musical posterior. Ese replay
+evaluó alineación a partir del ASR guardado; no acredita reconocimiento de voz
 nuevo ni sustituye la evidencia histórica de inferencia con caché vacía.
 
-#### Evidencia final del ajuste
+#### Evidencia histórica del contrato 8 y replay de contrato 2
 
 La compilación final de app y probes terminó con código 0
 (`/tmp/pw-glorioso-musical-entry-final-build.log`),
@@ -1082,8 +1132,8 @@ permanecieron idénticos. No hubo escrituras al arreglo guardado. El informe,
 salida nativa y verificación están en
 `output/glorioso-dia-entry-fix-20261104/`.
 
-El replay nativo de los dos conjuntos conserva **54/54 casos, 205/205 marcas
-y cero extras** bajo el contrato nuevo de entrada musical. Las 43 referencias
+El replay nativo de los dos conjuntos conservó **54/54 casos, 205/205 marcas
+y cero extras** bajo aquel contrato de entrada musical. Las 43 referencias
 de instrucciones se congelaron en su nueva versión antes de ejecutar; las
 **77 cuentas y 85 principales** conservan exactamente sus eventos y posiciones
 anteriores con los orígenes explícitos de cada escenario. Se reutilizó la
@@ -1096,3 +1146,74 @@ La captura `secondary-entry-native.png` de la comprobación del componente
 nativo usa una fixture de VI LA LUZ para mostrar la indicación en su entrada
 propuesta. No representa una confirmación ni un guardado de Glorioso Día
 en la app del usuario.
+
+### Histórico: tiempo hablado y reparaciones locales de ALABA — contrato 9
+
+Las reparaciones de texto específicas de intensidad descritas en este
+apartado fueron retiradas en el contrato 10 de catálogo cerrado. Se conservan
+el diagnóstico y sus resultados como evidencia histórica; no describen la
+resolución automática activa de esas frases. La política temporal de
+indicaciones al inicio hablado sí sigue vigente.
+
+En ALABA (127 BPM), Drums In tenía un inicio ASR de **191,800 s**. La regla
+del contrato 8 proponía **192,755906 s**, un retraso de **0,955906 s**, cercano
+a dos negras. El anuncio `Submit intensity.` comenzaba en **195,580 s**, pero
+quedaba como una principal desconocida con entrada alrededor de **196,535 s**.
+
+El contrato 9 mantiene Drums In exactamente en 191,800 s y clasifica el anuncio
+completo de intensidad como Build, una indicación secundaria en 195,580 s.
+También reconoce `Summit intensity` como la misma corrección semántica. La
+transcripción ASR original y su evidencia no cambian. Las principales
+conservan el compás siguiente y la tolerancia de frontera de 20 ms; el
+refinamiento de origen de Glorioso Día y los tiempos de cuentas se conservan.
+
+La compilación final de app y probes terminó con código 0 en
+`/tmp/pw-alaba-secondary-timing-build.log`; la firma estricta se verificó y
+las **8/8 suites nativas** pasaron en **12,39 s**, según
+`/tmp/pw-alaba-secondary-timing-ctest.log`.
+
+La comprobación nativa de ALABA usó sólo la caché válida, sin ejecutar el
+decoder. Las **27 principales restantes** conservaron sus nombres e inicios;
+las **siete indicaciones** coincidieron exactamente con sus onsets hablados.
+`Submit intensity.` dejó de crear la principal desconocida número 28 y pasó
+a Build en 195,580 s. Se preservaron identidad y posición de los **tres
+puntos de cuenta** reales: uno permanece como el compuesto literal
+`uno, dos, tres, cuatro.`. Esta corrección no inventa tiempos de cuentas
+individuales para ese compuesto. El ASR crudo, los archivos de fuente y el
+arreglo guardado permanecieron intactos. La evidencia está en
+`output/alaba-secondary-fix-20261105/Informe.md` y `verification.json` de esa
+carpeta.
+
+El replay de alineación desde las transcripciones congeladas del proveedor 10
+alcanzó **54/54 casos, 205/205 marcas y cero extras**. Esta vez las **205
+referencias y los eventos reales** coinciden exactamente con los originales
+de `run-003` y `run-010`: 77 cuentas, 85 principales y 43 indicaciones en su
+tiempo hablado, sin referencias nuevas ni modificadas. No se ejecutó ASR
+nuevo ni se alteraron los WAV, JSON o cachés originales. Los orígenes
+explícitos de los escenarios siguen separados del ajuste inicial del editor.
+El informe es `output/guide-secondary-spoken-20261105/Informe.md`.
+
+Estas comprobaciones no confirman sugerencias ni corrigen automáticamente
+los datos ya guardados. La adaptación se aplica al generar una nueva revisión
+y requiere su confirmación habitual. Tampoco acreditan nueva escucha humana
+ni una nueva ejecución de la app. Los resultados del contrato 8 permanecen
+como evidencia histórica separada.
+
+### Incremento de catálogo cerrado — 5 de noviembre
+
+`sections-mvp-10-catalogue-review` y el proveedor 11 separan evidencia
+automática y elección explícita. Unknowns y compuestos aún no resueltos no
+añaden principales desconocidas; las opciones débiles o condicionadas por
+gramática tampoco autorizan esa conversión. El selector usa el catálogo
+compartido completo y conserva la evidencia original. Su implementación y
+límites se documentan en [CatalogueRecognition.md](CatalogueRecognition.md).
+
+La validación nueva del proveedor 11 aprobó 8/8 suites nativas, 54/54
+escenarios con 205/205 marcas y cero pendientes, y 121/121 anuncios del
+corpus conocido. ALABA conserva una cuenta agrupada pendiente y recupera
+Build por evidencia física. El control ajeno al catálogo permanece pendiente
+sin una principal arbitraria. Detalles y límites están en el documento
+enlazado y en `output/closed-catalogue-20261105/Informe.md`.
+Se compiló y verificó la firma local; no se reinició la app ni se modificaron
+arreglos guardados. La revisión y confirmación de canciones no quedan
+acreditadas por esas comprobaciones.

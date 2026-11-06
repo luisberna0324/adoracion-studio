@@ -4,7 +4,7 @@ title: Detección asistida de secciones
 description: Propuestas locales revisables sobre el editor de arrange existente
 resource: src/analysis/SectionDetectionService.h
 tags: [audio, sections, macos, analysis, offline, whisper]
-timestamp: 2026-11-04
+timestamp: 2026-11-06
 ---
 
 # Detectar secciones
@@ -109,9 +109,9 @@ Referencias: [Music Understanding](https://developer.apple.com/documentation/mus
 [MusicUnderstandingSession](https://developer.apple.com/documentation/musicunderstanding/musicunderstandingsession),
 [StructureResult](https://developer.apple.com/documentation/musicunderstanding/structureresult).
 
-## Sugerir secciones sobre la onda
+## Detectar secciones sobre la onda
 
-La entrada principal es **Sugerir secciones** en el modo Editar de la onda.
+La entrada principal es **Detectar secciones** en el modo Editar de la onda.
 El editor presenta un modal centrado que cubre la aplicación y llama explícitamente
 `SectionDetectionPanel::beginSuggestionFlow()`: si hay una única pista Guía,
 backend y modelo locales, empieza el análisis sin otro clic. Construir el
@@ -129,10 +129,11 @@ El progreso numérico corresponde al worker real. Sin una fracción disponible,
 la barra es indeterminada. El fondo atenuado bloquea acciones sobre el editor.
 Escape solicita la misma cancelación que el botón; **Cancelando…** conserva
 el modal hasta que el worker responde, sin bloquear el message thread.
-Ante error o cancelación vuelve a la configuración de la tarjeta para corregir
-y reintentar o cerrar. Descargar sigue requiriendo una acción explícita.
+Ante error o cancelación de la descarga vuelve a la tarjeta compacta para
+reintentar o cerrar. Los errores del análisis permiten revisar la pista y
+reintentar desde la configuración.
 
-**Modelo de voz…** selecciona un archivo local. Inicialmente se propone
+La configuración avanzada **Modelo de voz…** selecciona un archivo local. Inicialmente se propone
 `defaultWhisperGuideModelFile()`; en macOS corresponde a
 `~/Library/MTControls/models/ggml-base-q5_1.bin`. El selector de idioma presenta
 primero **Español e inglés**, seleccionado por defecto (`es-en`, ID 3). El inicio
@@ -145,9 +146,13 @@ ruta no prueba su validez: el proveedor valida al ejecutar y los errores se
 muestran sin modificar el arreglo. El selector manual se conserva como opción
 avanzada; no hace falta buscar un archivo para comenzar con el modelo habitual.
 
-Si el modelo falta, se informa de la descarga única de unos **57 MiB** y se
-ofrece **Descargar y continuar**. Se requiere ese clic explícito; abrir la entrada
-no descarga. `GuideModelProvisioner` realiza GET del modelo fijado en un worker,
+Si el modelo falta y hay una única guía, la tarjeta compacta pregunta
+**¿Descargar el modelo para detectar las secciones?** e indica la descarga única
+de unos **57 MiB**. Muestra **Descargar modelo** y **Ahora no**. La configuración
+de pistas, idioma y archivo queda oculta en ese paso. **Ahora no** cierra el
+modal; **Descargar modelo** autoriza la descarga y muestra su barra de progreso
+con **Cancelar**. El diagnóstico independiente conserva **Descargar y continuar**.
+`GuideModelProvisioner` realiza GET del modelo fijado en un worker,
 comprueba tamaño y SHA-256, guarda mediante temporal y reemplazo atómico, y borra
 el temporal ante error/cancelación. Reutiliza el modelo correcto existente sin
 red y no reemplaza un archivo existente inválido. Los tests pueden inyectar la
@@ -184,6 +189,9 @@ No se aplica ningún resultado automáticamente.
 
 La revisión interpreta correcciones conocidas de reconocimiento, como
 «For a frame»→Refrain, y conserva el texto original en la evidencia del análisis.
+Los anuncios completos «Submit intensity.» y «Summit intensity» se interpretan
+como Build en las indicaciones secundarias; no crean una sección principal ni
+modifican el texto literal entregado por Whisper.
 Los nombres corregidos se guardan como equivalencias locales al confirmar
 el arreglo y se reutilizan al volver a analizar; cancelar no enseña cambios.
 Renombrar a una sección del catálogo actualiza su significado y número de
@@ -203,13 +211,13 @@ Las entradas de instrumentos y cambios de intensidad se presentan como
 inferior de la misma onda. Siguen el estilo de las indicaciones nativas y no
 dividen Verso/Coro ni ocupan el espacio de una sección completa. Se pueden
 arrastrar al pulso (Alt para posición libre), renombrar con doble clic y
-descartar desde el menú contextual. El punto propone su entrada musical en
-el compás siguiente al anuncio, conservando el tiempo de voz original como
-evidencia. No se desplazan las cuentas junto con estas indicaciones.
+descartar desde el menú contextual. El punto coincide exactamente con el
+inicio hablado, conservado también como evidencia. No se cuantiza al compás
+siguiente ni se mueve al modificar el origen de las secciones.
 Si la guía agrupa `Interludio, toda la banda`, ambos anuncios se separan por
 sus pausas y se reconocen individualmente antes de pintar las marcas.
 Interludio mantiene su entrada en el compás siguiente y Toda la banda es un
-punto independiente con su propio destino de compás posterior. Si la separación
+punto independiente en su inicio hablado. Si la separación
 no tiene evidencia suficiente, el texto completo queda para revisión en lugar de
 absorber la instrucción dentro del nombre musical.
 
@@ -226,14 +234,16 @@ Se pueden ajustar, renombrar o descartar con los mismos gestos. Las frases
 compuestas sin evidencia suficiente siguen visibles como una marca literal
 revisable. Si los intervalos ASR por palabra contienen cada uno un único pulso
 de la cuadrícula, se proponen sólo los números reconocidos en esos pulsos.
-Los intervalos son aproximados; no se usan sus inicios como ataques de voz
-exactos ni se completan números ausentes. Si un intervalo contiene cero o
-varios pulsos se conserva el compuesto para revisión.
+Los intervalos son aproximados. Si las fronteras de palabra dejan dudas por
+hasta 5 ms, una cuenta consecutiva puede mostrarse por pulsos cuando al menos
+una palabra tenga un pulso único dentro de su intervalo y el conjunto permita
+una sola asignación contigua. Si faltan intervalos o persiste la ambigüedad,
+el grupo queda pendiente en la onda.
 
-Cambiar el origen recalcula las secciones principales, las indicaciones
-reconocidas y las propuestas que dependen de intervalos de palabra; los conteos
-individuales medidos conservan su instante. Se reaplican las correcciones de nombre/posición y los descartes
-de las secundarias.
+Cambiar el origen recalcula las secciones principales y las propuestas que
+dependen de intervalos de palabra; las indicaciones reconocidas y los conteos
+individuales medidos conservan su instante exacto. Se reaplican las
+correcciones de nombre/posición y los descartes de las secundarias.
 **Confirmar** incorpora ambas clases de sugerencia en una sola operación de
 arrange, con un solo Deshacer; **Cancelar** no aplica ninguna. También puede
 confirmarse una revisión que contenga únicamente indicaciones secundarias.
@@ -294,7 +304,7 @@ filas anterior se mantiene para resultados estructurales/diagnóstico Apple.
 
 `GuideAlignmentDraft` contiene la cuadrícula y propuestas, junto con BPM,
 compás, mapa de tempo y origen del primer compás. La propuesta automática de
-una sección principal o indicación reconocida usa el compás siguiente al que
+una sección principal usa el compás siguiente al que
 contiene su anuncio: no se ofrece un selector de cero o dos compases. La
 cuadrícula se muestra con marcas pequeñas de pulsos y compases,
 integradas en el estilo y controles de la onda. Su regla reutiliza
@@ -328,19 +338,21 @@ Así, a 120 BPM en 4/4, un anuncio en 3,985 s se considera en la línea de 4 s
 y propone la entrada en 6 s. Fuera de esa tolerancia se conserva el compás
 que contiene realmente el inicio hablado. Se usa el mapa de tempo y métrica,
 no una duración global de compás. Las indicaciones como «Base»→Bass y
-«Swin»→Swell conservan el tiempo original y muestran el punto de entrada
-propuesto. Los conteos como «Thor»→4 conservan su instante medido, sin recibir
-el desplazamiento de las secciones o instrucciones.
-Si no existe una entrada posterior válida al final del audio, se indica un
-error para revisar el origen, conservando las demás sugerencias y bloqueando
+«Swin»→Swell se muestran exactamente en su tiempo hablado. Los conteos como
+«Thor»→4 conservan igualmente su instante medido. Sólo las principales reciben
+el desplazamiento musical de compás.
+Si no existe una entrada posterior válida para una principal al final del
+audio, se indica un error para revisar el origen, conservando las demás sugerencias y bloqueando
 la confirmación completa. No se vuelve al compás del anuncio para hacer caber
-una sección o indicación al final del audio.
+una sección al final del audio. Una indicación con inicio válido cerca del
+final conserva ese punto sin exigir otra línea de compás.
 
 Las incidencias de tiempo conservan el ID y la voz original en
 `GuideAlignmentDraft::timingIssues`. `canReviewGuideAlignment` permite revisar
-ese borrador sin tratarlo como un error estructural. Se puede mover una
-indicación tardía o descartarla por ID; cada gesto elimina sólo su incidencia
-y mantiene las demás. Al recalcular el origen se reaplican los movimientos y
+ese borrador sin tratarlo como un error estructural. Los gestos de mover o
+descartar una indicación actúan por ID y mantienen las incidencias de otros
+anuncios. El cálculo activo no genera una incidencia secundaria por falta de
+compás posterior. Al recalcular el origen se reaplican los movimientos y
 descartes antes de validar el resultado. Confirmar sigue bloqueado mientras
 quede cualquier incidencia, incluso si el texto visible de error está vacío.
 
@@ -353,14 +365,39 @@ Debe respetar IDs de ocurrencia, límites válidos, duración mínima y seccione
 existentes protegidas. No altera el mapa de tempo persistido para hacer encajar
 las propuestas ni acredita sincronización de click sin compararla con el audio.
 
-El cierre de esta corrección compiló app y probes, verificó la firma estricta
-y pasó 8/8 suites nativas en 11,88 s. Glorioso Día se validó con el cálculo
+El cierre histórico del contrato 8, el 4 de noviembre, compiló app y probes,
+verificó la firma estricta y pasó 8/8 suites nativas en 11,88 s. Glorioso Día se validó con el cálculo
 nativo y la caché existente: 19 secciones, cuatro indicaciones y seis cuentas
 coincidentes, sin mover cuentas ni escribir el arreglo. El replay separado de
-54 escenarios conserva las 205 marcas y cero extras con las 43 instrucciones
-en su nuevo destino musical. Es validación de alineación sin ASR nuevo.
+54 escenarios conservó las 205 marcas y cero extras con las 43 instrucciones
+en su destino de compás posterior. Es evidencia del contrato histórico 2 del
+replay, reemplazado para instrucciones por
+`sections-mvp-9-secondary-spoken-timing` el 5 de noviembre; no valida el tiempo
+activo de esas indicaciones. Es validación de alineación sin ASR nuevo.
 La captura `secondary-entry-native.png` corresponde a una fixture nativa de
 VI LA LUZ; no prueba un guardado ni una revisión manual de Glorioso Día.
+
+La revisión de ALABA motivó el regreso de las indicaciones a su tiempo
+hablado: Drums In en 191,800 s quedaba en 192,755906 s al buscar el siguiente
+compás. Build, reconocido desde «Submit intensity.», debe ser una marca
+secundaria en 195,580 s. Las principales mantienen su regla musical y las
+cuentas no se desplazan.
+
+El cierre del contrato 9 compiló app y probes, verificó la firma estricta y
+pasó **8/8 suites en 12,39 s**. El cálculo nativo de ALABA desde caché válida
+conservó nombres e inicios de las 27 principales restantes, colocó las siete
+indicaciones exactamente en su inicio hablado y preservó los tres puntos de
+cuenta. Uno sigue siendo la frase literal `uno, dos, tres, cuatro.`; no se
+presenta como cuatro tiempos individuales nuevos. El texto ASR y el arreglo
+guardado permanecieron intactos. El replay de 54 escenarios conserva las 205
+referencias y eventos originales exactos, con cero extras y sin nuevo ASR.
+Los informes se conservan en `output/alaba-secondary-fix-20261105/` y
+`output/guide-secondary-spoken-20261105/`.
+
+El usuario puede generar una nueva revisión y confirmarla mediante los
+controles existentes. El cambio de cálculo no borra ni reescribe automáticamente
+las sugerencias ya guardadas. La comprobación nativa no acredita una nueva
+escucha humana, una confirmación visual en ALABA ni una ejecución nueva de la app.
 
 Confirmar usa la aceptación atómica y el historial de arreglo existentes que
 se describen debajo: una sola operación de undo revierte la confirmación.

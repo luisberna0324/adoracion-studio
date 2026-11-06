@@ -129,6 +129,8 @@ public:
       std::function<void()> accept, std::function<void()> cancel);
   void setGuideAlignmentError(juce::String);
   void setOnGuideAlignmentRename(std::function<void(juce::String, juce::String)>);
+  void setOnGuideCatalogSelection(std::function<void(juce::String,
+      playworship::analysis::GuideCatalogChoice)>);
   void setOnGuideAlignmentRemove(std::function<void(const juce::String &)>);
   void setOnGuideSecondaryCueMove(std::function<void(const juce::String &, double, bool)>);
   SongArrangementSnapshot getArrangementSnapshot() const { return arrangement; }
@@ -392,6 +394,7 @@ private:
   std::function<void(const juce::String &, double, bool)> onGuideBoundaryMoved;
   std::function<void()> onGuideAlignmentAccept, onGuideAlignmentCancel;
   std::function<void(juce::String, juce::String)> onGuideAlignmentRename;
+  std::function<void(juce::String, playworship::analysis::GuideCatalogChoice)> onGuideCatalogSelection;
   std::function<void(const juce::String &)> onGuideAlignmentRemove;
   std::function<void(const juce::String &, double, bool)> onGuideSecondaryCueMove;
   juce::Label guideAlignmentLabel;
@@ -404,6 +407,7 @@ private:
     float x = 0.0f;
     bool secondary = false;
     juce::Point<float> point;
+    bool pending = false;
   };
   std::vector<GuideAlignmentMarkerBounds> guideAlignmentMarkers;
   juce::Rectangle<float> guideOriginPill, guideOriginHit;
@@ -421,6 +425,11 @@ private:
   float guideAlignmentTimeX(double) const;
   void beginGuideAlignmentRename(const juce::String &);
   void finishGuideAlignmentRename(bool);
+  using GuideCatalogMenuItems = std::vector<std::pair<int, playworship::analysis::GuideCatalogChoice>>;
+  juce::PopupMenu buildGuideCatalogMenu(const juce::String &, GuideCatalogMenuItems &) const;
+  void showGuideCatalogPicker(const juce::String &);
+  void dispatchGuideCatalogSelection(const juce::String &,
+      const playworship::analysis::GuideCatalogChoice &);
   std::function<void()> onCloudSettingsSyncRequested;
   std::function<void(juce::Rectangle<int>)>
       onCloudSettingsVersionsRequested;

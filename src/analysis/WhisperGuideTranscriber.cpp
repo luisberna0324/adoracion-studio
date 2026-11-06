@@ -15,6 +15,7 @@
 #if defined(PLAYWORSHIP_WHISPER_GUIDE) && PLAYWORSHIP_WHISPER_GUIDE
 #include <whisper.h>
 #endif
+#include "GuideCatalogueGrammar.h"
 
 namespace playworship::analysis {
 namespace {
@@ -28,7 +29,7 @@ constexpr int minimumActiveFrames = 4;        // Reject short isolated clicks.
 constexpr int maximumUtteranceFrames = 1000;  // Bounded PCM: at most 20 seconds.
 // Candidate selection uses the shared catalog as a lexical prior. Expanding
 // that vocabulary invalidates earlier recognition even with the same prompt.
-constexpr const char *algorithmVersion = "guide-energy-sinc16k-beam5-prompt128-bilingual-10-acoustic-compounds";
+constexpr const char *algorithmVersion = "guide-energy-sinc16k-beam5-prompt128-bilingual-12-recognition-states";
 
 bool isCancelled(const CancellationCheck &cancelled) { return cancelled && cancelled(); }
 
@@ -239,12 +240,13 @@ public:
     recent.reserve(preRollFrames * frameSamples); utterance.reserve(maximumUtteranceFrames * frameSamples);
     juce::int64 utteranceStart = 0, speechStart = 0, speechEnd = 0;
     int silenceFrames = 0, activeFrames = 0;
+    GuideCatalogueGrammar catalogueGrammar;
 
     const auto decodeWindow = [&](const std::vector<float> &pcm,
         double windowStart, double observedStart, double observedEnd,
         double progressBase, double progressAmount,
         std::optional<GuideTranscriptSegment> &selected, bool wordTimings = false,
-        const juce::String &timingLanguage = {}) -> bool {
+        const juce::String &timingLanguage = {}, bool catalogueConstrained = false) -> bool {
       selected.reset();
       if (cancelledNow()) return false;
       const std::vector<juce::String> languages = wordTimings && timingLanguage.isNotEmpty()
@@ -283,6 +285,12 @@ public:
         params.greedy.best_of = 1; params.beam_search.beam_size = 5; params.max_tokens = 64;
         params.suppress_blank = true; params.suppress_nst = true;
         params.no_speech_thold = 0.6f;
+        if (catalogueConstrained) {
+          params.grammar_rules = catalogueGrammar.rulesData();
+          params.n_grammar_rules = catalogueGrammar.size();
+          params.i_start_rule = 0;
+          params.grammar_penalty = 100.0f;
+        }
         params.encoder_begin_callback = [](whisper_context *, whisper_state *, void *data) {
           return !isCancelled(static_cast<InferenceCallbacks *>(data)->cancelled);
         };
@@ -375,8 +383,10 @@ public:
       return true;
     };
 
-    const auto locateKnownCompound = [&](GuideTranscriptSegment &parent, double windowStart) -> bool {
-      if (!guideAcousticCompoundPhrases(parent.text) || acousticPackIdentity.isEmpty()) return true;
+    const auto locateKnownAnnouncement = [&](GuideTranscriptSegment &parent, double windowStart) -> bool {
+      const bool compound = guideAcousticCompoundPhrases(parent.text).has_value();
+      const bool atomic = !compound && guideAcousticAtomicCandidate(parent);
+      if ((!compound && !atomic) || acousticPackIdentity.isEmpty()) return true;
       if (cancelledNow()) return false;
       if (!acousticTemplatesAttempted) {
         acousticTemplatesAttempted = true;
@@ -385,8 +395,9 @@ public:
         if (cancelledNow()) return false;
       }
       if (acousticTemplates.fingerprint != acousticPackIdentity || acousticTemplates.templates.empty()) return true;
-      const auto located = matchKnownGuideCompound(utterance, request.offsetSeconds + windowStart,
-          parent, acousticTemplates, cancelled);
+      const auto located = compound
+          ? matchKnownGuideCompound(utterance, request.offsetSeconds + windowStart, parent, acousticTemplates, cancelled)
+          : matchKnownGuideAtomic(utterance, request.offsetSeconds + windowStart, parent, acousticTemplates, cancelled);
       if (located.cancelled || cancelledNow()) { error = "Cancelado"; return false; }
       if (located.announcements.empty()) return true;
       auto candidate = parent;
@@ -416,7 +427,24 @@ public:
       // ordinary directive never gets split merely because its words pause.
       if (!decodeWindow(utterance, windowStart, double(speechStart) / analysisRate,
           double(speechEnd) / analysisRate, progressBase, progressAmount * 0.4, selected)) return false;
-      if (selected && !locateKnownCompound(*selected, windowStart)) return false;
+      if (selected && !locateKnownAnnouncement(*selected, windowStart)) return false;
+      if (selected && selected->acousticAnnouncements.empty() && guideAcousticAtomicCandidate(*selected)) {
+        // A single bounded catalogue retry contributes separate hypotheses.
+        // Its probabilities are grammar-conditioned, not independent physical
+        // proof and never replace the original two unconstrained ASR passes.
+        std::optional<GuideTranscriptSegment> constrained;
+        if (!decodeWindow(utterance, windowStart, double(speechStart) / analysisRate,
+            double(speechEnd) / analysisRate, progressBase + progressAmount * .4,
+            progressAmount * .1, constrained, false, {}, true)) return false;
+        if (constrained) for (const auto &candidate : constrained->alternatives) {
+          if (selected->catalogueAlternatives.size() >= 2) break;
+          if (isGuideCatalogueUtterance(candidate.text) &&
+              std::isfinite(candidate.avgLogProbability) && candidate.avgLogProbability >= -1.2 &&
+              candidate.avgLogProbability <= 0.0 && std::isfinite(candidate.noSpeechProbability) &&
+              candidate.noSpeechProbability >= 0.0 && candidate.noSpeechProbability <= .4)
+            selected->catalogueAlternatives.push_back(candidate);
+        }
+      }
       if (selected && !selected->acousticAnnouncements.empty()) {
         // Preserve ASR literally; known recordings supply independent source
         // onsets, including actual overlaps and physically verified omissions.
