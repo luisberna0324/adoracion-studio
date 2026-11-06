@@ -346,8 +346,12 @@ detenido y estacionado exactamente en `Fin`. La UI diferencia este estado de
 un stop manual —que retorna a `Inicio`— y, si la canción tiene configurado
 auto-play dentro del setlist activo, carga el destino y llama `playSong()`.
 La marca se persiste como `SetlistItem.transitionToNext.autoPlay`: significa
-exclusivamente «al terminar este item, reproducir el item inmediatamente
-siguiente». No busca otra canción marcada ni salta posiciones intermedias; el
+«reproducir el item inmediatamente siguiente». Sin crossfade espera a Fin;
+con `transitionToNext.crossfade` la UI prepara el destino cuando quedan los
+segundos configurados en `AppSettings::getSongCrossfadeSeconds()`. El fundido
+real empieza sólo después de restaurar el destino y se acorta si la preparación
+consumió parte de la cola saliente. Ver `ui/SongCrossfade.md` y el contrato de
+transporte para restricciones del renderer de salida inicial. No busca otra canción marcada ni salta posiciones intermedias; el
 último item nunca puede tener una transición activa. Por tanto sobrevive al
 reinicio de la aplicación y continúa siendo una propiedad local del setlist,
 no del proyecto `.pwproj`.

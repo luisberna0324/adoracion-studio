@@ -1024,6 +1024,21 @@ SongListPanel::SongListPanel() {
       return;
     refreshFromStorage();
   });
+  listContent.setOnCrossfadeNextToggled([this](int songIndex) {
+    if (!juce::isPositiveAndBelow(songIndex, static_cast<int>(activeSongIndices.size()))) return;
+    const int libraryIndex = activeSongIndices[static_cast<size_t>(songIndex)];
+    if (!juce::isPositiveAndBelow(libraryIndex, static_cast<int>(librarySongs.size()))) return;
+    const auto songId = librarySongs[static_cast<size_t>(libraryIndex)].id;
+    const auto key = makeAutoPlayNextMarkKey(activeSetlistId, songId);
+    if (key.isEmpty()) return;
+    const bool enabled = !crossfadeNextMarks.contains(key);
+    if (remoteLibrary) {
+      auto *value = new juce::DynamicObject(); value->setProperty("songId", songId); value->setProperty("enabled", enabled);
+      if (onRemoteAction) onRemoteAction("setlist.crossfade", juce::var(value), activeSetlistId);
+      return;
+    }
+    if (SongLibraryStore::setCrossfadeNextForSetlist(activeSetlistId, songId, enabled)) refreshFromStorage();
+  });
   listContent.setOnSongRemoveRequested([this](int songIndex) {
     if (activeSetlistId.isEmpty())
       return;
@@ -1232,6 +1247,19 @@ bool SongListPanel::isAutoPlayNextEnabledForSong(
     const juce::String &songId) const {
   const auto key = makeAutoPlayNextMarkKey(activeSetlistId, songId);
   return key.isNotEmpty() && autoPlayNextMarks.contains(key);
+}
+
+bool SongListPanel::isCrossfadeNextEnabledForSong(const juce::String &songId) const {
+  const auto setlist = std::find_if(playbackLibrary.setlists.begin(), playbackLibrary.setlists.end(),
+      [this](const SetlistData &candidate) { return candidate.id == playbackLibrary.activeSetlistId; });
+  if (setlist == playbackLibrary.setlists.end()) return false;
+  const auto current = std::find_if(setlist->items.begin(), setlist->items.end(),
+      [&songId](const SetlistItem &candidate) { return candidate.songId == songId; });
+  return current != setlist->items.end() && current->transitionToNext.autoPlay && current->transitionToNext.crossfade;
+}
+
+std::optional<ImportedSongData> SongListPanel::getCrossfadeNextSong(const juce::String &currentSongId) const {
+  return isCrossfadeNextEnabledForSong(currentSongId) ? getAutoPlayNextSong(currentSongId) : std::nullopt;
 }
 
 int SongListPanel::resolveAutoPlayNextIndex(
@@ -2266,6 +2294,10 @@ void SongListPanel::ListContent::setOnDragStateChanged(
   onDragStateChanged = std::move(cb);
 }
 
+void SongListPanel::ListContent::setOnCrossfadeNextToggled(std::function<void(int)> cb) {
+  onCrossfadeNextToggled = std::move(cb);
+}
+
 void SongListPanel::ListContent::setOnAutoPlayNextToggled(
     std::function<void(int)> cb) {
   onAutoPlayNextToggled = std::move(cb);
@@ -2455,7 +2487,8 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
     const auto detail = (rowData.key.isNotEmpty() ? rowData.key : "-") + u8" • " +
                         (rowData.bpm > 0 ? TempoValue::formatBpm(rowData.bpm) : "--") +
                         " BPM" + u8" • " + juce::String(rowData.stemCount) + " stems" +
-                        u8" • " + formatDurationMMSS(rowData.durationSeconds);
+                        u8" • " + formatDurationMMSS(rowData.durationSeconds)
+                        + (rowData.crossfadeNext ? juce::String(u8" • Crossfade") : juce::String{});
     g.drawFittedText(detail, metaRect, juce::Justification::centredLeft, 1);
 
     const bool uploadInProgress = rowData.cloudUploadFraction >= 0.0;
@@ -2873,8 +2906,9 @@ std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuFo
 
   class SongActionsPopover final : public juce::Component {
   public:
-    SongActionsPopover(bool autoPlayEnabled, bool hasNextSong,
+    SongActionsPopover(bool autoPlayEnabled, bool crossfadeEnabled, bool hasNextSong,
                        std::function<void()> onToggleFn,
+                       std::function<void()> onCrossfadeFn,
                        std::function<void()> onRemoveFn,
                        std::function<void()> onLyricsFn)
         : toggleChip(!hasNextSong
@@ -2887,12 +2921,20 @@ std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuFo
                                 : L10n::tr("Reproducir siguiente al terminar",
                                            "Play next when finished")),
                      SvgIconName::SkipForward, autoPlayEnabled, false),
+          crossfadeChip((crossfadeEnabled ? L10n::tr("Quitar crossfade", "Disable crossfade") : L10n::tr("Crossfade a la siguiente", "Crossfade to next"))
+                            + " (" + juce::String(AppSettings::getSongCrossfadeSeconds(), 0) + " s)",
+                        SvgIconName::FadeOut, crossfadeEnabled, false),
           removeChip(L10n::tr("Quitar del setlist", "Remove from setlist"),
                      SvgIconName::Trash, false, true),
           lyricsChip(L10n::tr("Letra", "Lyrics"), SvgIconName::Pencil, false, false),
-          onToggle(std::move(onToggleFn)), onRemove(std::move(onRemoveFn)),
+          onToggle(std::move(onToggleFn)), onCrossfade(std::move(onCrossfadeFn)), onRemove(std::move(onRemoveFn)),
           onLyrics(std::move(onLyricsFn)) {
       toggleChip.setEnabled(hasNextSong);
+      crossfadeChip.setEnabled(hasNextSong);
+      crossfadeChip.onClick = [this] {
+        if (onCrossfade) onCrossfade();
+        closeSelf();
+      };
       toggleChip.onClick = [this] {
         if (onToggle)
           onToggle();
@@ -2909,6 +2951,7 @@ std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuFo
         if (callback) juce::MessageManager::callAsync(std::move(callback));
       };
       addAndMakeVisible(toggleChip);
+      addAndMakeVisible(crossfadeChip);
       addAndMakeVisible(removeChip);
       if (onLyrics) addAndMakeVisible(lyricsChip);
     }
@@ -2931,6 +2974,8 @@ std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuFo
       auto area = getLocalBounds().reduced(10);
       toggleChip.setBounds(area.removeFromTop(34));
       area.removeFromTop(8);
+      crossfadeChip.setBounds(area.removeFromTop(34));
+      area.removeFromTop(8);
       removeChip.setBounds(area.removeFromTop(34));
       if (onLyrics) {
         area.removeFromTop(8);
@@ -2940,9 +2985,11 @@ std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuFo
 
   private:
     ActionChip toggleChip;
+    ActionChip crossfadeChip;
     ActionChip removeChip;
     ActionChip lyricsChip;
     std::function<void()> onToggle;
+    std::function<void()> onCrossfade;
     std::function<void()> onRemove;
     std::function<void()> onLyrics;
 
@@ -2962,12 +3009,17 @@ std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuFo
   auto safeThis = juce::Component::SafePointer<ListContent>(this);
   auto panel = std::make_unique<SongActionsPopover>(
       autoPlayEnabled,
+      songs[static_cast<size_t>(rowIndex)].crossfadeNext,
       rowIndex + 1 < static_cast<int>(songs.size()),
       [safeThis, songIndex] {
         if (safeThis == nullptr)
           return;
         if (safeThis->onAutoPlayNextToggled)
           safeThis->onAutoPlayNextToggled(songIndex);
+      },
+      [safeThis, songIndex] {
+        if (safeThis != nullptr && safeThis->onCrossfadeNextToggled)
+          safeThis->onCrossfadeNextToggled(songIndex);
       },
       [safeThis, songIndex] {
         if (safeThis == nullptr)
@@ -2980,7 +3032,7 @@ std::unique_ptr<juce::Component> SongListPanel::ListContent::createActionsMenuFo
             safeThis->onSongLyricsRequested)
           safeThis->onSongLyricsRequested(lyricsSongId);
       }) : std::function<void()>{});
-  panel->setSize(240, showLyrics ? 138 : 96);
+  panel->setSize(300, showLyrics ? 180 : 138);
 
   return panel;
 }
@@ -4581,11 +4633,14 @@ void SongListPanel::refreshFromStorage() {
   if (activeSetlist != nullptr)
     activeSetlistName = activeSetlist->name;
   autoPlayNextMarks.clear();
+  crossfadeNextMarks.clear();
   if (activeSetlist != nullptr) {
     for (const auto &item : activeSetlist->items) {
       if (item.transitionToNext.autoPlay)
         autoPlayNextMarks.addIfNotAlreadyThere(
             makeAutoPlayNextMarkKey(activeSetlistId, item.songId));
+      if (item.transitionToNext.autoPlay && item.transitionToNext.crossfade)
+        crossfadeNextMarks.addIfNotAlreadyThere(makeAutoPlayNextMarkKey(activeSetlistId, item.songId));
     }
   }
   applyInitialViewFromStorage();
@@ -4662,6 +4717,7 @@ void SongListPanel::refreshFromStorage() {
                   songAccentFromId(song.id),
                   -1.0,
                   {}};
+      row.crossfadeNext = crossfadeNextMarks.contains(autoPlayKey);
       if (const auto indicator = cloudUploadIndicators.find(song.id.toStdString());
           indicator != cloudUploadIndicators.end()) {
         row.cloudUploadFraction = indicator->second.fraction;

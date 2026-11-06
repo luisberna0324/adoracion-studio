@@ -4,6 +4,8 @@ set(MTCONTROLS_ASSET_FILES
         assets/logoPlayWorship.jpeg
         assets/pwLogoSinFondo.png
         assets/auth/google-g.png
+        assets/integrations/freeshow-logo.png
+        assets/integrations/holyrics-logo.png
         assets/demo/LuzDeEsperanza.pwproj
         assets/fonts/InterRegular.ttf
         assets/fonts/InterMedium.ttf

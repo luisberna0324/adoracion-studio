@@ -10,6 +10,7 @@ struct ConnectionSettings
     juce::String host = "127.0.0.1";
     int port = 5506;
     juce::String authToken; // Memory only. Never serialize this value.
+    juce::String provider = "freeshow";
 };
 struct ConnectionStatus
 {

@@ -212,6 +212,8 @@ private:
   std::optional<ProjectDocument> preparedProjectForNextSongLoad;
   std::function<void(int, bool)> loadSongByIndexAction;
   bool wasSongPlaying = false;
+  bool crossfadeRequestedForSongLoad = false;
+  juce::String crossfadeAttemptSongId;
   juce::File pendingExternalProjectFile;
   struct SessionSummary {
     juce::String uid;

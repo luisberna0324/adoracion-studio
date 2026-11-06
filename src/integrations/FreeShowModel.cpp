@@ -21,6 +21,7 @@ bool number(const juce::var& v) { return integer(v) || v.isDouble(); }
 juce::var targetVar(const Target& t)
 {
     auto v = object();
+    put(v, "provider", t.provider);
     put(v, "hide", t.hide); put(v, "showId", t.showId); put(v, "layoutId", t.layoutId);
     put(v, "groupId", t.groupId); put(v, "slideId", t.slideId); put(v, "occurrence", t.occurrence);
     put(v, "layoutSignature", t.layoutSignature); put(v, "title", t.title); put(v, "text", t.text);
@@ -30,6 +31,8 @@ juce::var targetVar(const Target& t)
 bool readTarget(const juce::var& v, Target& t)
 {
     if (!v.isObject() || !v.getProperty("hide", {}).isBool()) return false;
+    t.provider = v.getProperty("provider", "freeshow").toString();
+    if (t.provider != "freeshow" && t.provider != "holyrics") return false;
     t.hide = (bool) v.getProperty("hide", false);
     if (v.hasProperty("useActiveLayout") && !v.getProperty("useActiveLayout", {}).isBool()) return false;
     t.useActiveLayout = (bool) v.getProperty("useActiveLayout", false);
@@ -84,7 +87,9 @@ juce::var unwrapResponse(const juce::var& v)
 }
 juce::var toVar(const SongLyrics& song)
 {
-    auto v = object(); put(v, "version", 1); put(v, "enabled", song.enabled);
+    const bool hasHolyrics = song.provider == "holyrics" || std::any_of(song.marks.begin(), song.marks.end(), [](const auto& mark) { return mark.target.provider == "holyrics"; });
+    auto v = object(); put(v, "version", hasHolyrics ? 2 : 1); put(v, "enabled", song.enabled);
+    put(v, "provider", song.provider);
     put(v, "showId", song.showId); put(v, "showName", song.showName);
     put(v, "layoutId", song.layoutId); put(v, "layoutName", song.layoutName);
     juce::Array<juce::var> marks;
@@ -99,9 +104,12 @@ bool fromVar(const juce::var& v, SongLyrics& out, juce::String* error)
 {
     const auto fail = [&] { if (error) *error = juce::String::fromUTF8("Marcas de letra inválidas; se conservaron los datos anteriores"); return false; };
     if (v.isVoid() || v.isUndefined()) { out = {}; if (error) error->clear(); return true; }
-    if (!v.isObject() || !integer(v.getProperty("version", {})) || (juce::int64) v.getProperty("version", {}) != 1
+    if (!v.isObject() || !integer(v.getProperty("version", {})) || ((juce::int64) v.getProperty("version", {}) != 1 && (juce::int64) v.getProperty("version", {}) != 2)
         || !v.getProperty("enabled", {}).isBool()) return fail();
     SongLyrics song; song.enabled = (bool) v.getProperty("enabled", false);
+    song.provider = v.getProperty("provider", "freeshow").toString();
+    if (song.provider != "freeshow" && song.provider != "holyrics") return fail();
+    if ((juce::int64) v.getProperty("version", {}) == 1 && song.provider != "freeshow") return fail();
     if (!textField(v, "showId", song.showId, false, 512) || !textField(v, "showName", song.showName)
         || !textField(v, "layoutId", song.layoutId, false, 512) || !textField(v, "layoutName", song.layoutName)) return fail();
     const auto marksValue = v.getProperty("marks", {});
@@ -115,6 +123,7 @@ bool fromVar(const juce::var& v, SongLyrics& out, juce::String* error)
         if (!value.isObject() || !textField(value, "id", mark.id, true, 512) || !seen.insert(mark.id).second
             || !number(time) || !std::isfinite((double) time) || (double) time < 0.0 || (double) time > 604800.0
             || !value.getProperty("enabled", {}).isBool() || !readTarget(value.getProperty("target", {}), mark.target)) return fail();
+        if ((juce::int64) v.getProperty("version", {}) == 1 && (song.provider == "holyrics" || mark.target.provider == "holyrics")) return fail();
         mark.seconds = (double) time; mark.enabled = (bool) value.getProperty("enabled", true);
         song.marks.push_back(std::move(mark));
     }
@@ -237,6 +246,7 @@ ShowCatalog parseShow(const juce::String& showId, const juce::var& response, con
 }
 Resolution resolve(const Target& target, const ShowCatalog& catalog)
 {
+    if (target.provider != catalog.provider) return {false, 0, "El destino pertenece a otro programa de letras"};
     if (target.hide) return {true, 0, {}};
     if (!catalog.ok() || target.showId != catalog.id) return {false, 0, "Show no disponible; revisar destino"};
     if (target.useActiveLayout)

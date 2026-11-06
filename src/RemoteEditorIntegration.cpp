@@ -630,6 +630,7 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
         auto e = object(); e.getDynamicObject()->setProperty("id", entry.itemId);
         e.getDynamicObject()->setProperty("songId", entry.songId);
         e.getDynamicObject()->setProperty("autoPlay", entry.transitionToNext.autoPlay);
+        e.getDynamicObject()->setProperty("crossfade", entry.transitionToNext.crossfade);
         songIds.add(e);
       }
       item.getDynamicObject()->setProperty("items", juce::var(songIds));
@@ -915,6 +916,8 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
       ok = SongLibraryStore::moveSongInSetlist(target, static_cast<int>(value[0]), static_cast<int>(value[1]));
     else if (action == "setlist.autoplay" && property(value,"enabled").isBool())
       ok = SongLibraryStore::setAutoPlayNextForSetlist(target, stringProperty(value,"songId"), static_cast<bool>(property(value,"enabled")));
+    else if (action == "setlist.crossfade" && property(value,"enabled").isBool())
+      ok = SongLibraryStore::setCrossfadeNextForSetlist(target, stringProperty(value,"songId"), static_cast<bool>(property(value,"enabled")));
     if (ok && songListPanelRaw) songListPanelRaw->refreshFromStorageView();
     if (!ok) error = "Invalid setlist action";
     return ok;

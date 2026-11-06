@@ -1,4 +1,5 @@
 #include "integrations/FreeShowClient.h"
+#include "integrations/HolyricsModel.h"
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -128,6 +129,50 @@ template<class Predicate> bool until(Predicate p, int timeout = 4000)
     while (std::chrono::steady_clock::now() < deadline) { if (p()) return true; std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
     return p();
 }
+void holyricsContracts()
+{
+    const auto fixture = juce::JSON::parse(R"({"status":"ok","data":{"id":"song-1","title":"Cancion demo","order":"1,2,1","slides":[{"text":"Primera linea","slide_description":"Verso"},{"text":"Segunda linea","slide_description":"Coro"}]}})");
+    auto catalog = parseHolyricsSong("song-1", fixture);
+    expect(catalog.ok() && catalog.provider == "holyrics", "Holyrics catalogue parses without projection");
+    expect(catalog.groups.size() == 2 && catalog.layouts[0].slides.size() == 3, "Holyrics preserves slide order and repetitions");
+    const auto target = catalog.layouts[0].slides[2].target;
+    expect(target.occurrence == 2 && resolve(target, catalog).absoluteIndex == 3, "Repeated slide resolves exact appearance");
+    auto changed = fixture.clone();
+    changed.getDynamicObject()->getProperty("data").getDynamicObject()->setProperty("order", "2,1");
+    expect(!resolve(target, parseHolyricsSong("song-1", changed)).valid, "Changed Holyrics order cannot silently project a different slide");
+    SongLyrics song; song.provider = "holyrics"; song.showId = "song-1";
+    song.marks.push_back({"cue", 1.25, true, target});
+    SongLyrics restored;
+    expect(fromVar(toVar(song), restored) && restored.provider == "holyrics" && restored.marks[0].target.provider == "holyrics", "Provider identity round-trips through portable project model");
+    auto wrong = target; wrong.provider = "freeshow";
+    expect(!resolve(wrong, catalog).valid, "FreeShow targets cannot resolve in Holyrics");
+    std::atomic<int> sends{0};
+    std::atomic<bool> oldHolyrics{false};
+    FreeShowClient client([&](const ConnectionSettings& settings, const juce::var& request) {
+        expect(settings.provider == "holyrics", "Requests use configured Holyrics provider");
+        const auto name = request.getProperty("action", {}).toString();
+        if (name == "GetSongs") return HttpResponse{200, juce::JSON::parse(R"({"status":"ok","data":[{"id":"song-1","title":"Demo"}]})"), {}};
+        if (name == "GetLyrics") return HttpResponse{200, fixture, {}};
+        if (name == "GetVersion") return HttpResponse{200, juce::JSON::parse(oldHolyrics ? R"({"status":"ok","data":{"version":"2.20.0"}})" : R"({"status":"ok","data":{"version":"2.23.0"}})"), {}};
+        if (name == "ShowLyrics") {
+            expect(request.getProperty("id", {}).toString() == "song-1" && static_cast<int>(request.getProperty("initial_index", -1)) == 2, "Holyrics command uses song ID and zero-based exact index");
+            ++sends; return HttpResponse{200, juce::JSON::parse(R"({"status":"ok"})"), {}};
+        }
+        if (name == "GetCurrentPresentation") return HttpResponse{200, juce::JSON::parse(R"({"status":"ok","data":{"type":"song","song_id":"song-1","slide_type":"default","slide_number":3}})"), {}};
+        return HttpResponse{400, {}, "unexpected action"};
+    });
+    ConnectionSettings settings; settings.provider = "holyrics"; settings.port = 8091;
+    client.configure(settings); client.testConnection();
+    expect(until([&] { return client.getStatus().state == ConnectionStatus::State::connected; }), "Read-only Holyrics probe connects");
+    expect(sends == 0, "Connection never projects a slide");
+    client.queueTarget(wrong); client.queueTarget(target);
+    expect(until([&] { return client.getStatus().outputConfirmed; }) && sends == 1, "Worker confirms Holyrics exact output and rejects foreign targets");
+    oldHolyrics = true; client.queueTarget(target);
+    expect(until([&] { return client.getStatus().message.contains("2.23.0"); }) && sends == 1,
+           "Older Holyrics cannot silently ignore the requested slide index");
+    client.disconnect();
+}
+
 void clientContracts()
 {
     const auto catalog = parseShow("test-show", fixture());
@@ -300,6 +345,26 @@ void directHttpContracts()
         expect(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(2500), "read deadline is bounded independently of peer close");
     }
 }
+void holyricsHttpContracts()
+{
+    std::atomic<bool> correct{false};
+    LoopbackHttpFixture server([&](const std::string& wire) {
+        correct = wire.find("POST /api/GetSongs?token=local%26test HTTP/1.1") != std::string::npos
+            && wire.find("Authorization: Bearer") == std::string::npos
+            && wire.find("\"fields\"") != std::string::npos;
+        const std::string body = R"({"status":"ok","data":[]})";
+        return std::string("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ") + std::to_string(body.size()) + "\r\n\r\n" + body;
+    });
+    FreeShowClient client;
+    ConnectionSettings settings; settings.provider = "holyrics"; settings.host = "127.0.0.1";
+    settings.port = server.port; settings.authToken = "local&test";
+    client.configure(settings);
+    std::promise<bool> completion; auto result = completion.get_future();
+    client.testConnection([&](bool ok, juce::String) { completion.set_value(ok); });
+    expect(result.wait_for(std::chrono::seconds(3)) == std::future_status::ready && result.get() && correct,
+           "Holyrics LAN sends official API path, escaped session token and JSON fields without a proxy");
+}
+
 void activeLayoutSafety()
 {
     const auto initial = parseShow("test-show", fixture());
@@ -417,7 +482,7 @@ int main(int argc, char** argv)
 {
     try
     {
-        modelContracts(); settingsContracts(); clientContracts(); activeLayoutSafety(); alternateBlankSafety(); directHttpContracts();
+        modelContracts(); settingsContracts(); holyricsContracts(); holyricsHttpContracts(); clientContracts(); activeLayoutSafety(); alternateBlankSafety(); directHttpContracts();
         if (argc >= 3 && juce::String(argv[1]) == "--real") realIntegration(argv[2], argc > 3 ? juce::String(argv[3]).getIntValue() : 5506);
         std::cout << "FreeShow protocol, identity, persistence and worker tests passed\n"; return 0;
     }

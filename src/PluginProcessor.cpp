@@ -1,3 +1,4 @@
+#include "data/IntegrationTokenStore.h"
 #include "AppIdentity.h"
 #include "PluginProcessor.h"
 #include "audio/MidiBindingTrigger.h"
@@ -214,8 +215,11 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playworship::telemetry::initialize();
 #if !JUCE_IOS && !JUCE_ANDROID
-  const auto freeShowEndpoint = AppSettings::getFreeShowEndpoint();
-  playworship::lyrics::ConnectionSettings freeShowSettings{freeShowEndpoint.host, freeShowEndpoint.port, {}};
+  const auto lyricsProvider = AppSettings::getLyricsProvider();
+  const auto freeShowEndpoint = lyricsProvider == "holyrics" ? AppSettings::getHolyricsEndpoint() : AppSettings::getFreeShowEndpoint();
+  playworship::lyrics::ConnectionSettings freeShowSettings{freeShowEndpoint.host, freeShowEndpoint.port,
+      IntegrationTokenStore::load(lyricsProvider, freeShowEndpoint.host, freeShowEndpoint.port)};
+  freeShowSettings.provider = lyricsProvider;
   if (playworship::lyrics::FreeShowClient::validateSettings(freeShowSettings))
     freeShowClient.configure(std::move(freeShowSettings));
 #endif
@@ -318,6 +322,7 @@ MTControlsAudioProcessor::~MTControlsAudioProcessor() {
     timeProcessorMaintenanceThread->removeTimeSliceClient(this);
     timeProcessorMaintenanceThread.reset();
   }
+  outgoingSongCrossfade.clear();
   stemTracks.clear();
   for (auto &worker : stemReadThreads)
     worker->stopThread(3000);
@@ -327,12 +332,15 @@ MTControlsAudioProcessor::~MTControlsAudioProcessor() {
 
 void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
                                              int samplesPerBlock) {
+  cancelSongCrossfade();
+  songCrossfadePhase.store(0, std::memory_order_release);
+  pauseTimeProcessorMaintenance();
+  outgoingSongCrossfade.clear();
   diagnosticEngineGeneration.fetch_add(1, std::memory_order_relaxed);
   diagnosticMarkerGeneration.store(0, std::memory_order_relaxed);
   distortionSnapshotDecimator = 0;
   diagnosticMasterSignalState.reset();
   diagnosticOutputSignalState.reset();
-  pauseTimeProcessorMaintenance();
   const int realtimeBlockCapacity =
       juce::jmax(samplesPerBlock, maxRealtimeBlockSize);
   juce::dsp::ProcessSpec spec;
@@ -341,8 +349,9 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   spec.numChannels = static_cast<juce::uint32>(getTotalNumOutputChannels());
   gain.prepare(spec);
   gain.setRampDurationSeconds(0.02);
+  outgoingSongCrossfade.prepare(realtimeBlockCapacity, getTotalNumOutputChannels(), sampleRate);
   dryMixBuffer.setSize(getTotalNumOutputChannels(), realtimeBlockCapacity);
-  mixEngine.prepare(sampleRate, realtimeBlockCapacity,
+  songDsp->mixEngine.prepare(sampleRate, realtimeBlockCapacity,
                     getTotalNumOutputChannels());
   stemRoutingInputBuffer.setSize(2, (realtimeBlockCapacity * 2) + 8);
   stemRoutingTempStorage.setSize(2, realtimeBlockCapacity);
@@ -428,9 +437,12 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
 }
 
 void MTControlsAudioProcessor::releaseResources() {
+  cancelSongCrossfade();
+  songCrossfadePhase.store(0, std::memory_order_release);
   pauseTimeProcessorMaintenance();
+  outgoingSongCrossfade.clear();
   diagnostics.stopBackgroundLogger();
-  mixEngine.releaseResources();
+  songDsp->mixEngine.releaseResources();
   releaseRoutingTimeProcessors();
   padsEngine.releaseResources();
   metronome.reset();
@@ -450,45 +462,45 @@ void MTControlsAudioProcessor::prepareRoutingTimeProcessors(
   const int capacity = juce::jmax(1, maxBlockFrames);
   for (int i = 0; i < count; ++i) {
     const auto index = static_cast<size_t>(i);
-    auto &processor = stemPitchProcessors[index];
+    auto &processor = songDsp->pitchProcessors[index];
     processor.prepare(sampleRate, capacity, 2);
     processor.setContentType(stemContentTypeForPitchShiftable(
         stemPitchShiftStates[index].load(std::memory_order_relaxed)));
     processor.setPitchSemiTones(pitchActiveSemiTones);
     processor.setTempoRatio(playbackTempoRatioActive);
-    stemPitchDelayLines[index].prepare(2, kMaxRoutingPitchLatencySamples);
-    stemPitchDelayLines[index].setDelay(0);
+    songDsp->delayLines[index].prepare(2, kMaxRoutingPitchLatencySamples);
+    songDsp->delayLines[index].setDelay(0);
   }
-  preparedRoutingProcessorCount.store(count, std::memory_order_release);
+  songDsp->preparedCount.store(count, std::memory_order_release);
 }
 
 void MTControlsAudioProcessor::releaseRoutingTimeProcessors(
     const int retainedStemCount) {
   const int retained = juce::jlimit(0, maxStemCount, retainedStemCount);
-  const int previous = preparedRoutingProcessorCount.load(
+  const int previous = songDsp->preparedCount.load(
       std::memory_order_acquire);
   for (int i = retained; i < previous; ++i) {
     const auto index = static_cast<size_t>(i);
-    stemPitchProcessors[index].releaseResources();
-    stemPitchDelayLines[index].releaseResources();
+    songDsp->pitchProcessors[index].releaseResources();
+    songDsp->delayLines[index].releaseResources();
   }
   if (retained < previous)
-    preparedRoutingProcessorCount.store(retained,
+    songDsp->preparedCount.store(retained,
                                         std::memory_order_release);
 }
 
 void MTControlsAudioProcessor::flushRoutingTimeProcessors() noexcept {
   const int count =
-      preparedRoutingProcessorCount.load(std::memory_order_acquire);
+      songDsp->preparedCount.load(std::memory_order_acquire);
   for (int i = 0; i < count; ++i) {
-    stemPitchProcessors[static_cast<size_t>(i)].reset();
-    stemPitchDelayLines[static_cast<size_t>(i)].reset();
+    songDsp->pitchProcessors[static_cast<size_t>(i)].reset();
+    songDsp->delayLines[static_cast<size_t>(i)].reset();
   }
   routingPitchLatencySamples = 0;
 }
 
 void MTControlsAudioProcessor::flushAllTimeProcessingState() noexcept {
-  mixEngine.reset();
+  songDsp->mixEngine.reset();
   flushRoutingTimeProcessors();
 }
 
@@ -514,16 +526,18 @@ int MTControlsAudioProcessor::useTimeSlice() {
   if (!timeProcessorMaintenanceEnabled.load(std::memory_order_acquire))
     return 20;
 
-  int rebuilt = mixEngine.servicePendingProcessorRebuilds();
+  int rebuilt = songDsp->mixEngine.servicePendingProcessorRebuilds();
   const int count =
-      preparedRoutingProcessorCount.load(std::memory_order_acquire);
+      songDsp->preparedCount.load(std::memory_order_acquire);
   for (int i = 0; i < count; ++i) {
-    rebuilt += stemPitchProcessors[static_cast<size_t>(i)]
+    rebuilt += songDsp->pitchProcessors[static_cast<size_t>(i)]
                    .servicePendingRebuild()
                    ? 1
                    : 0;
   }
 
+  const int crossfadePhase = songCrossfadePhase.load(std::memory_order_acquire);
+  if (crossfadePhase == 2 || crossfadePhase == 3) rebuilt += outgoingSongCrossfade.servicePendingRebuilds();
   return rebuilt > 0 ? 0 : 5;
 }
 
@@ -554,6 +568,59 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     buffer.clear();
     return;
   }
+
+  int captureExpected = 1;
+  if (songCrossfadePhase.compare_exchange_strong(captureExpected, 5, std::memory_order_acq_rel)) {
+    if (songCrossfadeEligible() && outgoingSongCrossfade.empty()) {
+      const float outgoingMaster = masterMuted.load() ? 0.0f
+          : masterVolume.load() * masterGain.load();
+      const auto guideGeneration = dynamicGuideResetGeneration.load(std::memory_order_acquire);
+      if (guideGeneration != dynamicGuideAppliedResetGeneration) {
+        dynamicGuideEngine.reset(); dynamicGuideLatencyDelay.reset(); dynamicGuideAnnouncedByPart.fill(0);
+        dynamicGuideLastBlockStartSec = -1.0; dynamicGuideLastPartIndex = -1; dynamicGuideWasPlaying = false;
+        dynamicGuideAppliedResetGeneration = guideGeneration;
+      }
+      bool anySolo = false;
+      for (int i = 0; i < loadedStemCount.load(); ++i)
+        anySolo = anySolo || stemSoloStates[(size_t)i].load(std::memory_order_relaxed);
+      const bool clickActive = isMetronomeEnabled() && clickDivisionEnabledState.load()
+          && (clickDivisionState.load() & 7) != 0;
+      const bool guideActive = isDynamicGuideEnabled();
+      anySolo = anySolo || (clickActive && metronomeSoloState.load()) || (guideActive && dynamicGuideSoloState.load());
+      playworship::audio::RetainedVirtualBuses::MixSnapshot virtualMix;
+      virtualMix.clickEnabled = clickActive; virtualMix.guideEnabled = guideActive;
+      virtualMix.clickAudible = !isMetronomeMuted() && (!anySolo || metronomeSoloState.load());
+      virtualMix.guideAudible = !isDynamicGuideMuted() && (!anySolo || dynamicGuideSoloState.load());
+      virtualMix.clickVolume = juce::jlimit(0.0f, 1.0f, getMetronomeVolume());
+      virtualMix.clickGain = juce::jlimit(0.0f, 4.0f, getMetronomeGain());
+      virtualMix.guideGain = juce::jlimit(0.0f, 1.0f, getDynamicGuideVolume())
+          * juce::jlimit(0.0f, 2.0f, getDynamicGuideGain());
+      virtualMix.clickChannel = getMetronomeOutputChannel(); virtualMix.clickWidth = getMetronomeOutputWidth();
+      virtualMix.guideChannel = getDynamicGuideOutputChannel(); virtualMix.guideWidth = getDynamicGuideOutputWidth();
+      virtualMix.originalBpm = loadedSongBpm.load(); virtualMix.effectiveBpm = playbackTempoBpm.load();
+      outgoingSongCrossfade.buses().captureRealtimeStateFrom(metronome, dynamicGuideEngine,
+          metronomeLatencyDelay, dynamicGuideLatencyDelay, audioSectionSnapshot,
+          dynamicGuideAnnouncedByPart, virtualMix);
+      outgoingSongCrossfade.capture(stemTracks, songDsp, stemOutputChannels, stemOutputWidths,
+          stemClickGuideStates, stemPitchShiftStates, outgoingMaster, globalSamplePosition.load(),
+          (juce::int64) (songEndSeconds.load() * playbackSampleRate),
+          (juce::int64) (songFadeOutSeconds.load() * playbackSampleRate), pitchActiveSemiTones,
+          playbackTempoRatioActive, routingPitchLatencySamples, playbackSampleRate,
+          tempoTransitionStartRatio, tempoTransitionTargetRatio, tempoTransitionElapsedFrames, tempoTransitionTotalFrames, loadedSongBpm.load());
+      songCrossfadePhase.store(2, std::memory_order_release);
+    } else songCrossfadePhase.store(-1, std::memory_order_release);
+  }
+  const int crossfadePhase = songCrossfadePhase.load(std::memory_order_acquire);
+  if (crossfadePhase == 2) {
+    renderCrossfadeHolding(buffer); return;
+  }
+  if (crossfadePhase == 3 && songCrossfadeCancelled.load(std::memory_order_acquire))
+    songCrossfadePhase.store(4, std::memory_order_release);
+  const bool overlappingSong = songCrossfadePhase.load(std::memory_order_acquire) == 3;
+  float incomingCrossfadeStart = overlappingSong
+      ? juce::jlimit(0.0f, 1.0f, (float) crossfadeElapsedFrames / (float) crossfadeTotalFrames) : 1.0f;
+  float incomingCrossfadeEnd = overlappingSong
+      ? juce::jlimit(0.0f, 1.0f, (float) (crossfadeElapsedFrames + buffer.getNumSamples()) / (float) crossfadeTotalFrames) : 1.0f;
 
   const int64_t blockStartTick = juce::Time::getHighResolutionTicks();
   const bool songLoadedForDiagnostics =
@@ -949,9 +1016,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // at its original BPM can inherit the previous song's stretch ratio,
     // drift from its readers, and repeatedly seek all stems back into sync.
     // Both setters return immediately when their engine value is unchanged.
-    mixEngine.setPitchSemiTones(pitchActiveSemiTones);
-    mixEngine.setTempoRatio(playbackTempoRatioActive);
-    sourceFramesThisBlock = mixEngine.requiredInputFrames(numSamples);
+    songDsp->mixEngine.setPitchSemiTones(pitchActiveSemiTones);
+    songDsp->mixEngine.setTempoRatio(playbackTempoRatioActive);
+    sourceFramesThisBlock = songDsp->mixEngine.requiredInputFrames(numSamples);
 
     const int stemCount = static_cast<int>(stemTracks.size());
     // Apply a control-side seek only after every active stem has the same
@@ -1960,7 +2027,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             stemNeedsTimeProcess[stemIndex] = shouldProcess;
             if (!shouldProcess || routingGroupedEligible)
               continue;
-            auto &proc = stemPitchProcessors[stemIndex];
+            auto &proc = songDsp->pitchProcessors[stemIndex];
             proc.setContentType(
                 stemContentTypeForPitchShiftable(pitchShiftable));
             proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
@@ -1979,7 +2046,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             timeProcessActive && !timeProcessorsReady;
 
         if (timeProcessActive && routingGroupedEligible)
-          targetLatency = mixEngine.getOutputLatencySamples();
+          targetLatency = songDsp->mixEngine.getOutputLatencySamples();
 
         if (targetLatency != routingPitchLatencySamples) {
           routingPitchLatencySamples = targetLatency;
@@ -1990,7 +2057,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           const int desiredDelay =
               juce::jmax(0, routingPitchLatencySamples -
                                 stemProcessLatencies[stemIndex]);
-          auto &delay = stemPitchDelayLines[stemIndex];
+          auto &delay = songDsp->delayLines[stemIndex];
           if (delay.getDelaySamples() != desiredDelay)
             delay.setDelay(desiredDelay);
         }
@@ -2017,7 +2084,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           for (int i = 0; i < stemTimingEvent.stemCount; ++i) {
             const size_t stemIndex = static_cast<size_t>(i);
             const int latency = stemProcessLatencies[stemIndex];
-            const int delay = stemPitchDelayLines[stemIndex].getDelaySamples();
+            const int delay = songDsp->delayLines[stemIndex].getDelaySamples();
             stemTimingEvent.processLatencySamples[stemIndex] =
                 static_cast<int16_t>(
                     juce::jlimit(-32768, 32767, latency));
@@ -2192,7 +2259,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           // Three voices for melodic, percussion and guide buses. On stereo
           // devices the input mix already contains the physical L/R routing;
           // homogeneous multichannel routing is folded after rendering.
-          mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
+          songDsp->mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
                              stemPitchShiftStates.data(), stemCount,
                              sourceFramesThisBlock, numChannels,
                              routingGroupedStereo ? stemOutputChannels.data() : nullptr,
@@ -2215,14 +2282,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           int64_t drStart = juce::Time::getHighResolutionTicks();
           // Always pass the real callback length, even when rendering to the
           // larger scratch storage used by homogeneous multichannel routing.
-          mixEngine.renderToOutput(routingGroupedStereo ? buffer : routingGroupedRenderStorage,
+          songDsp->mixEngine.renderToOutput(routingGroupedStereo ? buffer : routingGroupedRenderStorage,
                                    timeProcessActive, sourceFramesThisBlock, numSamples,
                                    fadeStart, fadeEnd, windowFadeStart,
                                    windowFadeEnd);
           int64_t drEnd = juce::Time::getHighResolutionTicks();
           stageDecodeRenderEndTick += (drEnd - drStart);
-          timeProcessingBlockedThisBlock = mixEngine.wasLastRenderBlocked();
-          stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
+          timeProcessingBlockedThisBlock = songDsp->mixEngine.wasLastRenderBlocked();
+          stemOutputLatencyThisBlock = songDsp->mixEngine.getOutputLatencySamples();
           if (!routingGroupedStereo)
             stemOutputRouter.routeStemToOutputChannels(
                 routingGroupedRenderStorage, routingCommonChannelIndex,
@@ -2235,7 +2302,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             juce::AudioSourceChannelInfo stemInfo(
                 &stemRoutingInputBuffer, 0, routingInputSamples);
             stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(stemInfo);
-            stemPitchDelayLines[static_cast<size_t>(i)].invalidateHistory();
+            songDsp->delayLines[static_cast<size_t>(i)].invalidateHistory();
           }
         } else {
           // ---- Per-stem routing path ------------------------------------
@@ -2250,7 +2317,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               juce::AudioSourceChannelInfo stemInfo(
                   &stemRoutingInputBuffer, 0, routingInputSamples);
               stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
-              auto &proc = stemPitchProcessors[stemIndex];
+              auto &proc = songDsp->pitchProcessors[stemIndex];
               // ---- Benchmark: decode/render (pitch processor) -----------
               int64_t drStartLocal = juce::Time::getHighResolutionTicks();
               proc.process(stemRoutingInputBuffer, routingInputSamples,
@@ -2301,9 +2368,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             // block's prefill may be silent for up to one block
             // (~11ms); that is below the audibility threshold and
             // strictly better than paying the copy cost every block.
-            if (stemPitchDelayLines[stemIndex].isActive()) {
+            if (songDsp->delayLines[stemIndex].isActive()) {
               int64_t dlStart = juce::Time::getHighResolutionTicks();
-              stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
+              songDsp->delayLines[stemIndex].process(stemRoutingTempBuffer);
               int64_t dlEnd = juce::Time::getHighResolutionTicks();
               stageDecodeRenderEndTick += (dlEnd - dlStart);
             }
@@ -2349,7 +2416,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (useSeparatedMix) {
           // ---- Benchmark: mix_stems (separated) ------------------------
           int64_t msStart = juce::Time::getHighResolutionTicks();
-          mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
+          songDsp->mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
                              stemPitchShiftStates.data(), stemCount,
                              sourceFramesThisBlock, numChannels);
           int64_t msEnd = juce::Time::getHighResolutionTicks();
@@ -2357,7 +2424,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           (void)msStart; // start equals preReadEndTick captured above
         } else {
           // ---- Benchmark: mix_stems (direct) ---------------------------
-          mixEngine.renderDirect(stemTracks, stemCount, buffer);
+          songDsp->mixEngine.renderDirect(stemTracks, stemCount, buffer);
           stageMixStemsEndTick = juce::Time::getHighResolutionTicks();
         }
       }
@@ -2486,16 +2553,41 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
     // ---- Benchmark: mix_output (master bus) -----------------------------
     stageMixOutputStartTick = juce::Time::getHighResolutionTicks();
-    mixEngine.renderToOutput(buffer, timeProcessActive, sourceFramesThisBlock, numSamples,
+    songDsp->mixEngine.renderToOutput(buffer, timeProcessActive, sourceFramesThisBlock, numSamples,
                              fadeStart, fadeEnd, windowFadeStart,
                              windowFadeEnd);
     stageMixOutputEndTick = juce::Time::getHighResolutionTicks();
-    timeProcessingBlockedThisBlock = mixEngine.wasLastRenderBlocked();
-    stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
+    timeProcessingBlockedThisBlock = songDsp->mixEngine.wasLastRenderBlocked();
+    stemOutputLatencyThisBlock = songDsp->mixEngine.getOutputLatencySamples();
   } else if (!routedStemFadeApplied) {
     const float combinedFadeStart = fadeStart * windowFadeStart;
     const float combinedFadeEnd = fadeEnd * windowFadeEnd;
     applyBufferGainRamp(buffer, combinedFadeStart, combinedFadeEnd);
+  }
+
+  routingPitchLatencySamples = stemOutputLatencyThisBlock;
+  crossfadeProcessingReady.store(!timeProcessingBlockedThisBlock, std::memory_order_release);
+  // Warm a newly configured incoming DSP behind the still-full outgoing
+  // song. Its known leading latency, not signal amplitude, controls readiness.
+  if (overlappingSong) {
+    if (crossfadeIncomingWarmupPending && !timeProcessingBlockedThisBlock) {
+      crossfadeIncomingWarmupFrames = stemOutputLatencyThisBlock;
+      crossfadeIncomingWarmupPending = false;
+    }
+    if (timeProcessingBlockedThisBlock || crossfadeIncomingWarmupFrames > 0) {
+      if (!timeProcessingBlockedThisBlock)
+        crossfadeIncomingWarmupFrames = juce::jmax(0, crossfadeIncomingWarmupFrames - numSamples);
+      incomingCrossfadeStart = incomingCrossfadeEnd = 0.0f;
+      crossfadeElapsedFrames = 0;
+      crossfadeTotalFrames = juce::jmax<juce::int64>(1, juce::jmin<juce::int64>(
+          (juce::int64)(activeSongCrossfadeSeconds * playbackSampleRate), outgoingSongCrossfade.remaining() - numSamples));
+    }
+    for (int sample = 0; sample < numSamples; ++sample) {
+      const float level = incomingCrossfadeEnd <= incomingCrossfadeStart ? incomingCrossfadeStart
+          : juce::jlimit(0.0f, 1.0f, (float)(crossfadeElapsedFrames + sample) / (float)crossfadeTotalFrames);
+      for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        buffer.getWritePointer(ch)[sample] *= level;
+    }
   }
 
   const bool trimSongBusesAtExactEnd =
@@ -2597,6 +2689,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
     const int outputIndex = juce::jlimit(
         0, juce::jmax(0, numChannels - 1), outputChannelOneBased - 1);
+    if (overlappingSong) applyBufferGainRamp(metronomeRenderBuffer, incomingCrossfadeStart, incomingCrossfadeEnd);
     stemOutputRouter.routeStemToOutputChannels(metronomeRenderBuffer,
                                                outputIndex, outputWidth,
                                                buffer);
@@ -2851,6 +2944,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       outputChannel = juce::jmax(1, numChannels - 1);
     const int outputIndex = juce::jlimit(
         0, juce::jmax(0, numChannels - 1), outputChannel - 1);
+    if (overlappingSong) applyBufferGainRamp(dynamicGuideRenderBuffer, incomingCrossfadeStart, incomingCrossfadeEnd);
     stemOutputRouter.routeStemToOutputChannels(dynamicGuideRenderBuffer,
                                                outputIndex, outputWidth,
                                                buffer);
@@ -2870,6 +2964,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   // ---- Benchmark: ramp_transition (fade envelope at handoff) -------------
   stageRampTransitionStartTick = juce::Time::getHighResolutionTicks();
   applySongTransitionRamp(buffer, songLoadGainRamp);
+  if (overlappingSong) {
+    outgoingSongCrossfade.addTo(buffer, 1.0f - incomingCrossfadeStart, 1.0f - incomingCrossfadeEnd,
+        (int) juce::jmin<juce::int64>(numSamples, crossfadeTotalFrames - crossfadeElapsedFrames));
+    if (incomingCrossfadeEnd > incomingCrossfadeStart) crossfadeElapsedFrames += numSamples;
+    if (crossfadeElapsedFrames >= crossfadeTotalFrames)
+      songCrossfadePhase.store(4, std::memory_order_release);
+  }
   stageRampTransitionEndTick = juce::Time::getHighResolutionTicks();
 
   if (songLoadedForDiagnostics && diagnosticsActive) {
@@ -2960,16 +3061,16 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       streamingMissingFrames += track->getRealtimeMissingFrameCount();
     }
     uint64_t timeProcessorResetMisses =
-        mixEngine.getTimeProcessorResetMissCount();
+        songDsp->mixEngine.getTimeProcessorResetMissCount();
     uint64_t timeProcessorServiceFailures =
-        mixEngine.getTimeProcessorServiceFailureCount();
+        songDsp->mixEngine.getTimeProcessorServiceFailureCount();
     const int preparedProcessorCount =
-        preparedRoutingProcessorCount.load(std::memory_order_acquire);
+        songDsp->preparedCount.load(std::memory_order_acquire);
     for (int i = 0; i < preparedProcessorCount; ++i) {
       timeProcessorResetMisses +=
-          stemPitchProcessors[static_cast<size_t>(i)].getResetMissCount();
+          songDsp->pitchProcessors[static_cast<size_t>(i)].getResetMissCount();
       timeProcessorServiceFailures +=
-          stemPitchProcessors[static_cast<size_t>(i)]
+          songDsp->pitchProcessors[static_cast<size_t>(i)]
               .getServiceFailureCount();
     }
     const auto blockEndTick = juce::Time::getHighResolutionTicks();
@@ -3510,7 +3611,7 @@ void MTControlsAudioProcessor::dispatchLyricsCueEvents() {
       const juce::ScopedLock lock(lyricsStateLock);
       if (event.revision != lyricsRevision || event.cueIndex < -1 ||
           event.cueIndex >= static_cast<int>(songLyrics.marks.size())) continue;
-      if (event.cueIndex == -1) target.hide = true; // No lyric is current before the first mark.
+      if (event.cueIndex == -1) { target.hide = true; target.provider = songLyrics.provider; } // No lyric is current before the first mark.
       else target = songLyrics.marks[static_cast<size_t>(event.cueIndex)].target;
     }
     // queueTarget only hands work to the network worker. Its generation check
@@ -4138,6 +4239,82 @@ MTControlsAudioProcessor::createParameterLayout() {
 
   return {params.begin(), params.end()};
 }
+bool MTControlsAudioProcessor::songCrossfadeEligible() const noexcept {
+  return songLoaded.load(std::memory_order_relaxed) && isSongPlaying()
+      && !blankSongLoaded.load(std::memory_order_relaxed)
+      && loadedStemCount.load(std::memory_order_relaxed) > 0
+      && crossfadeProcessingReady.load(std::memory_order_acquire)
+      && !arrangementCustomActive.load(std::memory_order_relaxed)
+      && arrangementLoopPartIndex.load(std::memory_order_relaxed) < 0
+      && !isPracticeLoopActive() && !hasPracticeLoopPreparation()
+      && getPendingArrangementPartJumpIndex() < 0
+      && !fadeActive.load(std::memory_order_relaxed)
+      && songLoadTransitionState.load(std::memory_order_acquire) == (int) SongLoadTransitionState::idle;
+}
+
+bool MTControlsAudioProcessor::requestSongCrossfade(double seconds) {
+  const int phase = songCrossfadePhase.load(std::memory_order_acquire);
+  if (!std::isfinite(seconds) || seconds < 0.1 || seconds > 10.0
+      || (phase != 0 && phase != 4 && phase != -1) || !songCrossfadeEligible()) return false;
+  requestedSongCrossfadeSeconds.store(seconds, std::memory_order_release);
+  return true;
+}
+
+bool MTControlsAudioProcessor::isSongCrossfadeActive() const noexcept {
+  const int phase = songCrossfadePhase.load(std::memory_order_acquire);
+  return (phase >= 1 && phase <= 3) || phase == 5;
+}
+
+void MTControlsAudioProcessor::cancelSongCrossfade() noexcept {
+  requestedSongCrossfadeSeconds.store(0.0, std::memory_order_release);
+  songCrossfadeCancelled.store(true, std::memory_order_release);
+}
+
+void MTControlsAudioProcessor::releaseRetiredSongCrossfade() {
+  if (songCrossfadePhase.load(std::memory_order_acquire) != 4) return;
+  pauseTimeProcessorMaintenance();
+  if (songCrossfadePhase.load(std::memory_order_acquire) == 4) {
+    outgoingSongCrossfade.clear(); songCrossfadePhase.store(0, std::memory_order_release);
+  }
+  resumeTimeProcessorMaintenance();
+}
+
+void MTControlsAudioProcessor::renderCrossfadeHolding(juce::AudioBuffer<float>& buffer) {
+  buffer.clear();
+  if (!songCrossfadeCancelled.load(std::memory_order_acquire))
+    outgoingSongCrossfade.addTo(buffer, 1.0f, 1.0f);
+  // Pads belong to the application, not to either song deck. Continue their
+  // existing voice envelopes once while the new song is configured.
+  if (padsPackLoaded.load(std::memory_order_relaxed) && buffer.getNumSamples() <= padsRenderStorage.getNumSamples()) {
+    juce::AudioBuffer<float> pads(padsRenderStorage.getArrayOfWritePointers(), 2, 0, buffer.getNumSamples());
+    pads.clear();
+    const juce::SpinLock::ScopedTryLockType lock(padsStateLock);
+    if (lock.isLocked()) {
+      padsEngine.process(pads);
+      padsMixSmoother.setTargetValue(padsMuted.load() ? 0.0f : 1.0f);
+      const float norm = std::tanh(1.35f);
+      for (int sample = 0; sample < pads.getNumSamples(); ++sample) {
+        const float level = padsMixSmoother.getNextValue();
+        for (int channel = 0; channel < 2; ++channel) {
+          auto* data = pads.getWritePointer(channel);
+          data[sample] = std::tanh(data[sample] * level * 1.35f) / norm
+              * outgoingSongCrossfade.capturedMasterGain();
+        }
+      }
+      if (padsOutputWidth.load() >= 2) {
+        const float left = pads.getMagnitude(0, 0, pads.getNumSamples());
+        const float right = pads.getMagnitude(1, 0, pads.getNumSamples());
+        if (left > 1.0e-5f && right <= 1.0e-5f)
+          pads.copyFrom(1, 0, pads, 0, 0, pads.getNumSamples());
+        else if (right > 1.0e-5f && left <= 1.0e-5f)
+          pads.copyFrom(0, 0, pads, 1, 0, pads.getNumSamples());
+      }
+      stemOutputRouter.routeStemToOutputChannels(pads, padsOutputChannel.load()-1,
+          padsOutputWidth.load(), buffer);
+    }
+  }
+}
+
 bool MTControlsAudioProcessor::loadSongStems(
     const juce::StringArray &stemPaths, const juce::String &songId,
     const juce::String &songTitle, const juce::String &songKey,
@@ -4145,11 +4322,28 @@ bool MTControlsAudioProcessor::loadSongStems(
     const std::function<void(double)> &onLoadProgress,
     const bool deferTransitionFadeInUntilConfigured,
     const ImportedSongData *blankSong) {
+  const double crossfadeSeconds = requestedSongCrossfadeSeconds.exchange(0.0, std::memory_order_acq_rel);
+  const bool crossfadeRequested = crossfadeSeconds > 0.0;
+  if (songCrossfadePhase.load(std::memory_order_acquire) == 2
+      || songCrossfadePhase.load(std::memory_order_acquire) == 5) return false;
+  if (songCrossfadePhase.load(std::memory_order_acquire) == 3) {
+    cancelSongCrossfade();
+    for (int wait = 0; wait < 1500 && songCrossfadePhase.load(std::memory_order_acquire) == 3; ++wait)
+      juce::Thread::sleep(1);
+    if (songCrossfadePhase.load(std::memory_order_acquire) == 3) return false;
+  }
+  if (songCrossfadePhase.load(std::memory_order_acquire) == 4
+      || songCrossfadePhase.load(std::memory_order_acquire) == -1) {
+    pauseTimeProcessorMaintenance();
+    outgoingSongCrossfade.clear(); songCrossfadePhase.store(0, std::memory_order_release);
+    resumeTimeProcessorMaintenance();
+  }
   const bool isBlank = blankSong != nullptr && isValidBlankSong(*blankSong);
   if (blankSong != nullptr && (!isBlank || !stemPaths.isEmpty()))
     return false;
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
+  const auto crossfadeControlRevision = transportControlRevision.load(std::memory_order_acquire);
   // Snapshot playback configuration safely before we start building transports.
   double localSampleRate = 0.0;
   int localBlockSize = 0;
@@ -4366,7 +4560,29 @@ bool MTControlsAudioProcessor::loadSongStems(
       shouldResumeAfterLoad && isSongPlaying() &&
       songLoaded.load(std::memory_order_relaxed) && !stemTracks.empty();
 
-  if (shouldFadeOutCurrentSong) {
+  bool retainedCrossfade = false;
+  if (crossfadeRequested) {
+    if (!shouldFadeOutCurrentSong || isBlank || songCrossfadePhase.load() != 0
+        || transportControlRevision.load(std::memory_order_acquire) != crossfadeControlRevision) return false;
+    pauseTimeProcessorMaintenance();
+    outgoingSongCrossfade.buses().prepareRetainedCopyFrom(metronome, dynamicGuideEngine);
+    activeSongCrossfadeSeconds = crossfadeSeconds;
+    songCrossfadeCancelled.store(false, std::memory_order_release);
+    songCrossfadePhase.store(1, std::memory_order_release);
+    for (int wait = 0; wait < 1500 && songCrossfadePhase.load(std::memory_order_acquire) == 1; ++wait)
+      juce::Thread::sleep(1);
+    int expected = 1;
+    if (songCrossfadePhase.compare_exchange_strong(expected, -1, std::memory_order_acq_rel)) { resumeTimeProcessorMaintenance(); return false; }
+    // Once the callback claims capture, it owns the O(1) vector swap and the
+    // bounded route snapshot. Never abandon that ownership while it completes.
+    while (songCrossfadePhase.load(std::memory_order_acquire) == 5) juce::Thread::sleep(1);
+    retainedCrossfade = songCrossfadePhase.load(std::memory_order_acquire) == 2;
+    if (!retainedCrossfade) { resumeTimeProcessorMaintenance(); return false; }
+    songDsp->mixEngine.prepare(localSampleRate, juce::jmax(localBlockSize, maxRealtimeBlockSize), getTotalNumOutputChannels());
+    routingPitchLatencySamples = 0;
+  }
+
+  if (!retainedCrossfade && shouldFadeOutCurrentSong) {
     songLoadTransitionState.store(
         static_cast<int>(SongLoadTransitionState::fadingOut),
         std::memory_order_release);
@@ -4404,14 +4620,14 @@ bool MTControlsAudioProcessor::loadSongStems(
           std::memory_order_release);
       return false;
     }
-  } else if (shouldResumeAfterLoad) {
+  } else if (!retainedCrossfade && shouldResumeAfterLoad) {
     // Playback may have ended while the next deck was being prepared. Start
     // the replacement from silence without manufacturing an outgoing deck.
     songLoadTransitionGain.store(0.0f, std::memory_order_relaxed);
     songLoadTransitionState.store(
         static_cast<int>(SongLoadTransitionState::readyToSwap),
         std::memory_order_release);
-  } else {
+  } else if (!retainedCrossfade) {
     songLoadTransitionGain.store(1.0f, std::memory_order_relaxed);
     songLoadTransitionState.store(
         static_cast<int>(SongLoadTransitionState::idle),
@@ -4423,7 +4639,7 @@ bool MTControlsAudioProcessor::loadSongStems(
   // SongLoadProbe: this is the audio-thread drain wait. Up to 2000ms — when
   // the host is mid-block this can dominate the visible swap.
   const int64_t suspendStart = juce::Time::getHighResolutionTicks();
-  suspendProcessing(true);
+  if (!retainedCrossfade) suspendProcessing(true);
   SongLoadProbe::instance().recordDurationUs(
       "loadSongStems", "suspendProcessing.take", static_cast<int64_t>(
           (juce::Time::getHighResolutionTicks() - suspendStart) * 1000000.0 /
@@ -4431,7 +4647,7 @@ bool MTControlsAudioProcessor::loadSongStems(
       "");
   int suspendWaits = 0;
   for (int wait = 0;
-       wait < 2000 && audioCallbackActive.load(std::memory_order_acquire);
+       !retainedCrossfade && wait < 2000 && audioCallbackActive.load(std::memory_order_acquire);
        ++wait) {
     juce::Thread::sleep(1);
     ++suspendWaits;
@@ -4443,7 +4659,7 @@ bool MTControlsAudioProcessor::loadSongStems(
       "loadSongStems", "suspendProcessing.wait", suspendUs,
       "capped=" + juce::String(suspendWaits >= 2000 ? 1 : 0) +
           " waitedMs=" + juce::String(suspendWaits));
-  if (audioCallbackActive.load(std::memory_order_acquire)) {
+  if (!retainedCrossfade && audioCallbackActive.load(std::memory_order_acquire)) {
     suspendProcessing(false);
     if (shouldResumeAfterLoad) {
       songLoadTransitionState.store(
@@ -4635,6 +4851,7 @@ bool MTControlsAudioProcessor::loadSongStems(
 }
 
 bool MTControlsAudioProcessor::unloadSong() {
+  cancelSongCrossfade();
   const bool wasSuspended = isSuspended();
   suspendProcessing(true);
   for (int wait = 0;
@@ -4650,6 +4867,7 @@ bool MTControlsAudioProcessor::unloadSong() {
   }
 
   pauseTimeProcessorMaintenance();
+  outgoingSongCrossfade.clear(); songCrossfadePhase.store(0, std::memory_order_release);
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     removeAllStemSources();
@@ -4664,6 +4882,20 @@ bool MTControlsAudioProcessor::unloadSong() {
 }
 
 void MTControlsAudioProcessor::finishPendingSongTransition() {
+  if (songCrossfadePhase.load(std::memory_order_acquire) == 2) {
+    if (songCrossfadeCancelled.load(std::memory_order_acquire)) {
+      setTransportState(TransportState::paused);
+      songCrossfadePhase.store(4, std::memory_order_release); return;
+    }
+    crossfadeElapsedFrames = 0;
+    crossfadeIncomingWarmupPending = true; crossfadeIncomingWarmupFrames = 0;
+    crossfadeTotalFrames = juce::jmax<juce::int64>(1,
+        juce::jmin<juce::int64>((juce::int64) (activeSongCrossfadeSeconds * playbackSampleRate), outgoingSongCrossfade.remaining()));
+    songLoadTransitionGain.store(1.0f, std::memory_order_relaxed);
+    songLoadTransitionState.store((int) SongLoadTransitionState::idle, std::memory_order_release);
+    playSong();
+    songCrossfadePhase.store(3, std::memory_order_release); return;
+  }
   const auto state = static_cast<SongLoadTransitionState>(
       songLoadTransitionState.load(std::memory_order_acquire));
   if (state != SongLoadTransitionState::holdingAtZero)
@@ -4731,6 +4963,7 @@ void MTControlsAudioProcessor::playSong() {
 }
 
 void MTControlsAudioProcessor::pauseSong() {
+  cancelSongCrossfade();
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   transportControlRevision.fetch_add(1, std::memory_order_release);
@@ -4738,6 +4971,7 @@ void MTControlsAudioProcessor::pauseSong() {
 }
 
 void MTControlsAudioProcessor::stopSong() {
+  cancelSongCrossfade();
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   transportControlRevision.fetch_add(1, std::memory_order_release);
@@ -4815,6 +5049,7 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
 
 void MTControlsAudioProcessor::seekSongToInternal(const double positionSeconds,
                                                 const bool synchroniseLyrics) {
+  if (songCrossfadePhase.load(std::memory_order_acquire) == 3) cancelSongCrossfade();
 #if JUCE_IOS || JUCE_ANDROID
   juce::ignoreUnused(synchroniseLyrics);
 #endif
@@ -7270,7 +7505,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   songLoadTransitionState.store(
       static_cast<int>(SongLoadTransitionState::idle),
       std::memory_order_release);
-  mixEngine.reset();
+  songDsp->mixEngine.reset();
   metronome.reset();
   metronomeLatencyDelay.reset();
   metronomeClickStemIndex.store(-1, std::memory_order_relaxed);
@@ -7309,8 +7544,8 @@ void MTControlsAudioProcessor::resetStemControls(
           stemOutputRoutingState.getStemOutputChannel(i), std::memory_order_relaxed);
       stemOutputWidths[static_cast<size_t>(i)].store(
           stemOutputRoutingState.getStemOutputWidth(i), std::memory_order_relaxed);
-      stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
-      stemPitchProcessors[static_cast<size_t>(i)].setContentType(
+      songDsp->delayLines[static_cast<size_t>(i)].setDelay(0);
+      songDsp->pitchProcessors[static_cast<size_t>(i)].setContentType(
           TimeStretchProcessor::ContentType::Melodic);
     }
   }

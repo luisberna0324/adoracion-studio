@@ -8,6 +8,7 @@ namespace playworship::lyrics
 struct Target
 {
     bool hide = false;
+    juce::String provider = "freeshow";
     juce::String showId, layoutId, groupId, slideId;
     int occurrence = 1;
     juce::String layoutSignature, title, text;
@@ -25,6 +26,7 @@ struct Mark
 struct SongLyrics
 {
     bool enabled = false;
+    juce::String provider = "freeshow";
     juce::String showId, showName, layoutId, layoutName;
     std::vector<Mark> marks;
 };
@@ -49,6 +51,7 @@ struct ShowSummary { juce::String id, name; };
 struct ShowCatalog
 {
     juce::String id, name, activeLayoutId, error;
+    juce::String provider = "freeshow";
     std::vector<Layout> layouts;
     std::vector<SlideGroup> groups; // All groups in the show, including unused groups.
     bool ok() const { return error.isEmpty() && id.isNotEmpty() && !layouts.empty(); }

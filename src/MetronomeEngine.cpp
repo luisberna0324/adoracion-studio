@@ -32,6 +32,38 @@ bool fileNameMatchesLegacy(const juce::File &file, const juce::String &style,
 }
 } // namespace
 
+void MetronomeEngine::prepareRetainedCopyFrom(MetronomeEngine &source) {
+  const juce::ScopedLock lock(source.clickSamplesGenerationLock);
+  clickSampleGenerations = source.clickSampleGenerations;
+  publishedClickSamples.store(source.publishedClickSamples.load(std::memory_order_acquire), std::memory_order_release);
+  prepare(source.sampleRate);
+}
+
+void MetronomeEngine::captureRealtimeStateFrom(const MetronomeEngine &source) noexcept {
+  enabled.store(source.enabled.load(std::memory_order_acquire), std::memory_order_relaxed);
+  bpm.store(source.bpm.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  beatsPerBar.store(source.beatsPerBar.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  volume.store(source.volume.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  muted.store(source.muted.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  pendingImmediateClick.store(source.pendingImmediateClick.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  divisionMask.store(source.divisionMask.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  requestedSubdivision.store(source.requestedSubdivision.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  requestedResetGeneration.store(source.requestedResetGeneration.load(std::memory_order_acquire), std::memory_order_relaxed);
+  appliedResetGeneration = source.appliedResetGeneration;
+  phase = source.phase; subPhase = source.subPhase; activeBpm = source.activeBpm;
+  clickSamplesRemaining = source.clickSamplesRemaining;
+  beatIndex = source.beatIndex; absoluteBeatIndex = source.absoluteBeatIndex;
+  lastGridTick = source.lastGridTick; subIndex = source.subIndex;
+  activeSubdivision = source.activeSubdivision;
+  boundaryClickPending = source.boundaryClickPending;
+  subdivisionClickPending = source.subdivisionClickPending;
+  boundarySubdivision = source.boundarySubdivision;
+  currentClickIsMainBeat = source.currentClickIsMainBeat;
+  clickGain = source.clickGain; currentClickTone = source.currentClickTone;
+  sampleRate = source.sampleRate; sampleVoices = source.sampleVoices;
+  publishedClickSamples.store(source.publishedClickSamples.load(std::memory_order_acquire), std::memory_order_relaxed);
+}
+
 void MetronomeEngine::prepare(double sampleRateToUse) {
   sampleRate = sampleRateToUse;
   reset();

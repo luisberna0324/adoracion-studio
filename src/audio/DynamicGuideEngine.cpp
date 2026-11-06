@@ -69,6 +69,18 @@ deriveSectionKeysFromFilename(const juce::String &fileName) {
 }
 } // namespace
 
+void DynamicGuideEngine::prepareRetainedCopyFrom(const DynamicGuideEngine &source) {
+  samplesByKey = source.samplesByKey;
+  triggerIdByKey = source.triggerIdByKey;
+  samplesByTriggerId = source.samplesByTriggerId;
+  prepare(source.outputSampleRate);
+}
+
+void DynamicGuideEngine::captureRealtimeStateFrom(const DynamicGuideEngine &source) noexcept {
+  voices = source.voices;
+  outputSampleRate = source.outputSampleRate;
+}
+
 void DynamicGuideEngine::prepare(const double sampleRate) {
   outputSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
   reset();

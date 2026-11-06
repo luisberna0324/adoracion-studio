@@ -119,6 +119,65 @@ struct SongListLyricsTestAccess {
     expect(lyricsAction(*unsupportedList) == nullptr, "unsupported platforms expose no setlist lyrics action");
     nativeAvailable = true;
   }
+  static void testCrossfadeSetlist(const juce::String &first, const juce::String &second) {
+    const auto setlistId = SongLibraryStore::createSetlist("Crossfade fixture");
+    expect(SongLibraryStore::addSongToSetlist(setlistId, first)
+        && SongLibraryStore::addSongToSetlist(setlistId, second)
+        && SongLibraryStore::setActiveSetlistId(setlistId), "prepare isolated crossfade setlist");
+    const auto transition = [&](const juce::String &songId) {
+      const auto snapshot = SongLibraryStore::loadLibrarySnapshot();
+      for (const auto &setlist : snapshot.setlists)
+        if (setlist.id == setlistId)
+          for (const auto &item : setlist.items)
+            if (item.songId == songId) return item.transitionToNext;
+      throw std::runtime_error("missing crossfade fixture item");
+    };
+    expect(!transition(first).crossfade, "legacy and unmarked items do not enable crossfade");
+    expect(SongLibraryStore::setCrossfadeNextForSetlist(setlistId, first, true)
+        && transition(first).autoPlay && transition(first).crossfade,
+        "crossfade enables the outgoing autoplay flag and survives reloading the library");
+    SongListPanel panel;
+    expect(panel.isCrossfadeNextEnabledForSong(first)
+        && panel.getCrossfadeNextSong(first).has_value()
+        && panel.getCrossfadeNextSong(first)->id == second,
+        "crossfade resolves only the immediate neighbour in the active playback setlist");
+    auto lastMenu = panel.listContent.createActionsMenuForRow(1);
+    juce::Button *lastCrossfade = nullptr;
+    for (auto *child : lastMenu->getChildren())
+      if (auto *button = dynamic_cast<juce::Button *>(child); button && button->getName().containsIgnoreCase("crossfade"))
+        lastCrossfade = button;
+    expect(lastCrossfade && !lastCrossfade->isEnabled(), "last row cannot select a crossfade without a destination");
+    expect(!SongLibraryStore::setCrossfadeNextForSetlist(setlistId, second, true)
+        && !transition(second).autoPlay && !transition(second).crossfade,
+        "model refuses a crossfade from the final row");
+    expect(SongLibraryStore::setAutoPlayNextForSetlist(setlistId, first, false)
+        && !transition(first).autoPlay && !transition(first).crossfade,
+        "disabling autoplay also clears the persisted crossfade");
+    panel.refreshFromStorage();
+    expect(!panel.isCrossfadeNextEnabledForSong(first) && !panel.getCrossfadeNextSong(first),
+        "UI transport queries stop offering crossfade after autoplay is disabled");
+    auto firstMenu = panel.listContent.createActionsMenuForRow(0);
+    juce::Button *firstCrossfade = nullptr;
+    for (auto *child : firstMenu->getChildren())
+      if (auto *button = dynamic_cast<juce::Button *>(child); button && button->getName().containsIgnoreCase("crossfade"))
+        firstCrossfade = button;
+    expect(firstCrossfade && firstCrossfade->isEnabled() && firstCrossfade->onClick,
+        "first-row menu offers its crossfade action");
+    const auto snapshots = juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_CROSSFADE_SNAPSHOTS", {});
+    if (snapshots.isNotEmpty()) {
+      const juce::File folder(snapshots); folder.createDirectory();
+      const auto target = folder.getChildFile("crossfade-setlist-menu.png"); target.deleteFile();
+      if (auto stream = target.createOutputStream())
+        juce::PNGImageFormat().writeImageToStream(firstMenu->createComponentSnapshot(firstMenu->getLocalBounds(), true, 2.0f), *stream);
+    }
+    firstCrossfade->onClick();
+    expect(transition(first).autoPlay && transition(first).crossfade && panel.isCrossfadeNextEnabledForSong(first),
+        "setlist menu enables and refreshes the persisted crossfade without playing audio");
+    expect(SongLibraryStore::moveSongInSetlist(setlistId, 0, 1)
+        && !transition(first).autoPlay && !transition(first).crossfade,
+        "moving a marked item to the end clears its transition instead of leaving an invalid target");
+    expect(SongLibraryStore::deleteSetlist(setlistId), "remove the isolated crossfade fixture setlist");
+  }
   static void testNativeSaveLifecycle(const juce::String &id) {
     SongListPanel panel;
     int activations = 0, edits = 0;
@@ -223,6 +282,7 @@ int main() {
     const auto second = fixtureSong("lyrics-ui-second", "Second fixture");
     juce::String error;
     expect(SongLibraryStore::appendSong(first, &error) && SongLibraryStore::appendSong(second, &error), "register two isolated native-editor fixtures");
+    SongListLyricsTestAccess::testCrossfadeSetlist(first.id, second.id);
     SongListLyricsTestAccess::testMenuIdentity(first.id, second.id);
     SongListLyricsTestAccess::testNativeSaveLifecycle(first.id);
     SongListLyricsTestAccess::testSaveFailure(second.id);

@@ -193,6 +193,9 @@ private:
   juce::Label languageLabel;
   juce::Label languageHelp;
   AdaptiveComboBox languageBox;
+  juce::Label songCrossfadeLabel;
+  juce::Label songCrossfadeHelp;
+  AdaptiveComboBox songCrossfadeBox;
   juce::Label padsCrossfadeLabel;
   juce::Label padsCrossfadeHelp;
   AdaptiveComboBox padsCrossfadeBox;
