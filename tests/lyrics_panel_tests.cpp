@@ -442,6 +442,12 @@ struct FreeShowConnectionPanelTestAccess {
     expect(client.getSettings().host == before.host && client.getStatus().connectionEpoch == epoch && probes == 0,
            "Opening connection settings reads the active endpoint without connecting or reconfiguring");
     expect(AppSettings::getFreeShowEndpoint().host == defaults.host, "Opening settings never overwrites saved values");
+    panel.holyricsCard.onClick();
+    expect(panel.holyricsCard.getToggleState() && !panel.freeShowCard.getToggleState()
+        && panel.portEditor.getText() == "8091" && client.getStatus().connectionEpoch == epoch && probes == 0,
+        "Provider cards prepare independent fields without changing the active connection");
+    panel.freeShowCard.onClick();
+    expect(panel.freeShowCard.getToggleState() && !panel.holyricsCard.getToggleState(), "Provider card selection is exclusive");
     panel.hostEditor.setText("192.168.50.30", false); panel.portEditor.setText("5510", false);
     expect(probes == 0 && client.getSettings().host == before.host, "Editing IP does not touch the active connection before Apply");
     panel.applyButton.onClick();
@@ -458,6 +464,17 @@ struct FreeShowConnectionPanelTestAccess {
     expect(client.getStatus().connectionEpoch == appliedEpoch && client.getSettings().host == saved.host
         && AppSettings::getFreeShowEndpoint().host == saved.host && probes == 1,
            "Invalid public host leaves both the active client and saved endpoint unchanged");
+    if (IntegrationTokenStore::available() && juce::SystemStats::getEnvironmentVariable("PW_TEST_INTEGRATION_KEYCHAIN", {}) == "1") {
+      const auto provider = "test-" + juce::Uuid().toString();
+      const juce::String dummy = "synthetic-integration-test-token";
+      const bool stored = IntegrationTokenStore::save(provider, "127.0.0.1", 54321, dummy);
+      const auto restored = stored ? IntegrationTokenStore::load(provider, "127.0.0.1", 54321) : juce::String{};
+      const auto otherEndpoint = IntegrationTokenStore::load(provider, "127.0.0.1", 54322);
+      const bool removed = IntegrationTokenStore::forget(provider, "127.0.0.1", 54321);
+      expect(stored && restored == dummy && otherEndpoint.isEmpty() && removed
+          && IntegrationTokenStore::load(provider, "127.0.0.1", 54321).isEmpty(),
+          "Native Keychain persists, isolates endpoints and removes only the scoped synthetic credential");
+    }
     // Capture only a separate example panel, never the user's active settings.
     const auto dir = juce::SystemStats::getEnvironmentVariable("PW_LYRICS_EVIDENCE_DIR", {});
     if (dir.isNotEmpty()) {

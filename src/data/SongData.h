@@ -228,7 +228,7 @@ inline bool songFreeShowCuesFromContainer(
 }
 
 extern const std::array<const char *, 19> kTrackCategories;
-extern const std::array<const char *, 14> kSongSectionSuggestions;
+extern const std::array<const char *, 17> kSongSectionSuggestions;
 
 int timeSignatureBeatsPerBar(const juce::String &timeSignature);
 

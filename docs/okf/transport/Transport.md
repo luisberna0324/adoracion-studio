@@ -4,16 +4,18 @@ title: Transport
 description: Control de transporte y arrange en MTControlsAudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, audio, transport, playback, arrange]
-timestamp: 2026-10-17T00:00:00Z
+timestamp: 2026-11-06
 ---
 
 # Transport API
 
-En escritorio, las marcas de [Letras / FreeShow](../integrations/FreeShow.md)
-se evalúan sobre los segmentos realmente renderizados y los seeks confirmados,
+En escritorio, las marcas de Letras para FreeShow y Holyrics se evalúan
+sobre los segmentos realmente renderizados y los seeks confirmados,
 con un scheduler independiente de las secciones. Ir/seek recuperan sólo el
 cue vigente en el destino y Loop abre otra pasada. Las órdenes vencidas se
 descartan fuera del audio thread; ninguna llamada de red entra al callback.
+Cada destino conserva su proveedor y se valida contra la conexión activa.
+[FreeShow](../integrations/FreeShow.md), [Holyrics](../integrations/Holyrics.md).
 
 La app standalone puede exponer este transporte mediante el
 [control remoto LAN](../integrations/RemoteControl.md). El servidor sigue
@@ -593,12 +595,34 @@ una caja independiente alrededor. `PracticeTimelineRuler` calcula las marcas
 desde el mapa de tempo vigente, incluido el denominador de la métrica y cambios
 sin guardar. Los números mantienen al menos 72 puntos entre etiquetas y los
 pulsos aparecen cuando tienen al menos 10 puntos de separación. Al alejar el
-zoom se reduce la densidad automáticamente. Las subdivisiones de snap siguen
+zoom se reduce la densidad automáticamente; las marcas de compás visibles
+mantienen al menos 8 puntos también durante la revisión de sugerencias.
+Las subdivisiones de snap siguen
 disponibles para seek y edición sin llenar la regla de marcas adicionales.
 Los cursores de reproducción, salto pendiente y marca de inserción conservan
 su dibujo e interacción sobre esta referencia. Las indicaciones se superponen
 a la onda y no reservan altura adicional en la regla. En teléfono la regla
 está disponible en edición y permanece oculta en performance.
+
+En escritorio, `drawTimelinePlayhead` de `TimelineRulerStyle.h` dibuja el cursor con
+una línea fina de `UITheme::textPrimary`, también en la onda y el minimapa. En
+la regla añade una pequeña punta y usa opacidad de 0.65 en reproducción y 0.25
+en pausa. Las sugerencias transitorias conservan sus marcas discontinuas de
+color para distinguirlas del cursor. La revisión dibuja el cursor sobre su propia
+cuadrícula, sin superponer las marcas de la regla habitual. Esta apariencia
+recupera el estilo existente de escritorio sin cambiar posición, seguimiento,
+seek ni comandos de transporte.
+El dibujo de iOS y Android conserva su implementación vigente.
+
+Durante la revisión de sugerencias, pulsar la regla conserva el seek normal.
+`WaveformBar::keyPressed` deja pasar Espacio al transporte del editor para
+reproducir/pausar, y Alt+Espacio conserva detener; continúa interceptando los
+atajos de edición del arreglo confirmado. Los campos de nombre conservan la
+entrada de espacios como texto. **+ Agregar sección** captura el tiempo actual
+del cursor en segundos y abre el catálogo para añadir una sección al borrador;
+la inserción no publica un cambio de arrange hasta **Confirmar**. El contrato
+de revisión e inserción se describe en
+[SectionDetection](../ui/SectionDetection.md).
 
 Letras de escritorio usa esa misma regla y solicita las marcas al mapa de tempo
 de `WaveformBar`. Ambas vistas comparten la línea fina y bandera del playhead
@@ -672,6 +696,49 @@ con una ventana que ya es silenciosa.
 Si `deferTransitionFadeInUntilConfigured` es `false`, `loadSongStems()` completa
 automáticamente el fade-in. La UI principal usa `true` para aplicar antes del
 fade-in mezcla, routing, tempo, click, guía, ventana y arrangement.
+
+### Crossfade de canciones con DSP y buses virtuales
+
+`requestSongCrossfade(seconds)` arma un cambio explícito (0.1–10 s), sin cambiar
+la canción ni iniciar sonido. Requiere una canción reproduciéndose con stems,
+sin custom arrange, salto/loop/ensayo ni otro fade activo. Pitch/tempo modificados,
+click y guía dinámicos son compatibles; no se recurre a audio seco para el tail.
+
+El control prepara lectores y recursos de reemplazo antes del handoff. El
+callback toma la captura mediante CAS (solicitada → capturando → retenida), de
+modo que un timeout no pueda retirar las fuentes después de un load fallido.
+En ese límite de bloque se intercambian los owners del vector de tracks y del
+`SongProcessingState`: `StemMixEngine`, voces individuales Bungee/SoundTouch y
+líneas de compensación conservan sus historiales, sin reconstruirse en audio.
+Se retienen máscaras de pitch/percussion/guía, rutas, master, ventana y rampa
+de tempo. Cada deck consume su propio número de frames fuente.
+
+`RetainedVirtualBuses` conserva las voces y la fase del metrónomo, voces de guía
+en curso, anuncios/cues pendientes de la línea temporal lineal y sus dos delays.
+Los catálogos de samples se comparten en control y la captura realtime sólo
+copia estado fijo o intercambia buffers ya preparados. Mute/solo y destinos
+son independientes por deck; el master de la entrante no modifica la saliente.
+Al llegar a Fin, se alimentan ceros y se drenan las latencias sin disparar nuevos
+clicks ni anuncios más allá del final. Ver `engine/RetainedVirtualBuses.md`.
+
+Durante la configuración entrante, el callback reproduce la saliente sin usar
+`suspendProcessing()`, que haría silenciar al host. `finishPendingSongTransition()`
+publica el destino configurado. Mientras su DSP resuelve el arranque y acumula
+su latencia conocida, la salida saliente conserva nivel completo. No se decide
+por la amplitud del contenido: una canción puede empezar intencionalmente en
+silencio. Después se aplica un fundido lineal complementario (salida=1−t,
+entrada=t) a stems, click y guía. La duración efectiva se limita al audio real
+que aún queda en la saliente, convertido a frames de salida según su tempo.
+Pads continúa siendo un único bus global con sus envolventes propias.
+
+Stop/Pause cancelan la cola; un Stop durante la configuración impide el autoplay.
+Un seek durante el overlap cancela la saliente; el seek interno que configura la
+ventana entrante se permite durante el hold. Unload y cambio de dispositivo
+cancelan y liberan recursos fuera del callback. Al concluir, el timer de control
+llama `releaseRetiredSongCrossfade()` para liberar tracks y DSP bajo la
+sincronización del servicio de mantenimiento, sin retener una segunda canción
+completa hasta el siguiente load. La estructura/automatización saliente se
+congela al capturar; loops, saltos y custom arrange siguen fuera de este flujo.
 
 ## Seek lock-free
 
@@ -848,7 +915,9 @@ siguen disponibles sin añadir otro motor.
 La zona de WaveformBar queda vacía y sin controles; no se dibuja waveform,
 regla, cursor, progreso de compás ni tarjetas. El selector Onda/Secciones y las
 opciones de sección/ventana se ocultan en escritorio y en el menú táctil. Volver
-a una canción con audio restaura sus vistas habituales. El cliente remoto usa
+a una canción con audio restaura sus vistas habituales. Cargar una canción en
+blanco descarta la revisión transitoria de sugerencias e ignora sus resultados
+tardíos para que no puedan volver a abrir esa vista. El cliente remoto usa
 el mismo tipo explícito y extrapola posición abierta sin limitarla a cero.
 El servidor rechaza acciones de arreglo, ventana y mapa regional para la vacía;
 transport, tempo, tono y controles independientes de click/pad siguen siendo

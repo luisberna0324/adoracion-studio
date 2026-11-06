@@ -285,7 +285,7 @@ void StemMixEngine::mixStems(
     const std::atomic<bool> *clickGuideStates,
     const std::atomic<bool> *pitchShiftStates, int stemCount, int inputSamples,
     int numChannels, const std::atomic<int> *outputChannels,
-    const std::atomic<int> *outputWidths) {
+    const std::atomic<int> *outputWidths, int sourceSamplesToRead) {
   ensureBuffers(numChannels, inputSamples);
   stemMixBuffer.clear(0, inputSamples);
   percussionBuffer.clear(0, inputSamples);
@@ -293,7 +293,7 @@ void StemMixEngine::mixStems(
 
   for (int i = 0; i < stemCount; ++i) {
     stemTempBuffer.clear(0, inputSamples);
-    juce::AudioSourceChannelInfo info(&stemTempBuffer, 0, inputSamples);
+    juce::AudioSourceChannelInfo info(&stemTempBuffer, 0, sourceSamplesToRead < 0 ? inputSamples : juce::jlimit(0, inputSamples, sourceSamplesToRead));
     stems[static_cast<size_t>(i)]->getNextAudioBlock(info);
 
     const bool isClickGuide =

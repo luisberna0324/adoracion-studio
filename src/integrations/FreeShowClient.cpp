@@ -1,4 +1,5 @@
 #include "FreeShowClient.h"
+#include "HolyricsModel.h"
 #include <atomic>
 #include <cmath>
 #include <string>
@@ -26,15 +27,23 @@ HttpResponse httpRequest(const ConnectionSettings& settings, const juce::var& bo
     const auto fail = [&](const juce::String& error) { result.error = error; return result; };
     const auto host = settings.host == "localhost" ? juce::String("127.0.0.1") : settings.host;
     juce::StreamingSocket socket;
-    if (!socket.connect(host, settings.port, 1200)) return fail("FreeShow no responde");
-    const auto json = juce::JSON::toString(body, true);
-    juce::String request = "POST / HTTP/1.1\r\nHost: " + host + ":" + juce::String(settings.port)
+    if (!socket.connect(host, settings.port, 1200)) return fail("El servidor de letras no responde");
+    auto payload = body.clone();
+    juce::String path = "/";
+    if (settings.provider == "holyrics") {
+        const auto name = body.getProperty("action", {}).toString();
+        if (name.isEmpty() || !name.containsOnly("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")) return fail("Acción Holyrics inválida");
+        path = "/api/" + name + "?token=" + juce::URL::addEscapeChars(settings.authToken, true);
+        payload.getDynamicObject()->removeProperty("action");
+    }
+    const auto json = juce::JSON::toString(payload, true);
+    juce::String request = "POST " + path + " HTTP/1.1\r\nHost: " + host + ":" + juce::String(settings.port)
         + "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: "
         + juce::String((juce::int64) json.getNumBytesAsUTF8()) + "\r\n";
-    if (settings.authToken.isNotEmpty()) request += "Authorization: Bearer " + settings.authToken + "\r\n";
+    if (settings.provider == "freeshow" && settings.authToken.isNotEmpty()) request += "Authorization: Bearer " + settings.authToken + "\r\n";
     request += "\r\n" + json;
     const auto bytesToWrite = (int) request.getNumBytesAsUTF8();
-    if (socket.write(request.toRawUTF8(), bytesToWrite) != bytesToWrite) return fail("No se pudo enviar a FreeShow");
+    if (socket.write(request.toRawUTF8(), bytesToWrite) != bytesToWrite) return fail("No se pudo enviar al programa de letras");
     constexpr size_t maxHeaders = 64 * 1024, maxBody = 16 * 1024 * 1024;
     const auto deadline = juce::Time::getMillisecondCounterHiRes() + 1200.0;
     std::string received, decoded;
@@ -178,14 +187,19 @@ struct FreeShowClient::Impl
         juce::String validationError;
         auto response = FreeShowClient::validateSettings(snapshot, &validationError)
             ? transport(snapshot, data) : HttpResponse{0, {}, validationError};
-        { std::lock_guard<std::mutex> lock(mutex); if (stopping || epoch != status.connectionEpoch) return {0, {}, juce::String::fromUTF8("Configuración FreeShow cambió")}; }
+        if (snapshot.provider == "holyrics" && response.status >= 200 && response.status < 300
+            && response.body.getProperty("status", {}).toString() != "ok") {
+            response.error = "Holyrics rechazó la solicitud; revisa el token y sus permisos";
+            response.status = 403;
+        }
+        { std::lock_guard<std::mutex> lock(mutex); if (stopping || epoch != status.connectionEpoch) return {0, {}, "La conexión de letras cambió"}; }
         if (response.status < 200 || response.status >= 300 || response.error.isNotEmpty())
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (epoch == status.connectionEpoch)
             {
                 status.state = response.status == 401 ? ConnectionStatus::State::unauthorized : ConnectionStatus::State::disconnected;
-                status.message = response.status == 401 ? "Clave FreeShow incorrecta" : (response.error.isNotEmpty() ? response.error : "FreeShow desconectado");
+                status.message = response.status == 401 ? "Token de letras incorrecto" : (response.error.isNotEmpty() ? response.error : "Programa de letras desconectado");
                 status.outputConfirmed = false; status.connectionEpoch++; pending.reset(); lastSent.reset();
             }
         }
@@ -197,10 +211,21 @@ struct FreeShowClient::Impl
     {
         std::lock_guard<std::mutex> lock(mutex);
         if (e != status.connectionEpoch) return;
-        status.state = ConnectionStatus::State::connected; status.message = "FreeShow conectado";
+        status.state = ConnectionStatus::State::connected; status.message = settings.provider == "holyrics" ? "Holyrics conectado" : "FreeShow conectado";
     }
+    juce::var listRequest() {
+        auto result = action(holyrics() ? "GetSongs" : "get_shows");
+        if (holyrics()) result.getDynamicObject()->setProperty("fields", "id,title");
+        return result;
+    }
+    bool holyrics() { std::lock_guard<std::mutex> lock(mutex); return settings.provider == "holyrics"; }
     ShowCatalog fetchShow(const juce::String& id, juce::uint64 e)
     {
+        if (holyrics()) {
+            const auto response = request(action("GetLyrics", id), e);
+            if (success(response)) return parseHolyricsSong(id, response.body);
+            ShowCatalog failed; failed.provider = "holyrics"; failed.error = "No se pudo cargar la canción de Holyrics"; return failed;
+        }
         const auto full = request(action("get_show", id), e);
         if (!success(full)) { ShowCatalog failed; failed.error = "No se pudo cargar el show FreeShow"; return failed; }
         const auto reference = request(action("get_show_layout", id), e);
@@ -247,24 +272,51 @@ struct FreeShowClient::Impl
             return;
         }
         if (!current(cue)) return;
-        const auto result = request(makeSelectRequest(effectiveTarget, destination.absoluteIndex), cue.epoch);
+        juce::var command;
+        if (holyrics()) {
+            // Older Holyrics silently ignores initial_index and projects the first slide.
+            const auto versionResponse = request(action("GetVersion"), cue.epoch);
+            auto versionData = versionResponse.body.getProperty("data", {});
+            if (versionData.hasProperty("data")) versionData = versionData.getProperty("data", {});
+            const auto parts = juce::StringArray::fromTokens(versionData.getProperty("version", {}).toString(), ".", "");
+            const bool supported = success(versionResponse) && parts.size() >= 2
+                && (parts[0].getIntValue() > 2 || (parts[0].getIntValue() == 2 && parts[1].getIntValue() >= 23));
+            if (!supported) {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (cue.epoch == status.connectionEpoch) {
+                    status.message = "Se requiere Holyrics 2.23.0 o posterior y permiso GetVersion";
+                    status.outputConfirmed = false;
+                }
+                return;
+            }
+            if (!current(cue)) return;
+            command = action(cue.target.hide ? "SetF8" : "ShowLyrics");
+            if (cue.target.hide) command.getDynamicObject()->setProperty("enable", true);
+            else {
+                command.getDynamicObject()->setProperty("id", effectiveTarget.showId);
+                command.getDynamicObject()->setProperty("initial_index", destination.absoluteIndex - 1);
+            }
+        } else command = makeSelectRequest(effectiveTarget, destination.absoluteIndex);
+        if (!current(cue)) return;
+        const auto result = request(command, cue.epoch);
         if (!success(result)) return;
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (cue.epoch != status.connectionEpoch || cue.serial != cueSerial) return;
             status.lastSent = targetLabel(cue.target); status.outputConfirmed = false;
-            status.message = juce::String::fromUTF8("Enviado · esperando salida FreeShow");
+            status.message = juce::String::fromUTF8("Enviado · esperando confirmación de salida");
             lastSent = cue; lastSent->target = std::move(effectiveTarget); lastIndex = destination.absoluteIndex;
         }
         observe(cue.epoch);
     }
     void observe(juce::uint64 e)
     {
-        const auto result = request(action("get_output"), e);
+        const bool isHolyrics = holyrics();
+        const auto result = request(action(isHolyrics ? "GetCurrentPresentation" : "get_output"), e);
         if (!success(result)) return;
         std::lock_guard<std::mutex> lock(mutex);
         if (e != status.connectionEpoch || !lastSent) return;
-        status.outputConfirmed = outputMatches(lastSent->target, lastIndex, result.body);
+        status.outputConfirmed = isHolyrics ? holyricsOutputMatches(lastSent->target, lastIndex, result.body) : outputMatches(lastSent->target, lastIndex, result.body);
         if (status.outputConfirmed)
         { status.lastProjected = targetLabel(lastSent->target); status.message = juce::String::fromUTF8("Salida confirmada · ") + status.lastProjected; }
         else status.message = juce::String::fromUTF8("Enviado · salida todavía no coincide");
@@ -295,7 +347,7 @@ FreeShowClient::~FreeShowClient() = default;
 bool FreeShowClient::validateSettings(const ConnectionSettings& settings, juce::String* error)
 {
     const auto fail = [&] { if (error) *error = juce::String::fromUTF8("Usa localhost o una IPv4 privada y un puerto válido"); return false; };
-    if (settings.port < 1 || settings.port > 65535 || settings.authToken.length() > 1024
+    if ((settings.provider != "freeshow" && settings.provider != "holyrics") || settings.port < 1 || settings.port > 65535 || settings.authToken.length() > 1024
         || settings.authToken.containsAnyOf("\r\n") || settings.host != settings.host.trim()) return fail();
     if (settings.host == "localhost") { if (error) error->clear(); return true; }
     const auto octets = juce::StringArray::fromTokens(settings.host, ".", "");
@@ -330,16 +382,16 @@ ConnectionStatus FreeShowClient::getStatus() const { std::lock_guard<std::mutex>
 void FreeShowClient::testConnection(Completion completion)
 {
     const auto e = impl->epoch();
-    { std::lock_guard<std::mutex> lock(impl->mutex); impl->status.state = ConnectionStatus::State::connecting; impl->status.message = juce::String::fromUTF8("Conectando a FreeShow…"); }
+    { std::lock_guard<std::mutex> lock(impl->mutex); impl->status.state = ConnectionStatus::State::connecting; impl->status.message = juce::String::fromUTF8("Conectando al programa de letras…"); }
     impl->enqueue([this, e, completion = std::move(completion)]
     {
-        const auto response = impl->request(action("get_shows"), e);
-        const bool ok = Impl::success(response) && unwrapResponse(response.body).isObject();
+        const auto response = impl->request(impl->listRequest(), e);
+        const bool ok = Impl::success(response) && (impl->holyrics() ? response.body.getProperty("data", {}).isArray() : unwrapResponse(response.body).isObject());
         if (ok) impl->connected(e);
         else if (Impl::success(response))
         {
             std::lock_guard<std::mutex> lock(impl->mutex);
-            if (e == impl->status.connectionEpoch) { impl->status.state = ConnectionStatus::State::error; impl->status.message = "Respuesta incompatible con FreeShow"; }
+            if (e == impl->status.connectionEpoch) { impl->status.state = ConnectionStatus::State::error; impl->status.message = "Respuesta incompatible con el programa elegido"; }
         }
         if (completion) completion(ok, ok ? juce::String{} : getStatus().message);
     });
@@ -349,10 +401,10 @@ void FreeShowClient::requestShows(ShowsCompletion completion)
     const auto e = impl->epoch();
     impl->enqueue([this, e, completion = std::move(completion)]
     {
-        const auto response = impl->request(action("get_shows"), e);
-        const bool ok = Impl::success(response) && unwrapResponse(response.body).isObject();
+        const auto response = impl->request(impl->listRequest(), e);
+        const bool ok = Impl::success(response) && (impl->holyrics() ? response.body.getProperty("data", {}).isArray() : unwrapResponse(response.body).isObject());
         if (ok) impl->connected(e);
-        if (completion) completion(ok ? parseShowList(response.body) : std::vector<ShowSummary>{}, ok ? juce::String{} : juce::String::fromUTF8("No se pudo cargar el catálogo FreeShow"));
+        if (completion) completion(ok ? (impl->holyrics() ? parseHolyricsSongs(response.body) : parseShowList(response.body)) : std::vector<ShowSummary>{}, ok ? juce::String{} : juce::String::fromUTF8("No se pudo cargar el catálogo de letras"));
     });
 }
 void FreeShowClient::requestShow(juce::String id, ShowCompletion completion)
@@ -364,7 +416,7 @@ void FreeShowClient::requestShow(juce::String id, ShowCompletion completion)
 void FreeShowClient::queueTarget(Target target, juce::uint64 generation)
 {
     { std::lock_guard<std::mutex> lock(impl->mutex);
-      if (impl->status.state != ConnectionStatus::State::connected) return;
+      if (impl->status.state != ConnectionStatus::State::connected || target.provider != impl->settings.provider) return;
       if (generation != 0 && generation != impl->playbackGeneration.load(std::memory_order_acquire)) return;
       impl->status.outputConfirmed = false;
       impl->pending = Impl::Cue{std::move(target), generation, impl->status.connectionEpoch, ++impl->cueSerial,
@@ -389,7 +441,7 @@ void FreeShowClient::disconnect()
 {
     std::lock_guard<std::mutex> lock(impl->mutex);
     impl->pending.reset(); impl->lastSent.reset(); impl->status.connectionEpoch++; impl->cueSerial++;
-    impl->status.state = ConnectionStatus::State::disconnected; impl->status.message = "FreeShow desconectado";
+    impl->status.state = ConnectionStatus::State::disconnected; impl->status.message = "Programa de letras desconectado";
     impl->status.outputConfirmed = false; impl->status.reviewShowId.clear();
 }
 }

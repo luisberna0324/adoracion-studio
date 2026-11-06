@@ -3,8 +3,10 @@
 #include "SongData.h"
 
 #include <atomic>
+#include <cmath>
 
 namespace {
+std::atomic<double> cachedSongCrossfadeSeconds{-1.0};
 juce::File getMtControlsDirectory() {
   auto dir =
       ApplicationDataPaths::applicationDataDirectory()
@@ -247,6 +249,27 @@ void AppSettings::setDemoWelcomeSeen(const bool value) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+double AppSettings::getSongCrossfadeSeconds() {
+  const double cached = cachedSongCrossfadeSeconds.load(std::memory_order_acquire);
+  if (cached >= 1.0) return cached;
+  const auto parsed = juce::JSON::parse(getSettingsFile());
+  const double seconds = parsed.getProperty("songCrossfadeSeconds", 3.0);
+  const double validated = std::isfinite(seconds) ? juce::jlimit(1.0, 10.0, seconds) : 3.0;
+  cachedSongCrossfadeSeconds.store(validated, std::memory_order_release);
+  return validated;
+}
+
+void AppSettings::setSongCrossfadeSeconds(const double seconds) {
+  if (!std::isfinite(seconds)) return;
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  auto root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject()) root = juce::var(new juce::DynamicObject());
+  const double validated = juce::jlimit(1.0, 10.0, seconds);
+  root.getDynamicObject()->setProperty("songCrossfadeSeconds", validated);
+  if (getSettingsFile().replaceWithText(juce::JSON::toString(root, true)))
+    cachedSongCrossfadeSeconds.store(validated, std::memory_order_release);
+}
+
 PadsCrossfadePreset AppSettings::getPadsCrossfadePreset() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())
@@ -397,7 +420,7 @@ void AppSettings::setLayoutMode(const AppLayoutMode mode) {
     modeText = "large";
 
   if (auto *o = root.getDynamicObject()) {
-    o->setProperty("version", 10);
+    o->setProperty("version", juce::jmax(13, static_cast<int>(o->getProperty("version"))));
     o->setProperty("layoutMode", modeText);
   }
 
@@ -508,6 +531,44 @@ bool AppSettings::setFreeShowEndpoint(const FreeShowEndpointSettings &endpoint) 
   value->setProperty("host", endpoint.host.trim()); value->setProperty("port", endpoint.port);
   root.getDynamicObject()->setProperty("freeShow", juce::var(value));
   return file.replaceWithText(juce::JSON::toString(root, true));
+}
+
+FreeShowEndpointSettings AppSettings::getHolyricsEndpoint() {
+  FreeShowEndpointSettings endpoint; endpoint.port = 8091;
+  const auto file = getSettingsFile();
+  if (!file.existsAsFile()) return endpoint;
+  const auto value = juce::JSON::parse(file).getProperty("holyrics", {});
+  const auto host = value.getProperty("host", endpoint.host).toString().trim();
+  const int port = value.getProperty("port", endpoint.port);
+  if (host.isNotEmpty() && !host.containsAnyOf("\r\n")) endpoint.host = host;
+  if (port >= 1 && port <= 65535) endpoint.port = port;
+  return endpoint;
+}
+bool AppSettings::setHolyricsEndpoint(const FreeShowEndpointSettings &endpoint) {
+  if (endpoint.host.trim().isEmpty() || endpoint.host.containsAnyOf("\r\n")
+      || endpoint.port < 1 || endpoint.port > 65535) return false;
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  const auto file = getSettingsFile();
+  auto root = file.existsAsFile() ? juce::JSON::parse(file) : juce::var{};
+  if (!root.isObject()) root = juce::var(new juce::DynamicObject());
+  auto *value = new juce::DynamicObject();
+  value->setProperty("host", endpoint.host.trim()); value->setProperty("port", endpoint.port);
+  root.getDynamicObject()->setProperty("holyrics", juce::var(value));
+  return file.replaceWithText(juce::JSON::toString(root, true));
+}
+
+juce::String AppSettings::getLyricsProvider() {
+  const auto value = juce::JSON::parse(getSettingsFile()).getProperty("lyricsProvider", "freeshow").toString();
+  return value == "holyrics" ? value : juce::String("freeshow");
+}
+bool AppSettings::setLyricsProvider(const juce::String &provider) {
+  if (provider != "freeshow" && provider != "holyrics") return false;
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  const auto file = getSettingsFile();
+  auto value = file.existsAsFile() ? juce::JSON::parse(file) : juce::var{};
+  if (!value.isObject()) value = juce::var(new juce::DynamicObject());
+  value.getDynamicObject()->setProperty("lyricsProvider", provider);
+  return file.replaceWithText(juce::JSON::toString(value, true));
 }
 
 juce::int64 AppSettings::getLastSuccessfulLoginMs() {

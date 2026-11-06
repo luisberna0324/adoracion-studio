@@ -1,6 +1,7 @@
 #include "SongImportWizardComponent.h"
 
 #include "../../data/Localization.h"
+#include "../../data/AppSettings.h"
 #include "../../data/TempoValue.h"
 #include "../../data/SessionAuthLogger.h"
 #include "../../data/SongLibraryStore.h"
@@ -150,11 +151,11 @@ public:
     else if (isHighlighted)
       colour = colour.brighter(0.08f);
     g.setColour(colour);
-    g.fillRoundedRectangle(area, 14.0f);
+    g.fillRoundedRectangle(area, button.getHeight() <= 32 ? 9.0f : 14.0f);
   }
 
-  juce::Font getTextButtonFont(juce::TextButton &, int) override {
-    return makeAppFont(17.0f, AppFontWeight::Bold);
+  juce::Font getTextButtonFont(juce::TextButton &, int height) override {
+    return makeAppFont(height <= 32 ? 14.0f : 17.0f, AppFontWeight::Bold);
   }
 };
 } // namespace
@@ -215,11 +216,13 @@ public:
   void resized() override {
     auto r = getLocalBounds().reduced(4, 3);
     if (phoneLayout) {
-      auto heading = r.removeFromTop(getHeight() >= 104 ? 44 : 32);
+      const bool compact = getHeight() <= 72;
+      const bool large = getHeight() >= 88 && getHeight() < 104;
+      auto heading = r.removeFromTop(getHeight() >= 104 ? 44 : compact ? 26 : large ? 36 : 32);
       includeToggle.setBounds(heading.removeFromRight(90));
       fileLabel.setBounds(heading);
       r.removeFromTop(4);
-      auto fields = r.removeFromTop(getHeight() >= 104 ? 48 : 36);
+      auto fields = r.removeFromTop(getHeight() >= 104 ? 48 : compact ? 32 : large ? 40 : 36);
       const int gap = 8;
       const int firstWidth = (fields.getWidth() - gap) / 2;
       displayNameEditor.setBounds(fields.removeFromLeft(firstWidth));
@@ -962,6 +965,27 @@ bool SongImportWizardComponent::usesPhoneCreationLayout() const {
   return getWidth() > 0 && getWidth() < 600 && isPhoneSizedTouchLayout(*this);
 }
 
+ResponsiveLayoutProfile SongImportWizardComponent::resolveDesktopLayoutProfile() const {
+  // Mobile keeps its native/touch metrics, including tablet creation pages.
+  if (useTouchOptimisedControls())
+    return ResponsiveLayoutProfile::Standard;
+
+  switch (AppSettings::getLayoutMode()) {
+  case AppLayoutMode::Compact: return ResponsiveLayoutProfile::Compact;
+  case AppLayoutMode::Standard: return ResponsiveLayoutProfile::Standard;
+  case AppLayoutMode::Large: return ResponsiveLayoutProfile::Large;
+  case AppLayoutMode::Auto: break;
+  }
+
+  // This is often a narrow library column below the waveform. Use the form's
+  // actual logical surface rather than the monitor's pixel resolution.
+  if (getWidth() < 520 || getHeight() <= 680)
+    return ResponsiveLayoutProfile::Compact;
+  if (getWidth() >= 600 && getHeight() >= 820)
+    return ResponsiveLayoutProfile::Large;
+  return ResponsiveLayoutProfile::Standard;
+}
+
 
 void SongImportWizardComponent::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
@@ -976,9 +1000,11 @@ void SongImportWizardComponent::paint(juce::Graphics &g) {
           L10n::tr("Revisar", "Review")};
       const int active = static_cast<int>(currentStep);
       auto stepper = stepperBounds.toFloat();
+      const bool compact = usesCompactDesktopLayout();
       const float left = stepper.getX() + 31.0f;
       const float right = stepper.getRight() - 31.0f;
-      const float circleY = stepper.getY() + 22.0f;
+      const float circleY = stepper.getY() + (compact ? 17.0f : 22.0f);
+      const float radius = compact ? 12.0f : 14.0f;
       const float spacing = (right - left) / 3.0f;
 
       g.setColour(UITheme::cardBorder.withAlpha(0.95f));
@@ -992,21 +1018,21 @@ void SongImportWizardComponent::paint(juce::Graphics &g) {
       for (int index = 0; index < 4; ++index) {
         const float x = left + spacing * static_cast<float>(index);
         const bool reached = index <= active;
-        auto circle = juce::Rectangle<float>(x - 14.0f, circleY - 14.0f,
-                                             28.0f, 28.0f);
+        auto circle = juce::Rectangle<float>(x - radius, circleY - radius,
+                                             radius * 2.0f, radius * 2.0f);
         g.setColour(reached ? UITheme::accent : UITheme::textSecondary);
         g.drawEllipse(circle, reached ? 1.8f : 1.3f);
         g.setColour(UITheme::panelDark.withAlpha(0.96f));
         g.fillEllipse(circle.reduced(2.0f));
         g.setColour(reached ? UITheme::accent : UITheme::textSecondary);
-        g.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
+        g.setFont(makeAppFont(compact ? 12.0f : 14.0f, AppFontWeight::Medium));
         g.drawText(juce::String(index + 1), circle,
                    juce::Justification::centred, false);
 
         auto labelArea = juce::Rectangle<float>(x - spacing * 0.47f,
-                                                circle.getBottom() + 7.0f,
+                                                circle.getBottom() + (compact ? 4.0f : 7.0f),
                                                 spacing * 0.94f, 20.0f);
-        g.setFont(makeAppFont(12.5f, index == active
+        g.setFont(makeAppFont(compact ? 11.5f : 12.5f, index == active
                                         ? AppFontWeight::SemiBold
                                         : AppFontWeight::Regular));
         g.drawFittedText(labels[static_cast<size_t>(index)],
@@ -1115,6 +1141,9 @@ void SongImportWizardComponent::resized() {
     submissionOverlay->setBounds(getLocalBounds());
   metadataScrollAnimating = false;
   phoneCreationLayout = usesPhoneCreationLayout();
+  desktopLayoutProfile = resolveDesktopLayoutProfile();
+  const bool compact = usesCompactDesktopLayout();
+  const bool large = usesLargeDesktopLayout();
   if (usesCreationLayout()) {
     auto bounds = getLocalBounds();
     auto safeBounds = bounds;
@@ -1128,17 +1157,19 @@ void SongImportWizardComponent::resized() {
                        .subtractedFrom(safeBounds);
     }
     phoneKeyboardVisible = hasKeyboardInsets(phoneKeyboardInsets);
-    auto content = safeBounds.reduced(17, 0);
-    content.removeFromTop(mobileTopBarHeight());
+    const int headerHeight = compact ? 44 : large ? 60 : mobileTopBarHeight();
+    auto content = safeBounds.reduced(compact ? 12 : 17, 0);
+    content.removeFromTop(headerHeight);
     auto header = safeBounds.reduced(mobileTopBarHorizontalMargin(), 0)
-                      .removeFromTop(mobileTopBarHeight());
+                      .removeFromTop(headerHeight);
     mobileCloseButton.setVisible(true);
-    const int actionSize = mobileTopBarActionSize();
+    const int actionSize = compact ? 32 : mobileTopBarActionSize();
     mobileCloseButton.setBounds(header.removeFromRight(actionSize)
                                     .withSizeKeepingCentre(actionSize,
                                                            actionSize));
     header.removeFromRight(mobileTopBarActionGap());
-    titleLabel.setFont(makeAppFont(18.0f, AppFontWeight::SemiBold));
+    titleLabel.setFont(makeAppFont(compact ? 16.0f : large ? 20.0f : 18.0f,
+                                   AppFontWeight::SemiBold));
     titleLabel.setJustificationType(
         phoneCreationLayout ? juce::Justification::centredLeft
                             : juce::Justification::centred);
@@ -1146,7 +1177,7 @@ void SongImportWizardComponent::resized() {
     subtitleLabel.setVisible(false);
     cancelButton.setVisible(false);
 
-    stepperBounds = content.removeFromTop(phoneCreationLayout ? 86 : 72);
+    stepperBounds = content.removeFromTop(phoneCreationLayout ? 86 : compact ? 60 : large ? 78 : 72);
     content.removeFromTop(4);
 
     auto *primary = submitButton.isVisible()
@@ -1175,7 +1206,8 @@ void SongImportWizardComponent::resized() {
                            &backButton})
         button->setBounds({});
     } else {
-      auto footer = content.removeFromBottom(phoneCreationLayout ? 66 : 54).reduced(0, 9);
+      auto footer = content.removeFromBottom(phoneCreationLayout ? 66 : compact ? 44 : large ? 58 : 54)
+                        .reduced(0, compact ? 6 : 9);
       if (backButton.isVisible()) {
         backButton.setBounds(footer.removeFromLeft(92));
         footer.removeFromLeft(8);
@@ -1193,7 +1225,7 @@ void SongImportWizardComponent::resized() {
 
     for (auto *label : {&songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
                         &timeSignatureLabel})
-      label->setFont(makeAppFont(14.0f, AppFontWeight::Regular));
+      label->setFont(makeAppFont(compact ? 12.0f : 14.0f, AppFontWeight::Regular));
 
     layoutStepImport(content);
     layoutStepMetadata(content);
@@ -1453,22 +1485,27 @@ void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
     return;
 
   if (usesCreationLayout()) {
-    stemsSectionLabel.setBounds(bounds.removeFromTop(22));
-    bounds.removeFromTop(8);
+    const bool compact = usesCompactDesktopLayout();
+    const bool large = usesLargeDesktopLayout();
+    const int actionHeight = phoneCreationLayout ? 48 : compact ? 32 : large ? 40 : 36;
+    const int sectionHeight = compact ? 18 : 22;
+    const int spacing = compact ? 6 : 8;
+    stemsSectionLabel.setBounds(bounds.removeFromTop(sectionHeight));
+    bounds.removeFromTop(spacing);
     if (showReplace) {
-      auto actions = bounds.removeFromTop(phoneCreationLayout ? 48 : 36);
+      auto actions = bounds.removeFromTop(actionHeight);
       const int gap = 8;
       const int width = (actions.getWidth() - gap) / 2;
       addFilesButton.setBounds(actions.removeFromLeft(width));
       actions.removeFromLeft(gap);
       replaceFilesButton.setBounds(actions);
     } else {
-      addFilesButton.setBounds(bounds.removeFromTop(phoneCreationLayout ? 48 : 36));
+      addFilesButton.setBounds(bounds.removeFromTop(actionHeight));
     }
-    bounds.removeFromTop(8);
-    selectedFilesLabel.setBounds(bounds.removeFromTop(22));
-    bounds.removeFromTop(8);
-    stemsList.setRowHeight(phoneCreationLayout ? 62 : 48);
+    bounds.removeFromTop(spacing);
+    selectedFilesLabel.setBounds(bounds.removeFromTop(sectionHeight));
+    bounds.removeFromTop(spacing);
+    stemsList.setRowHeight(phoneCreationLayout ? 62 : compact ? 44 : large ? 52 : 48);
     stemsList.setBounds(bounds);
     return;
   }
@@ -1544,17 +1581,20 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     clearSongSearchButton.setVisible(false);
     changeArtworkLabel.setVisible(true);
 
-    const int fieldLabelH = 20;
-    const int fieldH = phoneCreationLayout ? 48 : 36;
+    const bool compact = usesCompactDesktopLayout();
+    const bool large = usesLargeDesktopLayout();
+    const int fieldLabelH = compact ? 18 : 20;
+    const int fieldH = phoneCreationLayout ? 48 : compact ? 32 : large ? 40 : 36;
     const int gap = 8;
-    const int groupGap = 9;
+    const int groupGap = compact ? 7 : 9;
 
     metadataViewport.setBounds(bounds);
     // Content geometry is independent of keyboard height. Only its visible
     // window changes, so editing never swaps the form for a different layout.
-    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), phoneCreationLayout ? 550 : 460);
+    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2),
+                            phoneCreationLayout ? 550 : compact ? 400 : large ? 500 : 460);
     bounds = metadataContent.getLocalBounds();
-    const int artworkSize = phoneCreationLayout ? 128 : 104;
+    const int artworkSize = phoneCreationLayout ? 128 : compact ? 88 : large ? 112 : 104;
     auto artworkLine = bounds.removeFromTop(artworkSize);
     auto artwork = artworkLine.withSizeKeepingCentre(artworkSize, artworkSize);
     secuenciasArtworkPreview.setBounds(artwork);
@@ -1562,7 +1602,7 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     artworkOverlayButtonBounds = juce::Rectangle<int>(
         artwork.getRight() - 46, artwork.getBottom() - 46, 44, 44);
     bounds.removeFromTop(4);
-    changeArtworkLabel.setBounds(bounds.removeFromTop(25));
+    changeArtworkLabel.setBounds(bounds.removeFromTop(compact ? 22 : 25));
     bounds.removeFromTop(groupGap);
 
     songTitleLabel.setBounds(bounds.removeFromTop(fieldLabelH));
@@ -2125,8 +2165,11 @@ void SongImportWizardComponent::rebuildMappingRows() {
 }
 
 void SongImportWizardComponent::layoutMappingRows() {
-  const int rowH = usesCreationLayout() ? (phoneCreationLayout ? 104 : 80) : 42;
-  const int gap = 5;
+  const int rowH = usesCreationLayout()
+                      ? (phoneCreationLayout ? 104 : usesCompactDesktopLayout() ? 72
+                                                     : usesLargeDesktopLayout() ? 88 : 80)
+                      : 42;
+  const int gap = usesCompactDesktopLayout() ? 4 : 5;
   const int width = juce::jmax(1, mapViewport.getWidth() - 10);
   int y = 6;
   for (auto &row : mappingRows) {

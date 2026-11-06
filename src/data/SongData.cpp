@@ -1,5 +1,6 @@
 #include "SongData.h"
 #include "Localization.h"
+#include "GuideVocabulary.h"
 
 #include <algorithm>
 #include <array>
@@ -575,22 +576,12 @@ const std::array<const char *, 19> kTrackCategories = {{
     "Pads/Ambience",
 }};
 
-const std::array<const char *, 14> kSongSectionSuggestions = {{
-    "Intro",
-    "Verse",
-    "Pre-Chorus",
-    "Chorus",
-    "Refrain",
-    "Post-Chorus",
-    "Bridge",
-    "Instrumental",
-    "Solo",
-    "Interlude",
-    "Tag",
-    "Vamp",
-    "Outro",
-    "Ending",
-}};
+const std::array<const char *, 17> kSongSectionSuggestions = [] {
+  std::array<const char *, 17> names{};
+  const auto &definitions = playworship::guide::sectionDefinitions();
+  for (size_t i = 0; i < definitions.size(); ++i) names[i] = definitions[i].key;
+  return names;
+}();
 
 int timeSignatureBeatsPerBar(const juce::String &timeSignature) {
   const auto trimmed = timeSignature.trim();
@@ -631,12 +622,7 @@ juce::String makeDisplayNameFromFile(const juce::File &file) {
 
 juce::String suggestCategoryFromFilename(const juce::String &filename) {
   const auto lower = filename.toLowerCase();
-  juce::String normalized;
-  normalized.preallocateBytes(lower.getNumBytesAsUTF8());
-  for (int i = 0; i < lower.length(); ++i) {
-    const juce::juce_wchar c = lower[i];
-    normalized += static_cast<juce::juce_wchar>(juce::CharacterFunctions::isLetterOrDigit(c) ? c : ' ');
-  }
+  const auto normalized = playworship::guide::normalizedWords(filename);
   auto tokens = juce::StringArray::fromTokens(normalized, " ", "");
   tokens.removeEmptyStrings();
 
@@ -650,8 +636,7 @@ juce::String suggestCategoryFromFilename(const juce::String &filename) {
 
   if (lower.contains("click") || hasToken("click"))
     return "Click";
-  if (lower.contains("cue") || lower.contains("guide") || hasToken("cue") ||
-      hasToken("cues"))
+  if (hasToken("cue") || hasToken("cues") || hasToken("guide") || hasToken("guia"))
     return "Cues";
   if (lower.contains("bass") || hasToken("bass"))
     return "Bass";
@@ -673,7 +658,7 @@ juce::String suggestCategoryFromFilename(const juce::String &filename) {
       hasToken("ambience") || hasToken("ambient"))
     return "Pads/Ambience";
   if (lower.contains("string") || hasToken("string") || hasToken("strings") ||
-      hasToken("violin") || hasToken("cello"))
+      hasToken("violin") || hasToken("cello") || hasToken("cuerdas") || hasToken("cuerda"))
     return "Strings";
   if (lower.contains("brass") || hasToken("brass") || hasToken("trumpet") ||
       hasToken("trombone") || hasToken("horn"))
@@ -754,39 +739,17 @@ bool isArrangementPartColorValid(const juce::String &value) {
 }
 
 namespace {
-struct ArrangementSectionStyle {
-  const char *canonicalName = nullptr;
-  const char *spanishLabel = nullptr;
-  const char *englishLabel = nullptr;
-  const char *colour = nullptr;
-  std::initializer_list<const char *> aliases;
-};
+using ArrangementSectionStyle = playworship::guide::SectionDefinition;
 
-const std::array<ArrangementSectionStyle, 15> kArrangementSectionStyles = {{
-    {"Intro", "Intro", "Intro", "ffB66A8A", {"intro", "introduccion", "introduction"}},
-    {"Verse", "Verso", "Verse", "ff8A7A68", {"verse", "verso"}},
-    {"Pre-Chorus", "Pre-Coro", "Pre-Chorus", "ff5E8F76",
-     {"prechorus", "pre-coro", "precoro", "prechorus", "pre"}},
-    {"Chorus", "Coro", "Chorus", "ff6FA36D", {"chorus", "coro"}},
-    {"Refrain", "Refrain", "Refrain", "ff6D91A3",
-     {"refrain", "estribillo"}},
-    {"Post-Chorus", "Post-Coro", "Post-Chorus", "ff7D8F6B",
-     {"postchorus", "post-coro", "postcoro"}},
-    {"Bridge", "Puente", "Bridge", "ff7D74A8", {"bridge", "puente"}},
-    {"Instrumental", "Instrumental", "Instrumental", "ffA8895E",
-     {"instrumental", "instrument"}},
-    {"Solo", "Solo", "Solo", "ffB88455", {"solo"}},
-    {"Breakdown", "Breakdown", "Breakdown", "ff8A6B6B", {"breakdown", "break"}},
-    {"Interlude", "Interlude", "Interlude", "ff6E9A91",
-     {"interlude", "interludio"}},
-    {"Tag", "Tag", "Tag", "ff9A7FA8", {"tag"}},
-    {"Vamp", "Vamp", "Vamp", "ff7F9B67", {"vamp"}},
-    {"Outro", "Outro", "Outro", "ff92786D", {"outro", "salida"}},
-    {"Ending", "Final", "Ending", "ff9B5E75", {"ending", "final"}},
-}};
+// Older arrangements may still contain a Breakdown/Break musical clip.
+// Preserve its style and canonical key without offering it as a new section;
+// the shared vocabulary classifies new Breakdown/Break instructions as cues.
+const ArrangementSectionStyle kLegacyBreakdownStyle{
+    playworship::guide::SectionFamily::unknown, "Breakdown", "Breakdown", "Breakdown",
+    "Breakdown", "ff8A6B6B", {"breakdown", "break"}, 0};
 
 juce::String normalizeArrangementSectionToken(juce::String name) {
-  auto text = name.trim().toLowerCase();
+  auto text = playworship::guide::normalizedWords(name);
   while (text.isNotEmpty()) {
     const auto ch = text[text.length() - 1];
     if (!juce::CharacterFunctions::isDigit(ch))
@@ -823,14 +786,13 @@ const ArrangementSectionStyle *findArrangementSectionStyle(const juce::String &n
   if (token.isEmpty())
     return nullptr;
 
-  for (const auto &style : kArrangementSectionStyles) {
-    if (token == normalizeArrangementSectionToken(style.canonicalName))
-      return &style;
-    for (const auto *alias : style.aliases) {
-      if (token == normalizeArrangementSectionToken(alias))
-        return &style;
-    }
+  for (const auto &style : playworship::guide::sectionDefinitions()) {
+    if (token == normalizeArrangementSectionToken(style.key)) return &style;
+    for (const auto *alias : style.aliases)
+      if (token == normalizeArrangementSectionToken(alias)) return &style;
   }
+  for (const auto *alias : kLegacyBreakdownStyle.aliases)
+    if (token == normalizeArrangementSectionToken(alias)) return &kLegacyBreakdownStyle;
   return nullptr;
 }
 
@@ -857,7 +819,7 @@ juce::String countDisplayWordForName(const juce::String &name) {
 
 juce::String canonicalArrangementSectionName(const juce::String &name) {
   if (const auto *style = findArrangementSectionStyle(name))
-    return style->canonicalName;
+    return style->key;
   return {};
 }
 

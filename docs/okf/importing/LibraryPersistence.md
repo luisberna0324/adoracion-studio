@@ -20,7 +20,9 @@ Convertir a proyecto conserva el proyecto registrado dentro del contenedor.
 Elegir ubicacion externa produce una copia exportada; los cambios siguientes
 se guardan en Biblioteca. Una exportacion fallida conserva el proyecto interno.
 La conversion a FLAC de esta variante usa codecs integrados, incluido
-CoreAudio para entradas M4A. El perfil desktop normal conserva su comportamiento.
+CoreAudio para entradas M4A. El escritorio normal también intenta primero los
+codecs integrados para guardar proyectos con WAV, AIFF y MP3; FFmpeg continúa
+como fallback para formatos que esa ruta no pueda convertir.
 Ver [Mac App Store](../release/MacAppStore.md).
 
 ## Guardar y exportar en un disco externo
@@ -94,7 +96,9 @@ archivo bloqueado), se conserva el backup y el error muestra su ruta para
 recuperarlo; la limpieza de un fallo nunca elimina ese unico respaldo.
 No se convierten canciones existentes al arrancar ni al leer Biblioteca.
 Los proyectos `.pwproj` conservan su contrato de audio FLAC obligatorio y su
-transaccion de guardado/reapertura. La cache de decodificacion `StemCache`
+transaccion de guardado/reapertura. Su creación utiliza primero el códec FLAC
+integrado y el fallback de escritorio conserva su preparación automática.
+La cache de decodificacion `StemCache`
 conserva su politica de rendimiento; no depende de esta optimizacion de espacio.
 
 ## Persistencia en iOS

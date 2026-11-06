@@ -126,6 +126,10 @@ void AppModal::show() {
 }
 
 void AppModal::paint(juce::Graphics &g) {
+  paintSurface(g, cardBounds);
+}
+
+void AppModal::paintSurface(juce::Graphics &g, juce::Rectangle<int> cardBounds) {
   g.fillAll(juce::Colours::black.withAlpha(0.58f));
   auto card = cardBounds.toFloat();
   juce::DropShadow(juce::Colours::black.withAlpha(0.30f), 18, {0, 8})

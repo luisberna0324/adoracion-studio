@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../data/SongData.h"
+#include "../../analysis/GuideSectionAlignment.h"
 #include "../UiCommon.h"
 #include "../components/AppModal.h"
 #include "PracticeTimelineRuler.h"
@@ -27,6 +28,7 @@ private:
 };
 
 struct WaveformSongActionsState {
+  bool localAnalysisAvailable = true;
   bool cloudLinked = false;
   bool settingsPending = false;
   bool settingsActionBusy = false;
@@ -60,7 +62,8 @@ public:
   void setLiveMode(bool enabled);
   bool isLiveMode() const { return liveMode; }
   bool canToggleLiveMode() const {
-    return !blankSongTimeline && (liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty()));
+    return !blankSongTimeline && (liveMode || (!isEditingArrangement() &&
+        sectionAutomationEditingPartId.isEmpty() && !guideAlignmentActive));
   }
 
   void setWaveformBins(std::vector<float> bins);
@@ -112,6 +115,30 @@ public:
   void setOnTempoMapChanged(TempoMapChangedCallback cb);
   void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
   void setOnExportMixRequested(std::function<void(juce::String)> cb);
+  void setSectionDetectionAvailability(bool available, juce::String reason = {});
+  void setOnSectionDetectionRequest(std::function<void()> cb);
+  // Transient review blocks never enter the player, persistence or edit history.
+  void setSectionDetectionPreview(std::vector<SongArrangementPartSnapshot> parts);
+  void clearSectionDetectionPreview();
+  void setGuideAlignmentPreview(const playworship::analysis::GuideAlignmentDraft &);
+  void clearGuideAlignmentPreview();
+  bool hasGuideAlignmentPreview() const { return guideAlignmentActive; }
+  const playworship::analysis::GuideAlignmentDraft &getGuideAlignmentPreview() const { return guideAlignmentPreview; }
+  void setGuideAlignmentCallbacks(std::function<void(double)> originMoved,
+      std::function<void(const juce::String &, double, bool)> boundaryMoved,
+      std::function<void()> accept, std::function<void()> cancel);
+  void setGuideAlignmentError(juce::String);
+  void setOnGuideAlignmentRename(std::function<void(juce::String, juce::String)>);
+  void setOnGuideCatalogSelection(std::function<void(juce::String,
+      playworship::analysis::GuideCatalogChoice)>);
+  void setOnGuideSectionAdd(std::function<void(
+      playworship::analysis::GuideCatalogChoice, double)>);
+  void setOnGuideAlignmentRemove(std::function<void(const juce::String &)>);
+  void setOnGuideSecondaryCueMove(std::function<void(const juce::String &, double, bool)>);
+  SongArrangementSnapshot getArrangementSnapshot() const { return arrangement; }
+  // Confirms only additive, non-overlapping annotations, preserving every
+  // existing part/cue and entering the ordinary arrangement undo history once.
+  bool applyDetectedSections(const SongArrangementSnapshot &snapshot);
   void setSongActionsStateProvider(
       std::function<WaveformSongActionsState()> provider);
   void setOnCloudSettingsSyncRequested(std::function<void()> cb);
@@ -358,6 +385,58 @@ private:
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
   std::function<void(juce::String)> onExportMixRequested;
   std::function<WaveformSongActionsState()> songActionsStateProvider;
+  std::function<void()> onSectionDetectionRequest;
+  bool sectionDetectionAvailable = false;
+  juce::String sectionDetectionUnavailableReason;
+  std::vector<SongArrangementPartSnapshot> sectionDetectionPreview;
+  playworship::analysis::GuideAlignmentDraft guideAlignmentPreview;
+  bool guideAlignmentActive = false;
+  juce::uint64 guideAlignmentGeneration = 0;
+  juce::String guideAlignmentError;
+  std::function<void(double)> onGuideOriginMoved;
+  std::function<void(const juce::String &, double, bool)> onGuideBoundaryMoved;
+  std::function<void()> onGuideAlignmentAccept, onGuideAlignmentCancel;
+  std::function<void(juce::String, juce::String)> onGuideAlignmentRename;
+  std::function<void(juce::String, playworship::analysis::GuideCatalogChoice)> onGuideCatalogSelection;
+  std::function<void(playworship::analysis::GuideCatalogChoice, double)> onGuideSectionAdd;
+  std::function<void(const juce::String &)> onGuideAlignmentRemove;
+  std::function<void(const juce::String &, double, bool)> onGuideSecondaryCueMove;
+  juce::Label guideAlignmentLabel;
+  juce::TextButton guideAlignmentAcceptButton, guideAlignmentCancelButton, guideAlignmentAddButton;
+  juce::TextButton suggestSectionsButton;
+  juce::Rectangle<int> guideAlignmentToolbarBounds;
+  struct GuideAlignmentMarkerBounds {
+    juce::String id;
+    juce::Rectangle<float> pill, lineHit;
+    float x = 0.0f;
+    bool secondary = false;
+    juce::Point<float> point;
+    bool pending = false;
+  };
+  std::vector<GuideAlignmentMarkerBounds> guideAlignmentMarkers;
+  juce::Rectangle<float> guideOriginPill, guideOriginHit;
+  bool guideOriginDragging = false, guideBoundaryDragging = false, guideSecondaryDragging = false, guidePanning = false;
+  juce::String guideDraggedId, guideSelectedSecondaryId;
+  juce::Point<float> guideDragStart;
+  double guideDragSourceStart = 0.0;
+  float guideDragViewportStart = 0.0f, guideDragViewportSpan = 1.0f;
+  juce::TextEditor guideNameEditor;
+  juce::String guideRenamingId;
+  void layoutGuideAlignmentToolbar();
+  void rebuildGuideAlignmentMarkers();
+  void drawGuideAlignmentPreview(juce::Graphics &, juce::Rectangle<float>, juce::Rectangle<float>);
+  int hitGuideAlignmentMarker(juce::Point<float>) const;
+  float guideAlignmentTimeX(double) const;
+  void beginGuideAlignmentRename(const juce::String &);
+  void finishGuideAlignmentRename(bool);
+  using GuideCatalogMenuItems = std::vector<std::pair<int, playworship::analysis::GuideCatalogChoice>>;
+  juce::PopupMenu buildGuideCatalogMenu(const juce::String &, GuideCatalogMenuItems &,
+                                       bool sectionsOnly = false) const;
+  void showGuideCatalogPicker(const juce::String &);
+  void showGuideSectionAddPicker(double seconds, juce::Rectangle<int> anchor);
+  void dispatchGuideSectionAdd(const playworship::analysis::GuideCatalogChoice &, double seconds);
+  void dispatchGuideCatalogSelection(const juce::String &,
+      const playworship::analysis::GuideCatalogChoice &);
   std::function<void()> onCloudSettingsSyncRequested;
   std::function<void(juce::Rectangle<int>)>
       onCloudSettingsVersionsRequested;
@@ -655,13 +734,16 @@ private:
                                 const juce::Rectangle<float> &bounds,
                                 float windowStart, float windowSpan) const;
   void drawSeekRuler(juce::Graphics &g, const juce::Rectangle<float> &bounds,
-                     float windowStart, float windowSpan) const;
+                     float windowStart, float windowSpan,
+                     bool showMusicalMarks = true) const;
   void drawSectionInsertionAnchor(
       juce::Graphics &g, const juce::Rectangle<float> &waveBounds,
       const juce::Rectangle<float> &rulerBounds, float windowStart,
       float windowSpan) const;
   void drawArrangementOverlay(juce::Graphics &g,
                               const juce::Rectangle<float> &mainWaveBounds);
+  void drawSectionDetectionPreview(juce::Graphics &g,
+                                  const juce::Rectangle<float> &waveBounds);
   void drawTempoOverlay(juce::Graphics &g,
                         const juce::Rectangle<float> &mainWaveBounds);
   void drawMiniMap(juce::Graphics &g,

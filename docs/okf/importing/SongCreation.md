@@ -3,7 +3,7 @@ type: Import Contract
 title: Song Creation
 description: Creacion portable compartida entre escritorio y movil
 resource: src/ui/panels/SongImportWizardComponent.cpp
-timestamp: 2026-10-12T00:00:00-03:00
+timestamp: 2026-11-06T00:00:00-03:00
 ---
 
 # Creacion de canciones
@@ -18,12 +18,31 @@ El asistente mantiene un borrador al recorrer Detalles, Archivos, Secciones
 (mapeo de pistas) y Revisar. Retroceder no descarta nombres, categorias ni la
 seleccion Cargar. Cancelar el selector de archivos conserva los archivos previos.
 
+La sugerencia de categoría al agregar archivos reconoce `cue`, `cues`, `guide`,
+`guia` y `guía` como palabras completas, con acentos normalizados. `Cuerdas`
+y `Cuerda` proponen `Strings`. Así, `CUERDAS` conserva su tratamiento musical
+y su transposición, mientras `GUIA` propone `Cues`. Las categorías existentes
+se conservan al abrir o editar una canción; la sugerencia se aplica a los
+archivos que se agregan al asistente.
+
 En telefonos iOS/Android el asistente ocupa toda la pantalla vertical y respeta
 area segura/teclado. Detalles tiene viewport; Archivos una lista desplazable;
 el mapeo filas apiladas; Revisar un resumen desplazable. Agregar cancion en
 escritorio usa esa misma jerarquia, indicador Detalles/Archivos/Secciones/Revisar
-y navegacion inferior. Solo reduce controles (campos de 36 px, filas de archivos
-de 48 px y mapeo de 80 px). La edicion de escritorio reutiliza el mismo formulario desplazable y la pagina interna de Agregar, con datos precargados y callbacks de actualizacion.
+y navegacion inferior. En escritorio, la densidad compartida de Configuracion
+se aplica al formulario: Compacto usa campos de 32 puntos, archivos de 44 y
+mapeo de 72; Normal conserva 36/48/80; Grande usa 40/52/88. Son puntos logicos,
+sin una transformacion global ni una segunda aplicacion de la escala del monitor.
+Automático usa el espacio efectivo del asistente: Compacto con menos de 520
+puntos de ancho o hasta 680 de alto, Grande desde 600 de ancho y 820 de alto,
+y Normal en el resto. Asi una columna lateral debajo de la onda se compacta
+aunque el monitor sea grande. Las preferencias explicitas prevalecen.
+Compacto tambien reduce cabecera, indicador de pasos, portada y separaciones;
+no elimina campos ni cambia el borrador, el foco o los callbacks de guardado.
+Detalles, Archivos, Secciones y Revisar conservan sus superficies desplazables
+cuando el contenido no cabe. iOS y Android mantienen las metricas tactiles y
+del teclado anteriores, sin aplicar esta densidad de escritorio.
+La edicion de escritorio reutiliza el mismo formulario desplazable y la pagina interna de Agregar, con datos precargados y callbacks de actualizacion.
 El `+` del encabezado de Biblioteca abre Detalles como pagina interna de
 `SongListPanel` en escritorio, telefono y tablet, a continuacion de Biblioteca en su
 `PageContainer`. La pagina entra desde la derecha con la misma transicion
@@ -73,6 +92,13 @@ prioridad posterior. El cierre sólo se ejecuta por la acción explícita existe
    ser legibles por JUCE. Escritorio admite tambien M4A (AAC o ALAC); si la
    plataforma no dispone de lector nativo, su decodificacion se valida en el
    worker de creacion antes de guardar. Revalidar antes del guardado definitivo.
+   El guardado portable intenta convertir WAV, AIFF y MP3 a FLAC mediante los
+   codecs integrados en todas las plataformas. Los FLAC existentes se empaquetan
+   directamente. El escritorio normal reserva FFmpeg para entradas que los
+   codecs integrados no puedan convertir, conservando su preparación automática
+   en ese fallback. La salida de FFmpeg usa un temporal y reemplazo atómico;
+   un fallo informa la pista y conserva el destino anterior. La conversión y
+   su progreso se ejecutan dentro del worker de creación.
 2. En escritorio, mostrar el diálogo nativo asíncrono `Biblioteca local` /
    `Elegir ubicación...` / `Cancelar`. Biblioteca conserva la resolución de nombre
    disponible en `MTControls/projects/` mediante `SongProjectCreation::resolveDestination`;
@@ -176,7 +202,22 @@ destino. MP3 reutiliza el decoder MinMP3 embebido en `juce_core`
 al FLAC destino. Conserva frecuencia y canales (hasta 8); PCM hasta 24 bits
 conserva precision, y fuentes flotantes/32 bits pasan a PCM24, limite del
 escritor FLAC de JUCE. No se descarga ni ejecuta FFmpeg en iOS/Android.
-Escritorio sigue usando FFmpeg para empaquetar FLAC. La creacion admite
+Escritorio intenta la misma conversión integrada antes de consultar FFmpeg;
+el fallback permite empaquetar entradas que los codecs integrados no admiten.
+En macOS, el encoder opcional se selecciona comprobando su arquitectura Mach-O,
+incluidas las variantes universales. Si falta una copia compatible, el proceso
+Intel descarga `encoder/macos/2026-11-06-1/x86_64/ffmpeg`; Apple Silicon conserva
+`encoder/macos/2026-04-18-1/ffmpeg`. Una aplicación Intel ejecutada con Rosetta
+también selecciona x86_64. Una copia ARM guardada en un Mac Intel se ignora y
+se reemplaza automáticamente al necesitar el encoder, sin borrado manual.
+Cada descarga usa un temporal único y verifica tamaño, SHA-256 y arquitectura
+antes del reemplazo atómico. Un fallo conserva el archivo anterior y permite
+reintentar; el estado `Ready` y el progreso completo requieren instalación
+correcta. Las copias locales compatibles siguen siendo reutilizables.
+Los proyectos WAV usan el conversor integrado también en Intel.
+La receta Intel, fuentes fijadas, licencias y cobertura de códecs están en
+[`third_party/encoder/README.md`](../../../third_party/encoder/README.md).
+La creacion admite
 WAV/AIFF/FLAC/MP3/M4A; la edicion conserva ademas AAC, OGG y WMA.
 El selector, las ayudas de formatos y la validacion comparten esa lista.
 `SongProjectCreation::save` convierte los M4A a FLAC en un staging privado

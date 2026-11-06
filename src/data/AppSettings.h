@@ -76,6 +76,8 @@ public:
   // Local demo preference, separate from the authenticated account snapshot.
   static bool getLocalDemoSessionActive();
   static void setLocalDemoSessionActive(bool value);
+  static double getSongCrossfadeSeconds();
+  static void setSongCrossfadeSeconds(double seconds);
   static PadsCrossfadePreset getPadsCrossfadePreset();
   static void setPadsCrossfadePreset(PadsCrossfadePreset preset);
   static AppLanguage getLanguage();
@@ -91,6 +93,10 @@ public:
   static juce::String getRemoteServerAlias();
   static void setRemoteServerAlias(const juce::String &alias);
   static FreeShowEndpointSettings getFreeShowEndpoint();
+  static FreeShowEndpointSettings getHolyricsEndpoint();
+  static bool setHolyricsEndpoint(const FreeShowEndpointSettings &);
+  static juce::String getLyricsProvider();
+  static bool setLyricsProvider(const juce::String &);
   static bool setFreeShowEndpoint(const FreeShowEndpointSettings &);
   static juce::int64 getLastSuccessfulLoginMs();
   static void setLastSuccessfulLoginMs(juce::int64 value);

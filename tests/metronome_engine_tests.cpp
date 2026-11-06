@@ -67,6 +67,32 @@ void expectNear(const double actual, const double expected,
   expect(std::abs(actual - expected) < 1.0e-9, message);
 }
 
+void testRetainedMetronomeKeepsLivePhaseAndVoices() {
+  MetronomeEngine source, retained;
+  source.prepare(48000.0); source.setEnabled(true); source.setBpm(137.5);
+  source.setDivisionMask(7); source.setVolume(0.65f);
+  retained.prepareRetainedCopyFrom(source);
+  juce::AudioBuffer<float> prefix(2, 71); prefix.clear();
+  source.syncPhaseForBeatPosition(0.0, 137.5); source.process(prefix);
+  retained.captureRealtimeStateFrom(source);
+  juce::AudioBuffer<float> expected(2, 64), actual(2, 64);
+  double time = 71.0 / 48000.0;
+  float peak = 0.0f;
+  for (int block = 0; block < 500; ++block) {
+    expected.clear(); actual.clear();
+    const double beat = time * 137.5 / 60.0;
+    source.syncPhaseForBeatPosition(beat, 137.5); retained.syncPhaseForBeatPosition(beat, 137.5);
+    source.process(expected); retained.process(actual);
+    peak = juce::jmax(peak, actual.getMagnitude(0, 0, 64));
+    for (int channel = 0; channel < 2; ++channel)
+      for (int sample = 0; sample < 64; ++sample)
+        expect(expected.getSample(channel, sample) == actual.getSample(channel, sample),
+               "retained click preserves the exact live grid, voice tail and future subdivision attacks");
+    time += 64.0 / 48000.0;
+  }
+  expect(peak > 0.01f, "retained metronome comparison includes audible attacks");
+}
+
 void testSubdivisionPublicationPersistsUntilBeatBoundary() {
   MetronomeEngine engine;
   engine.setSubdivision(1);
@@ -415,6 +441,7 @@ int main(int argc, char **argv) {
     captureMetronomeAudio(juce::File(argv[2]));
     return 0;
   }
+  testRetainedMetronomeKeepsLivePhaseAndVoices();
   testSubdivisionPublicationPersistsUntilBeatBoundary();
   testLatestSubdivisionRequestWinsWithoutAConsumableSentinel();
   testResetGenerationIsConsumedByCoherentBeatSync();

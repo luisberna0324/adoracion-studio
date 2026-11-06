@@ -5,6 +5,7 @@
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/Localization.h"
+#include "data/AppSettings.h"
 #include "data/TempoValue.h"
 #include <limits>
 
@@ -141,6 +142,28 @@ struct SongListPanelTestAccess {
 struct SongImportWizardTestAccess {
   using Wizard = SongImportWizardComponent;
   using Step = Wizard::Step;
+
+  static void testGuideAndStringsCategories(const AudioFixtures &files) {
+    Wizard wizard({}, Wizard::Mode::Import);
+    struct Case { const char *name, *category; };
+    for (const auto &item : {
+             Case{"01-CUE.wav", "Cues"}, {"02-CUES.wav", "Cues"},
+             {"03-GUIDE.wav", "Cues"}, {"04-GUIA.wav", "Cues"},
+             {"05-GUÍA.wav", "Cues"}, {"06-GUÍA.wav", "Cues"},
+             {"07-CUERDAS.wav", "Strings"}, {"08-CUERDA.wav", "Strings"},
+             {"09-Rescue.wav", "Other"}, {"10-Guidebook.wav", "Other"},
+             {"11-STRINGS.wav", "Strings"}}) {
+      const auto file = files.directory.getChildFile(juce::String::fromUTF8(item.name));
+      expect(files.first.copyFileTo(file), "create a named stem category fixture");
+      wizard.handleSelectedStemFiles({file}, false);
+      expect(wizard.stems.back().category == item.category,
+             "import recognizes complete guide words and keeps strings musical");
+      ImportedStemData stem;
+      stem.category = wizard.stems.back().category;
+      expect(isStemPitchShiftable(stem) == (stem.category != "Cues"),
+             "a strings import stays pitchable and a guide import stays unpitched");
+    }
+  }
 
   static void testDecimalTempoInput() {
     double parsed = 123.0;
@@ -336,6 +359,8 @@ struct SongImportWizardTestAccess {
   }
 
   static void testStepLayouts(const AudioFixtures &files) {
+    const auto previousMode = AppSettings::getLayoutMode();
+    AppSettings::setLayoutMode(AppLayoutMode::Standard);
     Wizard wizard({});
     fillMetadata(wizard);
     wizard.handleSelectedStemFiles({files.first, files.second}, false);
@@ -437,6 +462,72 @@ struct SongImportWizardTestAccess {
       expectInside(wizard.summaryEditor, wizard.getLocalBounds(),
                    "desktop review fits the dialog");
     }
+    AppSettings::setLayoutMode(previousMode);
+  }
+
+  static void testDesktopDensity(const AudioFixtures &files) {
+    const auto previousMode = AppSettings::getLayoutMode();
+    AppSettings::setLayoutMode(AppLayoutMode::Auto);
+    Wizard wizard({}, Wizard::Mode::Edit);
+    wizard.setEmbeddedLibraryPage(true);
+    fillMetadata(wizard);
+    wizard.handleSelectedStemFiles({files.first, files.second}, false);
+    wizard.setSize(340, 520);
+    wizard.changeStep(Step::Metadata);
+    const auto compactContentHeight = wizard.metadataViewport.getHeight();
+    expect(wizard.desktopLayoutProfile == ResponsiveLayoutProfile::Compact &&
+               wizard.songTitleEditor.getHeight() >= 32 &&
+               wizard.mobileCloseButton.getHeight() >= 32,
+           "a narrow desktop library column uses legible compact controls");
+    expectInside(wizard.metadataViewport, wizard.getLocalBounds(),
+                 "compact metadata viewport remains inside the library column");
+    wizard.changeStep(Step::Mapping);
+    auto &name = childOf<juce::TextEditor>(mappingRow(wizard));
+    name.setText("Keep this name while resizing", juce::dontSendNotification);
+    const auto compactRowHeight = mappingRow(wizard).getHeight();
+    const auto compactMapHeight = wizard.mapViewport.getHeight();
+
+    AppSettings::setLayoutMode(AppLayoutMode::Standard);
+    wizard.resized();
+    expect(wizard.mapViewport.getHeight() < compactMapHeight &&
+               mappingRow(wizard).getHeight() > compactRowHeight &&
+               childOf<juce::TextEditor>(mappingRow(wizard)).getText() ==
+                   "Keep this name while resizing",
+           "changing density preserves the edited mapping while compact exposes more content");
+    wizard.changeStep(Step::Metadata);
+    expect(wizard.metadataViewport.getHeight() < compactContentHeight &&
+               wizard.songTitleEditor.getText() == "Wizard fixture",
+           "the explicit Normal preference keeps its metrics and the metadata draft");
+
+    AppSettings::setLayoutMode(AppLayoutMode::Large);
+    wizard.resized();
+    expect(wizard.songTitleEditor.getHeight() == 40,
+           "the explicit Large preference reaches the shared desktop form");
+    wizard.metadataViewport.setViewPosition(0, 400);
+    expect(wizard.metadataViewport.getViewArea().contains(wizard.bpmEditor.getBounds()) &&
+               wizard.metadataViewport.getViewArea().contains(wizard.keyBox.getBounds()),
+           "fields beyond a short Large form remain reachable by scrolling");
+    wizard.changeStep(Step::Mapping);
+    for (auto *row : wizard.mapContent.getChildren()) {
+      for (auto *control : row->getChildren())
+        expectInside(*control, row->getLocalBounds(),
+                     "Large mapping controls fit without overlap or clipping");
+    }
+    expectInside(wizard.nextButton, wizard.getLocalBounds(),
+                 "Large navigation remains inside a narrow library column");
+
+    AppSettings::setLayoutMode(AppLayoutMode::Auto);
+    wizard.setSize(860, 640);
+    expect(wizard.desktopLayoutProfile == ResponsiveLayoutProfile::Compact,
+           "Auto also compacts a wide form when its usable height is short");
+    wizard.setSize(860, 760);
+    expect(wizard.desktopLayoutProfile == ResponsiveLayoutProfile::Standard,
+           "Auto restores normal spacing when the form has enough space");
+    wizard.setSize(860, 900);
+    expect(wizard.desktopLayoutProfile == ResponsiveLayoutProfile::Large,
+           "Auto uses Large only in a spacious form");
+
+    AppSettings::setLayoutMode(previousMode);
   }
 
   static void testDesktopEditLayout() {
@@ -1156,7 +1247,9 @@ int main() {
   expect(searchRejected && detailRejected, "retired catalog cannot return remote metadata");
   SongImportWizardTestAccess::testDecimalTempoInput();
   AudioFixtures fixtures;
+  SongImportWizardTestAccess::testGuideAndStringsCategories(fixtures);
   SongImportWizardTestAccess::testStepLayouts(fixtures);
+  SongImportWizardTestAccess::testDesktopDensity(fixtures);
   SongImportWizardTestAccess::testDesktopEditLayout();
   SongImportWizardTestAccess::testDraftNavigation(fixtures);
   SongImportWizardTestAccess::testCancelledDestination(fixtures);

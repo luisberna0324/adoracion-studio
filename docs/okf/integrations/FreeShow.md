@@ -67,7 +67,7 @@ Fuentes primarias:
 
 El cliente usa REST HTTP POST en el puerto configurable (5506 por defecto),
 con cuerpo JSON aplanado `{action, ...data}`. La clave opcional se envía en
-`Authorization: Bearer …`. Permanece sólo en memoria. El endpoint Socket.IO
+`Authorization: Bearer …`. Permanece en memoria salvo que el usuario active Recordar en macOS; entonces se guarda en el llavero nativo, por proveedor/IP/puerto. El endpoint Socket.IO
 5505 no es un WebSocket genérico y no se utiliza.
 El socket se abre directamente al destino local validado: no utiliza proxies
 del entorno ni sigue redirecciones. El lector HTTP admite Content-Length y
@@ -146,7 +146,7 @@ en Configuración → Integraciones → FreeShow. Abrirlos no cambia la conexió
 guarda valores; Guardar y probar valida y aplica explícitamente el destino.
 Host y puerto se guardan en `AppSettings` de este computador, con los valores
 predeterminados `127.0.0.1:5506`. Al arrancar se restaura el destino sin conectar
-automáticamente. El token sigue solo en memoria. Ninguno entra en `.pwproj`.
+automáticamente. El token usa memoria o, con Recordar en macOS, el llavero nativo. Ninguno entra en `.pwproj`.
 
 ## Verificación
 
@@ -160,3 +160,10 @@ Las pruebas están en `freeshow_protocol_tests.cpp`,
 `lyrics_persistence_tests.cpp` y `lyrics_panel_tests.cpp`.
 La evidencia de ejecución, plataforma y límites se registra por entrega; una
 prueba con transporte simulado no se presenta como ensayo de FreeShow real.
+
+## Otro proveedor de proyección
+
+[Holyrics](Holyrics.md) utiliza la misma vista de tarjetas y scheduler con un
+adaptador HTTP específico. Los destinos tienen identidad de proveedor; el cliente
+no envía una marca de un programa al otro. Los proyectos FreeShow existentes
+conservan formato versión 1; un proyecto con Holyrics utiliza versión 2.

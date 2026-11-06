@@ -307,7 +307,7 @@ if(MTCONTROLS_USE_BUNGEE)
     message(STATUS "Bungee backend: required and enabled (${MTCONTROLS_BUNGEE_DIR})")
 endif()
 
-add_library(PlayWorshipLyricsModel STATIC src/integrations/FreeShowModel.cpp)
+add_library(PlayWorshipLyricsModel STATIC src/integrations/FreeShowModel.cpp src/integrations/HolyricsModel.cpp)
 target_include_directories(PlayWorshipLyricsModel PUBLIC src)
 target_compile_definitions(PlayWorshipLyricsModel PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(PlayWorshipLyricsModel PUBLIC juce::juce_core)
@@ -319,6 +319,19 @@ if(MTCONTROLS_BUILD_TESTS)
         COMMAND "${CMAKE_COMMAND}" -P
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_auth_provider_policy.cmake")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    juce_add_console_app(MTControlsMacEncoderTests PRODUCT_NAME "Mac Encoder Compatibility Tests")
+    target_sources(MTControlsMacEncoderTests PRIVATE tests/mac_encoder_compatibility_tests.cpp)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        target_sources(MTControlsMacEncoderTests PRIVATE
+            src/data/AssetBootstrapManager.cpp src/data/AppSettings.cpp)
+        target_link_options(MTControlsMacEncoderTests PRIVATE "-Wl,-dead_strip")
+    endif()
+    target_include_directories(MTControlsMacEncoderTests PRIVATE src)
+    target_compile_definitions(MTControlsMacEncoderTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsMacEncoderTests PRIVATE juce::juce_core juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsMacEncoderTests)
+    add_test(NAME mac_encoder_compatibility COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsMacEncoderTests>")
     juce_add_console_app(MTControlsAccountDeletionTests PRODUCT_NAME "Account Deletion Flow Tests")
     target_sources(MTControlsAccountDeletionTests PRIVATE tests/account_deletion_tests.cpp
         src/ui/components/AccountDeletionModal.cpp src/data/AccountDeletionApi.cpp
@@ -729,7 +742,8 @@ if(MTCONTROLS_BUILD_TESTS)
 
     juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
     target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
-        src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+        src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp
+        src/data/AssetBootstrapManager.cpp)
     target_compile_definitions(MTControlsSongCreationTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_include_directories(MTControlsSongCreationTests PRIVATE src)
     target_link_libraries(MTControlsSongCreationTests PRIVATE MTControls MTControlsAssets
@@ -1042,6 +1056,41 @@ if(MTCONTROLS_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsStandaloneAudioRuntimeTests>")
 
+    foreach(_section_test IN ITEMS Domain Service Panel Recognition Vocabulary Interpretation Acoustic)
+        if(_section_test STREQUAL "Domain")
+            set(_section_test_source tests/section_detection_tests.cpp)
+            set(_section_test_name section_detection)
+        elseif(_section_test STREQUAL "Service")
+            set(_section_test_source tests/section_detection_service_tests.cpp)
+            set(_section_test_name section_detection_service)
+        elseif(_section_test STREQUAL "Panel")
+            set(_section_test_source tests/section_detection_panel_tests.cpp)
+            set(_section_test_name section_detection_panel)
+        elseif(_section_test STREQUAL "Recognition")
+            set(_section_test_source tests/guide_recognition_selection_tests.cpp)
+            set(_section_test_name guide_recognition_selection)
+        elseif(_section_test STREQUAL "Vocabulary")
+            set(_section_test_source tests/guide_vocabulary_tests.cpp)
+            set(_section_test_name guide_vocabulary)
+        elseif(_section_test STREQUAL "Acoustic")
+            set(_section_test_source tests/guide_acoustic_template_tests.cpp)
+            set(_section_test_name guide_acoustic_templates)
+        else()
+            set(_section_test_source tests/guide_section_interpretation_tests.cpp)
+            set(_section_test_name guide_section_interpretation)
+        endif()
+        juce_add_console_app(MTControlsSection${_section_test}Tests PRODUCT_NAME "Section Detection ${_section_test} Tests")
+        target_sources(MTControlsSection${_section_test}Tests PRIVATE ${_section_test_source})
+        target_include_directories(MTControlsSection${_section_test}Tests PRIVATE src)
+        target_compile_definitions(MTControlsSection${_section_test}Tests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+        if(MSVC)
+            target_compile_options(MTControlsSection${_section_test}Tests PRIVATE /utf-8)
+        endif()
+        target_link_libraries(MTControlsSection${_section_test}Tests PRIVATE
+            MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+        juce_generate_juce_header(MTControlsSection${_section_test}Tests)
+        add_test(NAME ${_section_test_name} COMMAND "$<TARGET_FILE:MTControlsSection${_section_test}Tests>")
+    endforeach()
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT ANDROID)
         juce_add_console_app(MTControlsFreeShowProtocolTests PRODUCT_NAME "FreeShow Protocol Tests")
         target_sources(MTControlsFreeShowProtocolTests PRIVATE tests/freeshow_protocol_tests.cpp
@@ -1353,6 +1402,7 @@ target_sources(MTControls
         src/audio/StemOutputRoutingState.cpp
         src/audio/StemOutputRoutingState.h
         src/data/AppSettings.cpp
+        src/data/IntegrationTokenStore.cpp
         src/data/AppSettings.h
         src/data/AssetBootstrapManager.cpp
         src/data/AssetBootstrapManager.h
@@ -1486,6 +1536,8 @@ target_sources(MTControls
         src/ui/components/WelcomeModal.h
         src/ui/components/AuthenticationStyle.h
 )
+
+include(cmake/SectionDetection.cmake)
 
 if(APPLE)
     target_sources(MTControls PRIVATE

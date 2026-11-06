@@ -116,6 +116,15 @@ private:
                         const juce::String &placeholder);
   void styleSecondaryButton(juce::TextButton &button);
   bool usesPhoneCreationLayout() const;
+  ResponsiveLayoutProfile resolveDesktopLayoutProfile() const;
+  bool usesCompactDesktopLayout() const {
+    return !useTouchOptimisedControls() && !phoneCreationLayout &&
+           desktopLayoutProfile == ResponsiveLayoutProfile::Compact;
+  }
+  bool usesLargeDesktopLayout() const {
+    return !useTouchOptimisedControls() && !phoneCreationLayout &&
+           desktopLayoutProfile == ResponsiveLayoutProfile::Large;
+  }
   bool usesCreationLayout() const {
     return phoneCreationLayout || embeddedLibraryPage ||
            (mode == Mode::Import && !useTouchOptimisedControls());
@@ -250,6 +259,7 @@ private:
   HeaderIconButton mobileCloseButton{"songWizardClose", IconGlyph::Close};
   std::unique_ptr<juce::LookAndFeel_V4> mobilePrimaryButtonLookAndFeel;
   bool phoneCreationLayout = false;
+  ResponsiveLayoutProfile desktopLayoutProfile = ResponsiveLayoutProfile::Standard;
   bool embeddedLibraryPage = false;
   bool phoneKeyboardVisible = false;
   juce::BorderSize<int> phoneKeyboardInsets;

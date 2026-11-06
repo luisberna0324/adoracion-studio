@@ -302,3 +302,19 @@ individuales para configuraciones multicanal heterogéneas.
 
 - [StemTrack](StemTrack.md) - Track individual de audio
 - [MTControlsAudioProcessor](../processor/MTControlsAudioProcessor.md) - Usa StemMixEngine
+
+## Retención de DSP en crossfade
+
+Los estados agrupados y las voces/delays individuales viven en un
+`SongProcessingState` propietario. Una captura en el límite del callback
+intercambia ese owner con un reemplazo preparado en control, conservando FIFOs,
+granos, cursores de smoothing y la historia de compensación del motor saliente.
+El servicio de mantenimiento atiende ambos bancos mientras están activos y se
+serializa con captura/retiro; no se reconstruyen voces dentro del callback.
+
+`mixStems` acepta el argumento opcional final `sourceSamplesToRead` (por defecto
+-1: lectura normal de `inputSamples`). Un valor no negativo acota la lectura a
+[0,inputSamples]; el resto del scratch se queda en cero y el bloque completo
+sigue alimentando el DSP. El renderer retenido lo usa para respetar Fin y drenar
+la latencia después, sin leer audio posterior a la ventana ni repetir muestras.
+Los callers normales conservan su comportamiento y firma de uso anteriores.

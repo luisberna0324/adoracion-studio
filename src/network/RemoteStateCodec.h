@@ -169,6 +169,7 @@ inline LibraryState decodeLibrary(const juce::var &v) {
     if (const auto *entries = items.getArray()) for (const auto &e : *entries) {
       SetlistItem item; item.itemId = e.getProperty("id", {}).toString(); item.songId = e.getProperty("songId", {}).toString();
       item.transitionToNext.autoPlay = static_cast<bool>(e.getProperty("autoPlay", false));
+      item.transitionToNext.crossfade = item.transitionToNext.autoPlay && static_cast<bool>(e.getProperty("crossfade", false));
       setlist.items.push_back(item);
     }
     library.setlists.push_back(std::move(setlist));
