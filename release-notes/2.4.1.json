@@ -9,43 +9,57 @@
     "android",
     "ios"
   ],
-  "title": "Secciones sugeridas y escritorio más adaptable",
-  "summary": "Prepara las secciones desde la guía, conecta tus letras con Holyrics y adapta los controles al espacio disponible en escritorio.",
+  "title": "Generación automática de secciones y transiciones más suaves",
+  "summary": "Genera secciones a partir de la guía, prepara fundidos entre canciones, conecta tus letras con Holyrics y adapta la interfaz de escritorio a tu espacio de trabajo.",
   "highlights": [
-    "Sugerencias de secciones desde guías en español e inglés.",
-    "Holyrics y transiciones suaves entre canciones.",
-    "Interfaz de escritorio con tamaños adaptables."
+    "Generación automática de secciones desde la guía, con revisión antes de aplicarlas.",
+    "Crossfade entre canciones con tono, tempo, clic y guía independientes.",
+    "Holyrics y tamaños de interfaz adaptables en escritorio."
   ],
   "changes": [
     {
-      "label": "Secciones desde la guía en escritorio",
+      "label": "Generación automática de secciones en escritorio",
       "items": [
-        "La edición de escritorio de descarga directa puede sugerir secciones a partir de la guía en español e inglés. El modelo se descarga con autorización y progreso visible, y el reconocimiento se ejecuta en el dispositivo.",
-        "Revisa las sugerencias sobre la onda, ajusta sus posiciones y agrega secciones faltantes antes de confirmar. Puedes iniciar y detener la reproducción con la espaciadora durante la revisión.",
-        "Las secciones principales se proponen en el compás siguiente al anuncio. Las cuentas y las indicaciones secundarias conservan sus tiempos de voz y se muestran como marcas independientes.",
-        "El reconocimiento aprovecha indicaciones claras que se repiten en la misma guía para recuperar anuncios pendientes y separar una sección de su indicación. Los casos ambiguos se revisan desde el catálogo."
+        "Genera automáticamente propuestas de secciones a partir de los anuncios de la guía en español o inglés, en las ediciones de escritorio de descarga directa. Puedes revisar y corregir el resultado antes de aplicarlo a la canción.",
+        "Revisa las propuestas sobre la forma de onda, ajusta sus posiciones, descarta las que no correspondan y agrega las secciones que falten. La barra espaciadora permite reproducir y detener la canción durante la revisión.",
+        "Las secciones principales se sitúan inicialmente en el compás siguiente al anuncio; las cuentas y otras indicaciones se muestran como marcas independientes. Puedes ajustar las posiciones antes de confirmar.",
+        "El reconocimiento utiliza anuncios claros que se repiten en la misma guía para ayudar a recuperar indicaciones pendientes. Los resultados ambiguos requieren revisión; no se aplican como secciones definitivas por sí solos.",
+        "El modelo de reconocimiento se descarga con tu autorización y muestra su progreso. Después de descargarlo, el análisis se realiza en el dispositivo, sin enviar el audio a un servicio de transcripción.",
+        "La confirmación respeta la edición de secciones existente y se puede deshacer. Esta novedad no se anuncia para iPhone, iPad, Android ni la edición de Mac App Store."
       ]
     },
     {
-      "label": "Letras y reproducción en escritorio",
+      "label": "Transiciones entre canciones",
       "items": [
-        "Conecta Holyrics en la red local para acompañar las letras de la canción desde PlayWorship.",
-        "Configura transiciones entre canciones que conservan el tono, el tempo y los buses de clic y guía de cada canción durante el fundido."
+        "Activa Crossfade a la siguiente desde el menú de una canción del setlist. Elige una duración de 1, 2, 3, 5, 8 o 10 segundos en Configuración, independiente del fundido de Pads.",
+        "Durante el fundido, cada canción conserva su tono, tempo, mezcla y salidas, incluidos el clic y la guía dinámicos. Pads continúa funcionando como un único bus compartido.",
+        "Para iniciar la transición, sal de Ensayo, de los loops y saltos pendientes o del arreglo personalizado. La última canción del setlist no permite activar una transición sin destino.",
+        "La duración se configura en el equipo que reproduce el audio; el cliente remoto puede cambiar la marca de crossfade del setlist sin iniciar reproducción local."
+      ]
+    },
+    {
+      "label": "Integración con Holyrics en escritorio",
+      "items": [
+        "Conecta Holyrics por la red local desde Configuración e Integraciones. Usa las marcas temporales de la vista Letras para preparar y seguir sus diapositivas durante la reproducción. Requiere Holyrics 2.23.0 o posterior y su API Server habilitado con los permisos correspondientes.",
+        "FreeShow y Holyrics conservan conexiones y destinos separados. Cambiar de proveedor no conecta ni proyecta automáticamente, y las marcas de otro proveedor requieren revisión antes de utilizarlas.",
+        "En macOS puedes recordar el token de conexión en el llavero del sistema. El token no se guarda en canciones ni proyectos; en las otras plataformas se conserva únicamente durante la sesión.",
+        "Los proyectos con marcas de Holyrics requieren una versión de PlayWorship compatible con ese formato. La integración de proyección sigue limitada a escritorio."
       ]
     },
     {
       "label": "Escritorio adaptable",
       "items": [
-        "Elige Automático, Compacto, Normal o Grande en Tamaño de interfaz. La selección se aplica al momento y se conserva al reabrir la aplicación.",
-        "El mixer ajusta sus filas a la altura y el ancho disponibles, y permite desplazarse para llegar a todos los canales.",
-        "Los formularios para agregar y editar canciones adaptan sus campos, listas y pasos al espacio del panel."
+        "Elige Automático, Compacto, Normal o Grande en Tamaño de interfaz. La selección se aplica al momento y se conserva al reabrir la aplicación, sin recargar la canción.",
+        "El mezclador adapta sus filas al ancho y la altura disponibles. Si el contenido no cabe, puedes desplazarte para llegar a todos los canales sin ocultarlos ni modificar la mezcla.",
+        "Los formularios para agregar y editar canciones adaptan sus campos, listas y pasos al espacio del panel. Configuración también ajusta su ventana al monitor disponible. Los dispositivos móviles conservan sus controles táctiles habituales."
       ]
     },
     {
-      "label": "Creación de canciones en Mac",
+      "label": "Importación y creación de canciones",
       "items": [
-        "La creación de proyectos intenta convertir los archivos de audio a FLAC con los códecs integrados.",
-        "Cuando necesita el conversor adicional, PlayWorship comprueba su compatibilidad. En Mac Intel reemplaza automáticamente una copia ARM descargada por la variante Intel verificada y permite reintentar la creación."
+        "La creación de proyectos intenta convertir WAV, AIFF y MP3 a FLAC con los códecs integrados, antes de recurrir al conversor adicional cuando sea necesario.",
+        "En Mac Intel, si el conversor descargado corresponde a ARM, PlayWorship prepara la variante Intel compatible y permite reintentar la creación. Si una conversión falla, conserva el archivo de destino anterior.",
+        "Mejoramos la sugerencia de categorías al importar: CUERDAS se reconoce como Strings y GUIA, GUÍA, CUE o CUES como guía. Las categorías de las canciones existentes no se cambian al abrirlas."
       ]
     }
   ]
