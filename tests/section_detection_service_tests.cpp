@@ -871,6 +871,40 @@ void testGuideAcousticMetadataRoundTrip(TemporaryFixtures &fixtures) {
   expectGuideMetadata(outcome.guideTranscript->segments.front(), shifted, 1e-14);
 }
 
+void testWithinGuideEvidenceCache(TemporaryFixtures &fixtures) {
+  auto provider = std::make_shared<FakeGuideTranscriber>();
+  const SectionDetectionService service(nullptr, provider);
+  auto request = guideRequest(fixtures, "repetition");
+  request.cacheDirectory = fixtures.directory.getChildFile("within-guide-cache");
+  provider->inspect = [](const auto &, const auto &, const auto &, auto &transcript, auto &) {
+    GuideTranscriptSegment seed{0.1, 0.6, "Baja la intensidad.", "es", .9};
+    seed.alternatives = {{seed.text, "es", -.1, .01}};
+    GuideTranscriptSegment pending{1.1, 1.6, "Paje la intensidad.", "es", .6};
+    pending.repetitionAnnouncements = {{seed.text, "es", 1.1, 1.6, 0, .98}};
+    transcript.segments = {seed, pending};
+    return true;
+  };
+  auto outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit, "a pending mark can cite an ordinary first-pass instruction");
+  outcome = Run(service, request).wait();
+  expect(outcome.cacheHit && provider->calls == 1 && outcome.guideTranscript &&
+         outcome.guideTranscript->segments[1].text == "Paje la intensidad." &&
+         outcome.guideTranscript->segments[1].repetitionAnnouncements.size() == 1 &&
+         outcome.guideTranscript->segments[1].repetitionAnnouncements.front().referenceSegment == 0 &&
+         outcome.guideTranscript->segments[1].repetitionAnnouncements.front().correlation == .98,
+         "cache replay retains the original speech and independent within-guide reference");
+  const auto files = request.cacheDirectory.findChildFiles(juce::File::findFiles, true, "*.json");
+  expect(files.size() == 1, "within-guide analysis persisted one transcript");
+  auto corrupted = juce::JSON::parse(files[0].loadFileAsString());
+  auto &parts = corrupted["segments"].getArray()->getReference(1).getDynamicObject()
+      ->getProperty("repetitionAnnouncements");
+  parts.getArray()->getReference(0).getDynamicObject()->setProperty("referenceSegment", 1);
+  expect(files[0].replaceWithText(juce::JSON::toString(corrupted)), "write a cache citing its own pending utterance");
+  outcome = Run(service, request).wait();
+  expect(outcome.error.isEmpty() && !outcome.cacheHit && provider->calls == 2,
+         "a self-referential cache is recomputed from audio instead of becoming a mark");
+}
+
 void testGuideRejectsInvalidAcousticMetadata(TemporaryFixtures &fixtures) {
   auto guide = std::make_shared<FakeGuideTranscriber>();
   const SectionDetectionService service(nullptr, guide);
@@ -1084,6 +1118,7 @@ int main() {
   testGuideCatalogueMetadataRoundTripAndTamper(fixtures);
   testGuideRejectsInvalidCatalogueMetadata(fixtures);
   testGuideAcousticMetadataRoundTrip(fixtures);
+  testWithinGuideEvidenceCache(fixtures);
   testGuideRejectsInvalidAcousticMetadata(fixtures);
   testGuideProviderVersionCapture(fixtures);
   testGuideErrorsAndCancellation(fixtures);

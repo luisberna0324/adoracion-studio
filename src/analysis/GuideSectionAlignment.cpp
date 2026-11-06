@@ -1,6 +1,7 @@
 #include "GuideSectionAlignment.h"
 #include "GuideSpeechSegmentation.h"
 #include "GuideAcousticTemplateMatcher.h"
+#include "GuideRepetitionEvidence.h"
 #include <juce_cryptography/juce_cryptography.h>
 #include <algorithm>
 #include <cmath>
@@ -637,8 +638,21 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
   // Expand a copy solely for the existing musical/instruction interpretation.
   std::vector<GuideTranscriptSegment> segments;
   std::unordered_set<std::string> acousticSegmentIds;
+  std::unordered_set<std::string> repetitionSegmentIds;
+  const auto expand = [&](const auto &announcements, auto &ids) {
+    for (const auto &announcement : announcements) {
+      GuideTranscriptSegment child;
+      child.text = announcement.text;
+      child.language = announcement.language;
+      child.startSeconds = announcement.startSeconds;
+      child.endSeconds = announcement.endSeconds;
+      ids.insert(guideSectionSuggestionId(transcript, child).toStdString());
+      segments.push_back(std::move(child));
+    }
+  };
   for (const auto &parent : transcript.segments) {
-    if (segments.size() + std::max(size_t(1), parent.acousticAnnouncements.size()) > 65536) {
+    if (segments.size() + std::max({size_t(1), parent.acousticAnnouncements.size(),
+            parent.repetitionAnnouncements.size()}) > 65536) {
       draft.error = juce::String::fromUTF8("La guía contiene demasiados anuncios independientes. No se ha truncado su evidencia.");
       return draft;
     }
@@ -647,21 +661,23 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
           return announcement.startSeconds >= 0.0 &&
               announcement.endSeconds <= draft.durationSeconds + epsilon;
         });
-    if (!inSource || !guideAcousticAnnouncementsMatchParent(parent)) {
-      segments.push_back(parent);
+    if (inSource && guideAcousticAnnouncementsMatchParent(parent)) {
+      expand(parent.acousticAnnouncements, acousticSegmentIds);
       continue;
     }
-    for (const auto &announcement : parent.acousticAnnouncements) {
-      GuideTranscriptSegment child;
-      child.text = announcement.text;
-      child.language = announcement.language;
-      child.startSeconds = announcement.startSeconds;
-      child.endSeconds = announcement.endSeconds;
-      // No token probability exists for a waveform observation. Its measured
-      // correlation remains in the parent's separate evidence record.
-      acousticSegmentIds.insert(guideSectionSuggestionId(transcript, child).toStdString());
-      segments.push_back(std::move(child));
+    if (!parent.repetitionAnnouncements.empty() && validGuideRepetition(transcript, parent) &&
+        (options.learnedMappings.empty() || guideRepetitionEligible(parent, options.learnedMappings))) {
+      const auto hash = segmentIdentityHash(transcript, parent, parent.text.trim());
+      const bool hasUserSelection = std::any_of(options.catalogueSelections.begin(), options.catalogueSelections.end(),
+          [&](const auto &selection) {
+            return selection.announcementId == "guide-" + hash || selection.announcementId == "guide-secondary-" + hash;
+          });
+      if (!hasUserSelection) {
+        expand(parent.repetitionAnnouncements, repetitionSegmentIds);
+        continue;
+      }
     }
+    segments.push_back(parent);
   }
   std::map<std::string, juce::String> selectedWordIds;
   std::vector<GuideTranscriptSegment> selectedWordSources;
@@ -791,6 +807,8 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     suggestion.sources.add(juce::String::fromUTF8("cuadrícula propuesta"));
     if (acousticSegmentIds.count(guideSectionSuggestionId(transcript, segment).toStdString()))
       suggestion.sources.add("known-guide-recording");
+    if (repetitionSegmentIds.count(guideSectionSuggestionId(transcript, segment).toStdString()))
+      suggestion.sources.add("within-guide-repetition");
     if (interpretation.provenance.isNotEmpty()) suggestion.sources.add(interpretation.provenance);
     if (interpretation.tentative)
       suggestion.sources.addIfNotAlreadyThere(juce::String::fromUTF8(tentativeGuideInterpretationSource));

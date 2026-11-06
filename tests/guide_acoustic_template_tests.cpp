@@ -1,4 +1,5 @@
 #include "analysis/GuideAcousticTemplateMatcher.h"
+#include "analysis/GuideRepetitionMatcher.h"
 #include "analysis/GuideCatalogueGrammar.h"
 #include <algorithm>
 #include <cmath>
@@ -254,6 +255,35 @@ void atomicCatalogueRecoveryAndRejections() {
          "nonfinite source data cannot enter atomic catalogue recovery");
 }
 
+void sameGuideRepeatedInstructions() {
+  auto build = voice("Build", 11), breakdown = voice("Breakdown", 2);
+  // Different quiet verbs, followed by an identical much louder ending.
+  const auto ending = voice("shared speech", 6);
+  for (auto *cue : {&build, &breakdown}) {
+    for (auto &sample : cue->samples) sample *= .30f;
+    cue->samples.insert(cue->samples.end(), ending.samples.begin(), ending.samples.end());
+    cue->samples.insert(cue->samples.end(), ending.samples.begin(), ending.samples.end());
+  }
+  std::vector<GuideRepetitionReference> references{{"Build", build.samples}, {"Breakdown", breakdown.samples}};
+  std::vector<float> source(32000);
+  add(source, voice("spoken section before cue", 8), .03);
+  add(source, breakdown, .64, .6);
+  auto found = matchGuideRepetition(source, references);
+  expect(found && found->referenceIndex == 1 && found->startSample == 10240 &&
+             found->endSample == 10240 + int(breakdown.samples.size()),
+         "the complete repeat distinguishes opposite verbs and gives its real onset inside a compound");
+  expect(!matchGuideRepetition(source, {references[0]}),
+         "a loud shared ending alone cannot stand in for the distinguishing verb");
+  auto tied = references;
+  tied.push_back({"Unrelated cue", breakdown.samples});
+  expect(!matchGuideRepetition(source, tied), "two meanings with the same physical recording need review");
+  add(source, breakdown, 1.32);
+  expect(!matchGuideRepetition(source, references), "a window with two equally supported onsets needs review");
+  std::fill(source.begin(), source.end(), .03f);
+  expect(!matchGuideRepetition(source, references), "DC and silence do not resolve uncertain speech");
+  expect(!matchGuideRepetition(source, references, [] { return true; }), "a cancelled comparison yields no evidence");
+}
+
 void grammarUsesTheEntireApplicationCatalogue() {
   const auto phrases = guideCatalogueUtterances();
   expect(!phrases.empty() && std::is_sorted(phrases.begin(), phrases.end()) &&
@@ -286,7 +316,8 @@ int main() {
     completeAndOverlappingCounts(); missingAsrCountUsesPhysicalRecording();
     isolatedOrdinalAndRepeatedInstances(); noPauseInstructionsAndNegativeSignals();
     omittedInstructionAndMixedRoles();
-    fractionalSamplePhases(); atomicCatalogueRecoveryAndRejections(); grammarUsesTheEntireApplicationCatalogue();
+    fractionalSamplePhases(); atomicCatalogueRecoveryAndRejections(); sameGuideRepeatedInstructions();
+    grammarUsesTheEntireApplicationCatalogue();
     std::cout << "Guide acoustic templates: " << checks << " checks passed\n";
     return 0;
   } catch (const std::exception &error) {

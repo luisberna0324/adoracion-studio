@@ -1,4 +1,5 @@
 #include "GuideAcousticTemplateMatcher.h"
+#include "GuideRepetitionMatcher.h"
 #include "GuideSpeechSegmentation.h"
 #include "GuideSectionInterpretation.h"
 #include <juce_cryptography/juce_cryptography.h>
@@ -667,5 +668,90 @@ GuideAcousticMatch matchKnownGuideCompound(const std::vector<float> &source,
     result.residualRatio = complete.residual;
     return result;
   }
+}
+namespace {
+// Repeated studio cues can have slightly different sub-sample phase after
+// rendering. Smooth over nine samples (0.56 ms) without downsampling. A
+// separate comparison of the unfiltered recording still has to agree.
+std::vector<float> smoothRepetitionAudio(const std::vector<float> &pcm) {
+  std::vector<float> result(pcm.size());
+  double sum = 0.0;
+  constexpr size_t width = 9;
+  for (size_t i = 0; i < pcm.size(); ++i) {
+    if (!std::isfinite(pcm[i])) return {};
+    sum += pcm[i];
+    if (i >= width) sum -= pcm[i - width];
+    result[i] = float(sum / double(width));
+  }
+  return result;
+}
+} // namespace
+
+std::optional<GuideRepetitionMatch> matchGuideRepetition(
+    const std::vector<float> &targetPcm16k,
+    const std::vector<GuideRepetitionReference> &references,
+    const CancellationCheck &cancelled) {
+  constexpr size_t minimumLength = 3200, maximumLength = 64000;
+  constexpr double margin = .08, minimumEdge = .85;
+  if (cancelledNow(cancelled) || references.empty() || references.size() > 64 ||
+      targetPcm16k.size() < minimumLength || targetPcm16k.size() > 128000) return {};
+  const auto source = smoothRepetitionAudio(targetPcm16k);
+  if (source.empty()) return {};
+  const auto longest = std::max_element(references.begin(), references.end(), [](const auto &a, const auto &b) {
+    return a.samples.size() < b.samples.size();
+  });
+  if (longest->samples.size() < minimumLength) return {};
+  SourceCorrelations search(source, std::min(maximumLength, longest->samples.size()));
+
+  struct Candidate {
+    GuideRepetitionMatch match;
+    double rank;
+    bool accepted;
+  };
+  std::vector<Candidate> candidates;
+  size_t verifiedPeaks = 0;
+  for (size_t i = 0; i < references.size(); ++i) {
+    if (cancelledNow(cancelled)) return {};
+    const auto &reference = references[i];
+    const auto length = reference.samples.size();
+    if (reference.key.isEmpty() || length < minimumLength || length > maximumLength || length > source.size())
+      continue;
+    const auto pattern = smoothRepetitionAudio(reference.samples);
+    if (pattern.empty()) return {};
+    const auto scores = search.scores(pattern, cancelled);
+    // A common ending ("la intensidad") can dominate a full-phrase score.
+    // Require independently matching speech at *both* ends, at the same lag.
+    const size_t edge = std::min<size_t>(3840, length / 3);
+    const std::vector<float> prefix(pattern.begin(), pattern.begin() + std::ptrdiff_t(edge));
+    const std::vector<float> suffix(pattern.end() - std::ptrdiff_t(edge), pattern.end());
+    constexpr size_t block = 320; // check the best source-sample lag per 20 ms
+    for (size_t begin = 0; begin < scores.size(); begin += block) {
+      if (cancelledNow(cancelled)) return {};
+      const auto peak = std::max_element(scores.begin() + std::ptrdiff_t(begin),
+          scores.begin() + std::ptrdiff_t(std::min(begin + block, scores.size())));
+      if (*peak < guideRepetitionMinimumCorrelation - margin) continue;
+      // A highly periodic or duplicated signal can generate many plausible
+      // lags. Leave it for review rather than validating unbounded peaks.
+      if (++verifiedPeaks > 256) return {};
+      const auto offset = size_t(peak - scores.begin());
+      if (correlation(targetPcm16k, offset, reference.samples) < .65) continue;
+      const double front = correlation(source, offset, prefix);
+      const double back = correlation(source, offset + length - edge, suffix);
+      const double rank = std::min({*peak, front, back});
+      if (rank >= minimumEdge - margin)
+        candidates.push_back({{i, int(offset), int(offset + length), *peak}, rank,
+            *peak >= guideRepetitionMinimumCorrelation && front >= minimumEdge && back >= minimumEdge});
+    }
+  }
+  if (cancelledNow(cancelled) || candidates.empty()) return {};
+  const auto winner = std::max_element(candidates.begin(), candidates.end(),
+      [](const Candidate &a, const Candidate &b) { return a.rank < b.rank; });
+  if (!winner->accepted) return {};
+  for (const auto &other : candidates) {
+    if (winner->rank - other.rank > margin) continue;
+    if (references[winner->match.referenceIndex].key != references[other.match.referenceIndex].key ||
+        std::abs(winner->match.startSample - other.match.startSample) > 640) return {};
+  }
+  return winner->match;
 }
 } // namespace playworship::analysis

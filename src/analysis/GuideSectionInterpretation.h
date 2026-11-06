@@ -74,6 +74,10 @@ GuideAnnouncementInterpretation interpretGuideAnnouncement(
     const GuideTranscriptSegment &,
     const std::vector<GuideLearnedMapping> &learnedMappings = {});
 
+// A within-guide exemplar must be an ordinary, directly decoded utility.
+// A competing plausible free decoder result disqualifies it as a reference.
+bool isGuideRepetitionSeed(const GuideTranscriptSegment &);
+
 // Exactly the existing section-suggestion identity, based on original ASR
 // evidence. Interpretation and local corrections cannot change this ID.
 juce::String guideSectionSuggestionId(const GuideTranscript &,

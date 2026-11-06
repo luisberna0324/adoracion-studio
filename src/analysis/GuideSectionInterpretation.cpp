@@ -535,6 +535,23 @@ GuideAnnouncementInterpretation interpretGuideAnnouncement(
   return finish(std::move(result));
 }
 
+bool isGuideRepetitionSeed(const GuideTranscriptSegment &segment) {
+  if (!segment.repetitionAnnouncements.empty() || !segment.acousticAnnouncements.empty() ||
+      !playworship::guide::isKnownUtilityInstruction(segment.text) || !isSupportedGuideRetryChild(segment))
+    return false;
+  const auto direct = literalAnnouncement(segment.text, {});
+  if (direct.kind != GuideAnnouncementKind::instruction || !direct.recognized()) return false;
+  const double selected = selectedDecoderScore(segment);
+  for (const auto &alternative : segment.alternatives) {
+    if (!plausibleAlternative(alternative) || alternative.avgLogProbability < selected - .2) continue;
+    const auto other = literalAnnouncement(alternative.text, {});
+    if ((other.recognized() && !sameAnnouncement(direct, other)) ||
+        other.provenance == "compound-announcements" || other.provenance == "ambiguous-role" ||
+        guideCompoundCount(alternative.text)) return false;
+  }
+  return true;
+}
+
 juce::String guideSectionSuggestionId(const GuideTranscript &transcript,
                                      const GuideTranscriptSegment &segment) {
   const auto identity = transcript.provider + ":" + transcript.providerVersion + ":" + transcript.audioFingerprint + ":" +

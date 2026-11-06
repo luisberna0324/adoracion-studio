@@ -61,7 +61,7 @@ de significado, ordinales fuera del catálogo y casos de revisión obligatoria
 ruta para localizar las partes en el audio.
 
 El proveedor de voz es
-`1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-12-recognition-states`,
+`1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-13-guide-repetitions`,
 con sufijo `:pack-<SHA256>` o `:pack-unavailable`. La identidad nueva separa
 sus resultados de las cachés anteriores; no implica otro modelo ni permite
 atribuir los resultados antiguos a esta pasada.
@@ -85,6 +85,30 @@ de las alternativas ordinarias. Sus puntuaciones están condicionadas por la
 gramática: siempre son opciones de revisión con `supported=false`, incluso
 si su texto coincide con una marca válida. No demuestran que esa voz esté
 presente en el audio.
+
+## Repeticiones dentro de la guía
+
+El proveedor 13 recoge ejemplos de indicaciones del catálogo reconocidas con
+evidencia ordinaria de Whisper en la primera pasada. Si quedan anuncios elegibles,
+vuelve a leer esas ventanas de la guía y compara el audio en mono a 16 kHz.
+Las referencias pertenecen a la misma grabación. Sólo se consideran pendientes
+o familias tentativas y compuestos con una sección y una indicación. Las cuentas
+y los conflictos de significado siguen su ruta de revisión específica.
+
+Una coincidencia exige similitud de la frase completa, de su comienzo y de su
+final a la misma posición, además de una comprobación en la señal sin filtrar.
+Otra instrucción o posición con puntuación cercana impide asignar la marca.
+Si queda voz a un lado de la repetición, el mismo contexto de Whisper reconoce
+únicamente ese recorte. La sección requiere una lectura literal del catálogo y
+apoyo de alguna lectura del anuncio original. Si quedan palabras sin explicar,
+la onda conserva el punto para elegir una marca.
+
+En el JSON, `repetitionAnnouncements` contiene la indicación con índice de su
+referencia original, correlación y tiempos medidos. En un compuesto contiene
+también la sección reconocida en el recorte. El padre conserva el texto y las
+alternativas de Whisper. El borrador conserva las reglas de posición por rol
+y da prioridad a las elecciones explícitas del usuario. Se reutilizan el modelo
+descargado y el contexto de inferencia de la primera pasada.
 
 ## Elegir sin crear una sección desconocida
 
@@ -162,3 +186,18 @@ subdivisión en 13 de 15 entradas. Los grupos largos de **In Jesus Name** y
 `output/guide-states-counts-20261106/Tempo.md` registra los tiempos para
 revisión. Esta medición es diagnóstica. La app sigue usando el BPM y el mapa
 de tempo del proyecto para generar la cuadrícula.
+
+## Verificación de las repeticiones con el proveedor 13
+
+Se procesaron los 14 audios originales con cachés nuevas y se compararon las
+15 entradas de biblioteca. Con las tres correcciones del perfil, las marcas
+pasaron de 473 a 476 y los anuncios pendientes de 15 a 13. Con el catálogo
+compartido pasaron de 460 a 463 y de 28 a 26, respectivamente. Se verificaron
+los tiempos originales de Whisper, las cuentas, la cuadrícula y los nombres,
+roles e inicios de las marcas preexistentes en ambas configuraciones.
+
+En «Todo tu lo haces bien» se recuperó Instrumental en el compás 87 y las
+indicaciones Sube intensidad a 175,390 s y Baja intensidad a 183,586 s. El
+Puente 2 termina al comenzar Instrumental. Las otras 14 entradas conservaron
+sus resultados anteriores. La comparación y las mediciones por canción están
+en `output/guide-repetition-20261106/Informe.md`.

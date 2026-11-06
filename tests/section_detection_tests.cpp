@@ -1432,6 +1432,58 @@ void testKnownVoiceEvidenceKeepsRawParentAndOverlappingCounts() {
            "incomplete, weak or semantically incompatible acoustic evidence keeps the whole ASR parent reviewable");
   }
 }
+void testWithinGuideRepetitionAlignment() {
+  GuideTranscriptSegment seed{.5, 1.4, "Sube la intensidad.", "es", .9};
+  seed.alternatives = {{seed.text, "es", -.1, .01}};
+  GuideTranscriptSegment pending{4.0, 5.9, "Instrumentar, subir, la intensidad.", "es", .7};
+  pending.catalogueAlternatives = {{"Instrumental.", "es", -.3, .01}};
+  auto transcript = guide(16, {seed, pending});
+  GuideAlignmentOptions options;
+  options.bpm = 120;
+  options.originSeconds = 0.0;
+  const auto baseline = alignGuideSections(transcript, options);
+  expect(baseline.pendingAnnouncements.size() == 1, "the source utterance requires review before recovery");
+  auto &parts = transcript.segments[1].repetitionAnnouncements;
+  parts = {{"Instrumental.", "es", 4.0, 5.0, {}, {}}, {seed.text, "es", 5.0, 5.9, 0, .99}};
+  const auto recovered = alignGuideSections(transcript, options);
+  expect(recovered.error.isEmpty() && recovered.pendingAnnouncements.empty() && recovered.suggestions.size() == 1 &&
+         recovered.suggestions.front().displayName == "Instrumental" && close(recovered.suggestions.front().startSeconds, 6.0) &&
+         recovered.secondaryCues.size() == 2 && close(recovered.secondaryCues.back().timeSeconds, 5.0),
+         "recovering a compound uses a section on the next bar and an instruction at its measured onset");
+
+  auto manuallySelected = options;
+  manuallySelected.catalogueSelections.push_back({baseline.pendingAnnouncements.front().id,
+                                                 catalogChoice(GuideAnnouncementKind::instruction, "Breakdown")});
+  const auto manual = alignGuideSections(transcript, manuallySelected);
+  expect(manual.suggestions.empty() && manual.secondaryCues.size() == 2 && manual.secondaryCues.back().name == "Breakdown" &&
+         close(manual.secondaryCues.back().timeSeconds, 4.0),
+         "an explicit owner selection on the original parent takes priority over automatic recovery");
+  auto competing = transcript;
+  competing.segments[0].alternatives.push_back({"Breakdown", "en", -.24, .01});
+  auto ambiguous = alignGuideSections(competing, options);
+  expect(ambiguous.pendingAnnouncements.size() == 1 && ambiguous.suggestions.empty(),
+         "a plausible opposite-direction reading prevents reusing that voice as a reference");
+  competing.segments[0].alternatives.back().avgLogProbability = -.4;
+  expect(alignGuideSections(competing, options).pendingAnnouncements.empty(),
+         "a competing meaning below the ordinary decoder support margin does not block a proven repetition");
+  auto stretched = transcript;
+  stretched.segments[0].endSeconds -= .1;
+  expect(alignGuideSections(stretched, options).pendingAnnouncements.size() == 1,
+         "a repeated child cannot be longer than the original recording it cites");
+  auto incomplete = transcript;
+  auto &explicitCompound = incomplete.segments[1];
+  explicitCompound.text = "Intro, Sube la intensidad.";
+  explicitCompound.endSeconds = 4.9;
+  explicitCompound.repetitionAnnouncements = {{seed.text, "es", 4.0, 4.9, 0, .99}};
+  expect(alignGuideSections(incomplete, options).pendingAnnouncements.size() == 1,
+         "a known two-part announcement cannot be consumed by one matching instruction");
+
+  parts.front().text = "Puente.";
+  const auto conflict = alignGuideSections(transcript, options);
+  expect(conflict.pendingAnnouncements.size() == 1 && conflict.suggestions.empty() && conflict.secondaryCues.size() == 1,
+         "a partial or conflicting split keeps the full original utterance for review");
+}
+
 void testCatalogueRoleSelectionPreservesSourceAndManualEdits() {
   const auto transcript=guide(30,{{.1,.4,"One"},{1.1,1.7,"unidentified announcement"},
       {9.1,9.6,"Verse"},{17.1,17.7,"Chorus"}});
@@ -1698,6 +1750,7 @@ int main() {
   testWordCountIntervalsUseUniqueMusicalPulses();
   testCountWordBoundariesFollowUniqueEvidencedRun();
   testKnownVoiceEvidenceKeepsRawParentAndOverlappingCounts();
+  testWithinGuideRepetitionAlignment();
   testCatalogueRoleSelectionPreservesSourceAndManualEdits();
   testWordCountCatalogueOverrideSurvivesOriginRebuild();
   testCatalogueSelectionCapacityAndPendingDiscard();

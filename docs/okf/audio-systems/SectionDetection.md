@@ -121,7 +121,7 @@ indicaciones en español e inglés ayuda a interpretar el texto; no sustituye
 una transcripción por una secuencia esperada de una canción particular.
 Los casos desconocidos continúan revisables.
 
-La versión actual usa `1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-12-recognition-states`
+La versión actual usa `1.9.5:guide-energy-sinc16k-beam5-prompt128-bilingual-13-guide-repetitions`
 y añade `:pack-<SHA256>` (o `:pack-unavailable`) a su identidad. La versión
 del proveedor distingue este reconocimiento de las inferencias anteriores en
 la identidad de caché. Cambiar de modo o de versión no reutiliza un resultado

@@ -2,6 +2,8 @@
 #include "GuideRecognitionSelection.h"
 #include "GuideSpeechSegmentation.h"
 #include "GuideAcousticTemplateMatcher.h"
+#include "GuideRepetitionEvidence.h"
+#include "GuideRepetitionMatcher.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_cryptography/juce_cryptography.h>
 #include <algorithm>
@@ -29,7 +31,7 @@ constexpr int minimumActiveFrames = 4;        // Reject short isolated clicks.
 constexpr int maximumUtteranceFrames = 1000;  // Bounded PCM: at most 20 seconds.
 // Candidate selection uses the shared catalog as a lexical prior. Expanding
 // that vocabulary invalidates earlier recognition even with the same prompt.
-constexpr const char *algorithmVersion = "guide-energy-sinc16k-beam5-prompt128-bilingual-12-recognition-states";
+constexpr const char *algorithmVersion = "guide-energy-sinc16k-beam5-prompt128-bilingual-13-guide-repetitions";
 
 bool isCancelled(const CancellationCheck &cancelled) { return cancelled && cancelled(); }
 
@@ -135,6 +137,145 @@ private:
   juce::AudioBuffer<float> input;
   std::vector<float> mono;
 };
+
+// The second pass only rereads short source windows. Even at the largest
+// supported input rate and channel count, resampling scratch space is bounded.
+bool readRepetitionWindow(SourceResampler &source, juce::int64 start, int count,
+                          std::vector<float> &pcm, const CancellationCheck &cancelled,
+                          juce::String &error) {
+  pcm.resize(size_t(count));
+  for (int i = 0; i < count; i += 2048)
+    if (!source.read(start + i, std::min(2048, count - i), pcm.data() + i, cancelled, error))
+      return false;
+  return true;
+}
+
+// Recover at most one remaining musical section. Silence at either edge of
+// the matched sample is common; only actual voice can justify a second mark.
+struct RepetitionVoiceRange {
+  int begin = 0, end = 0, activeSamples = 0;
+};
+
+RepetitionVoiceRange remainingVoice(const std::vector<float> &pcm, int begin, int end) {
+  RepetitionVoiceRange voice;
+  for (int from = begin; from < end; from += frameSamples) {
+    const int to = std::min(from + frameSamples, end);
+    double energy = 0.0;
+    float peak = 0.0f;
+    for (int i = from; i < to; ++i) {
+      const float sample = pcm[size_t(i)];
+      peak = std::max(peak, std::abs(sample));
+      energy += double(sample) * sample;
+    }
+    if (peak < .006f || energy < .0025 * .0025 * (to - from)) continue;
+    if (voice.activeSamples == 0) voice.begin = from;
+    voice.end = to;
+    voice.activeSamples += to - from;
+  }
+  return voice;
+}
+
+template <typename Decode>
+bool recoverGuideRepetitions(GuideTranscript &transcript, SourceResampler &resampler,
+                             double offset, juce::int64 totalSamples, const Decode &decode,
+                             const GuideTranscriptionProgress &notify,
+                             const CancellationCheck &cancelled, juce::String &error) {
+  // Bound memory and retry work even for a multi-hour guide. Collect evidence
+  // from the first pass only; recovered children can never seed another match.
+  constexpr size_t maxTargets = 64, maxReferences = 64;
+  constexpr int contextSamples = 3200, edgeTolerance = 1280; // 200 ms and 80 ms
+  const auto sampleAt = [&](double absoluteTime) {
+    return std::clamp<juce::int64>(std::llround((absoluteTime - offset) * analysisRate), 0, totalSamples);
+  };
+  std::vector<size_t> targets, referenceSegments;
+  for (size_t i = 0; i < transcript.segments.size() && targets.size() < maxTargets; ++i) {
+    if (isCancelled(cancelled)) return false;
+    const auto &segment = transcript.segments[i];
+    const double length = segment.endSeconds - segment.startSeconds;
+    if (length >= .24 && length <= 5.0 && guideRepetitionEligible(segment)) targets.push_back(i);
+  }
+  if (targets.empty()) return true;
+
+  std::vector<GuideRepetitionReference> references;
+  for (size_t i = 0; i < transcript.segments.size(); ++i) {
+    if (isCancelled(cancelled)) return false;
+    const auto &segment = transcript.segments[i];
+    const double length = segment.endSeconds - segment.startSeconds;
+    if (length < .24 || length > 3.0 || !isGuideRepetitionSeed(segment)) continue;
+    const auto cue = normalizeGuideUtilityCue(0, segment.text);
+    if (!cue) continue;
+    const auto copies = std::count_if(references.begin(), references.end(),
+        [&](const auto &reference) { return reference.key == cue->name; });
+    if (copies >= 3) continue;
+    // If another eligible reference would exceed the budget, partial
+    // coverage cannot establish uniqueness against all competing meanings.
+    if (references.size() >= maxReferences) return true;
+    GuideRepetitionReference reference;
+    reference.key = cue->name;
+    const auto begin = sampleAt(segment.startSeconds), end = sampleAt(segment.endSeconds);
+    if (end <= begin) continue;
+    if (!readRepetitionWindow(resampler, begin, int(end - begin), reference.samples, cancelled, error)) return false;
+    references.push_back(std::move(reference));
+    referenceSegments.push_back(i);
+  }
+  if (references.empty()) return true;
+
+  const double progressSpan = .069 / double(targets.size());
+  for (size_t i = 0; i < targets.size(); ++i) {
+    if (isCancelled(cancelled)) return false;
+    const double progressBase = .92 + double(i) * progressSpan;
+    notify(progressBase);
+    auto &parent = transcript.segments[targets[i]];
+    const auto start = sampleAt(parent.startSeconds), end = sampleAt(parent.endSeconds);
+    // Extra source context permits up to a frame of differing activity bounds.
+    const auto from = std::max<juce::int64>(0, start - contextSamples);
+    const auto to = std::min<juce::int64>(totalSamples, end + contextSamples);
+    std::vector<float> pcm;
+    if (!readRepetitionWindow(resampler, from, int(to - from), pcm, cancelled, error)) return false;
+    const auto match = matchGuideRepetition(pcm, references, cancelled);
+    if (!match) continue;
+    const int first = int(start - from), last = int(end - from);
+    if (match->startSample < first - edgeTolerance || match->endSample > last + edgeTolerance) continue;
+    const int begin = std::max(first, match->startSample);
+    const int finish = std::min(last, match->endSample);
+    if (begin >= finish) continue;
+    const auto seedIndex = referenceSegments[match->referenceIndex];
+    const auto &seed = transcript.segments[seedIndex];
+    const auto sourceTime = [&](int sample) { return double(from + sample) / analysisRate; };
+    GuideRepetitionAnnouncement utility{seed.text, seed.language,
+        std::max(parent.startSeconds, offset + sourceTime(begin)),
+        std::min(parent.endSeconds, offset + sourceTime(finish)), seedIndex, match->correlation};
+
+    const auto left = remainingVoice(pcm, first, begin), right = remainingVoice(pcm, finish, last);
+    // A partial physical match must never consume an unexplained second voice.
+    // Tiny frame-edge discrepancies are allowed, but ambiguous remnants fail closed.
+    constexpr int edgeNoise = 640, minSpeech = minimumActiveFrames * frameSamples;
+    if (left.activeSamples > edgeNoise && right.activeSamples > edgeNoise) continue;
+    const bool prefix = left.activeSamples > right.activeSamples;
+    const auto &remaining = prefix ? left : right;
+    std::vector<GuideRepetitionAnnouncement> parts;
+    if (remaining.activeSamples > edgeNoise) {
+      if (remaining.activeSamples < minSpeech) continue;
+      const int sliceStart = prefix ? std::max(0, remaining.begin - contextSamples) : finish;
+      const int sliceEnd = prefix ? begin : std::min(int(pcm.size()), remaining.end + contextSamples);
+      std::vector<float> slice(pcm.begin() + sliceStart, pcm.begin() + sliceEnd);
+      std::optional<GuideTranscriptSegment> child;
+      if (!decode(slice, sourceTime(sliceStart), sourceTime(remaining.begin), sourceTime(remaining.end),
+                  progressBase, progressSpan, child)) return false;
+      if (!child || !isSupportedGuideRetryChild(*child) || !isExactGuideSectionDirective(child->text) ||
+          !parentSupportsSection(parent, child->text)) continue;
+      GuideRepetitionAnnouncement section{child->text, child->language, child->startSeconds,
+                                          child->endSeconds, {}, {}};
+      if (prefix) parts = {section, utility};
+      else parts = {utility, section};
+    } else {
+      parts.push_back(utility);
+    }
+    parent.repetitionAnnouncements = std::move(parts);
+    if (!validGuideRepetition(transcript, parent)) parent.repetitionAnnouncements.clear();
+  }
+  return !isCancelled(cancelled);
+}
 
 class WhisperGuideTranscriber final : public IGuideTranscriber {
 public:
@@ -299,7 +440,7 @@ public:
         params.abort_callback_user_data = &callbacks;
         params.progress_callback = [](whisper_context *, whisper_state *, int percent, void *data) {
           const auto &c = *static_cast<InferenceCallbacks *>(data);
-          if (c.progress) c.progress(std::clamp(c.baseProgress + c.progressSpan * percent / 100.0, 0.0, 0.99));
+          if (c.progress) c.progress(std::clamp(c.baseProgress + c.progressSpan * std::clamp(percent, 0, 100) / 100.0, 0.0, 0.99));
         };
         params.progress_callback_user_data = &callbacks;
         const auto status = whisper_full(context.get(), params, inferenceAudio.data(), int(inferenceAudio.size()));
@@ -420,8 +561,8 @@ public:
       if (cancelledNow()) return false;
       if (result.segments.size() >= 65536) { error = juce::String::fromUTF8("La guía contiene demasiados anuncios."); return false; }
       const double windowStart = double(utteranceStart) / analysisRate;
-      const double progressBase = 0.1 + 0.89 * windowStart / duration;
-      const double progressAmount = 0.89 * double(utterance.size()) / analysisRate / duration;
+      const double progressBase = 0.1 + 0.81 * windowStart / duration;
+      const double progressAmount = 0.81 * double(utterance.size()) / analysisRate / duration;
       std::optional<GuideTranscriptSegment> selected;
       // Reserve progress for bounded retries. A successful
       // ordinary directive never gets split merely because its words pause.
@@ -555,10 +696,17 @@ public:
         // Scanning an active window has not recognised it yet. Its two decode
         // passes own that part of the progress range, in language order.
         const auto processed = utterance.empty() ? position + count : utteranceStart;
-        notify(0.1 + 0.89 * double(processed) / double(totalSamples));
+        notify(0.1 + 0.81 * double(processed) / double(totalSamples));
       }
     }
     if (!recognize() || cancelledNow()) return false;
+    notify(.92);
+    if (!recoverGuideRepetitions(result, resampler, request.offsetSeconds, totalSamples,
+                                 decodeWindow, notify, cancelled, error)) {
+      cancelledNow();
+      return false;
+    }
+    notify(.99);
     if (request.audioFile.getSize() != audioSize || request.audioFile.getLastModificationTime() != audioModified ||
         model.getSize() != modelSize || model.getLastModificationTime() != modelModified ||
         guideAcousticPackFingerprint(acousticPack, cancelled) != acousticPackIdentity) {

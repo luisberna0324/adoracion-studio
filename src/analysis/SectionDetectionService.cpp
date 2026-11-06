@@ -1,4 +1,5 @@
 #include "SectionDetectionService.h"
+#include "GuideRepetitionEvidence.h"
 #include "../platform/AppleMusicStructureBridge.h"
 #include <juce_cryptography/juce_cryptography.h>
 #include <condition_variable>
@@ -285,6 +286,12 @@ bool validGuideTranscript(const GuideTranscript &transcript, double offset,
       }
       previousAcousticStart = announcement.startSeconds;
     }
+    if (!segment.repetitionAnnouncements.empty()) {
+      if (!validGuideRepetition(transcript, segment)) {
+        error = juce::String::fromUTF8("La transcripción contiene repeticiones de guía inválidas."); return false;
+      }
+      for (const auto &part : segment.repetitionAnnouncements) textBytes += size_t(part.text.getNumBytesAsUTF8());
+    }
     if (textBytes > 4 * 1024 * 1024) {
       error = juce::String::fromUTF8("La transcripción excede el límite de texto."); return false;
     }
@@ -362,6 +369,9 @@ juce::var guideTranscriptToVar(const GuideTranscript &transcript, double offset)
       if (segment.acousticResidualRatio)
         item.getDynamicObject()->setProperty("acousticResidualRatio", *segment.acousticResidualRatio);
     }
+    if (!segment.repetitionAnnouncements.empty())
+      item.getDynamicObject()->setProperty("repetitionAnnouncements",
+          guideRepetitionAnnouncementsToVar(segment.repetitionAnnouncements));
     segments.add(std::move(item));
   }
   object.setProperty("segments", std::move(segments));
@@ -467,6 +477,27 @@ bool readGuideCache(const juce::File &file, const GuideTranscript &identity,
     if (segment->hasProperty("acousticResidualRatio")) {
       if (!numeric(segment->getProperty("acousticResidualRatio"))) return false;
       decoded.acousticResidualRatio = double(segment->getProperty("acousticResidualRatio"));
+    }
+    if (segment->hasProperty("repetitionAnnouncements")) {
+      const auto *parts = segment->getProperty("repetitionAnnouncements").getArray();
+      if (!parts || parts->isEmpty() || parts->size() > 2) return false;
+      for (const auto &entry : *parts) {
+        const auto *part = entry.getDynamicObject();
+        if (!part || !part->getProperty("text").isString() || !part->getProperty("language").isString() ||
+            !numeric(part->getProperty("startSeconds")) || !numeric(part->getProperty("endSeconds"))) return false;
+        GuideRepetitionAnnouncement item{part->getProperty("text").toString(), part->getProperty("language").toString(),
+            double(part->getProperty("startSeconds")), double(part->getProperty("endSeconds")), {}, {}};
+        if (part->hasProperty("referenceSegment")) {
+          const auto index = part->getProperty("referenceSegment");
+          if (!index.isInt() || int(index) < 0) return false;
+          item.referenceSegment = size_t(int(index));
+        }
+        if (part->hasProperty("correlation")) {
+          if (!numeric(part->getProperty("correlation"))) return false;
+          item.correlation = double(part->getProperty("correlation"));
+        }
+        decoded.repetitionAnnouncements.push_back(std::move(item));
+      }
     }
     transcript.segments.push_back(std::move(decoded));
   }

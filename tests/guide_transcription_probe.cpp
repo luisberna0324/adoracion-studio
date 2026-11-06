@@ -1,4 +1,5 @@
 #include "analysis/GuideTranscription.h"
+#include "analysis/GuideRepetitionEvidence.h"
 #include "analysis/SectionDetectionService.h"
 #include "analysis/GuideSectionAlignment.h"
 #include <atomic>
@@ -97,6 +98,9 @@ juce::var transcriptJson(const GuideTranscript &transcript) {
     }
     if (segment.acousticResidualRatio)
       item.getDynamicObject()->setProperty("acousticResidualRatio", *segment.acousticResidualRatio);
+    if (!segment.repetitionAnnouncements.empty())
+      item.getDynamicObject()->setProperty("repetitionAnnouncements",
+          guideRepetitionAnnouncementsToVar(segment.repetitionAnnouncements));
     segments.add(item);
   }
   object->setProperty("segments", segments);
@@ -178,9 +182,15 @@ int main(int argc, char **argv) {
     return cancelRequested.load();
   };
   double maximumProgress = 0;
+  std::optional<std::chrono::steady_clock::time_point> repetitionStarted;
+  std::optional<double> repetitionReviewSeconds;
   int lastReportedPercent = -1;
   const auto progress = [&](double fraction) {
     maximumProgress = std::max(maximumProgress, fraction);
+    if (!repetitionStarted && fraction >= .92 && fraction < .99)
+      repetitionStarted = std::chrono::steady_clock::now();
+    if (repetitionStarted && !repetitionReviewSeconds && fraction >= .99)
+      repetitionReviewSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - *repetitionStarted).count();
     const int percent = int(maximumProgress * 100);
     if (percent / 5 > lastReportedPercent / 5 || lastReportedPercent < 0) {
       std::cout << "progress=" << percent << "%\n" << std::flush;
@@ -227,6 +237,7 @@ int main(int argc, char **argv) {
   object->setProperty("cancelled", wasCancelled);
   object->setProperty("error", error);
   object->setProperty("elapsedSeconds", std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+  if (succeeded) object->setProperty("repetitionReviewSeconds", repetitionReviewSeconds.value_or(0.0));
   object->setProperty("maximumProgress", maximumProgress);
   object->setProperty("offsetSeconds", offset);
   object->setProperty("cacheHit", cacheHit);

@@ -29,6 +29,15 @@ struct GuideAcousticAnnouncement {
   double startSeconds = 0.0, endSeconds = 0.0, correlation = 0.0;
 };
 
+// A repeated instruction cites its original first-pass segment in this guide.
+// A section recovered by decoding the remaining speech has no such reference.
+struct GuideRepetitionAnnouncement {
+  juce::String text, language;
+  double startSeconds = 0.0, endSeconds = 0.0;
+  std::optional<size_t> referenceSegment;
+  std::optional<double> correlation;
+};
+
 struct GuideTranscriptSegment {
   double startSeconds = 0.0;
   double endSeconds = 0.0;
@@ -45,6 +54,7 @@ struct GuideTranscriptSegment {
   // A bounded catalogue-constrained retry is separate evidence. Its scores
   // are conditioned by the grammar and never replace literal ASR alternatives.
   std::vector<GuideTranscriptAlternative> catalogueAlternatives;
+  std::vector<GuideRepetitionAnnouncement> repetitionAnnouncements;
 };
 
 struct GuideTranscript {
