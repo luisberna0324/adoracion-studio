@@ -79,6 +79,7 @@ public:
   std::function<void()> onShareAudioDiagnostics;
   std::function<void()> onLearningRequested;
   std::function<void()> onTeamsRequested;
+  std::function<void()> onLayoutModeChanged;
   std::function<void(playworship::remote::RemoteSession::Mode)> onRemoteModeChanged;
   std::function<void(const playworship::remote::DiscoveredServer &)> onRemoteConnect;
   std::function<void(const juce::String &)> onRemoteServerAliasChanged;
@@ -193,6 +194,9 @@ private:
   juce::Label languageLabel;
   juce::Label languageHelp;
   AdaptiveComboBox languageBox;
+  juce::Label layoutModeLabel;
+  juce::Label layoutModeHelp;
+  AdaptiveComboBox layoutModeBox;
   juce::Label songCrossfadeLabel;
   juce::Label songCrossfadeHelp;
   AdaptiveComboBox songCrossfadeBox;

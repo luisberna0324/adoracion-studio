@@ -1769,6 +1769,28 @@ void ChannelGridPanel::resized() {
       isWideViewport ? juce::jlimit(0.82f, 1.22f, widthScale) : juce::jlimit(0.82f, 1.08f, widthScale);
   float stripScale = juce::jlimit(
       0.82f, 1.25f, widthAdaptiveScale * profileScale);
+#if !JUCE_IOS && !JUCE_ANDROID
+  // Desktop density is bounded by both dimensions. Filling spare horizontal
+  // space must not enlarge a row beyond the vertical space needed by the next.
+  // Keep a readable floor and use the existing viewport for larger sessions.
+  const float densityCeiling = responsiveProfile == ResponsiveLayoutProfile::Compact
+                                   ? 0.90f
+                                   : responsiveProfile == ResponsiveLayoutProfile::Large
+                                         ? 1.25f : 1.08f;
+  stripScale = juce::jmin(stripScale, densityCeiling);
+  const auto fitsViewportHeight = [&](const float scale) {
+    const int cellWidth = juce::roundToInt(baseLayout.width * scale) + 2;
+    const int columns = juce::jmax(
+        1, (contentWidth - pad * 2 + gapX) / (cellWidth + gapX));
+    const int rows = (visibleSlots + columns - 1) / columns;
+    const int cellHeight = juce::roundToInt(baseLayout.height * scale) +
+                           (gridShowsRouting ? 34 : 8);
+    return pad * 2 + rows * cellHeight + juce::jmax(0, rows - 1) * gapY <=
+           viewport.getHeight();
+  };
+  while (stripScale > 0.82f && !fitsViewportHeight(stripScale))
+    stripScale = juce::jmax(0.82f, stripScale - 0.01f);
+#endif
 #if JUCE_IOS
   // iPad uses the tablet/desktop mixer layout. Keep the base control size
   // readable instead of shrinking strips to expose every stem at once. iPhone

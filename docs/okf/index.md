@@ -45,6 +45,7 @@ docs/okf/
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
 | [ui/NativeLyrics](ui/NativeLyrics.md) | Editor nativo iOS de letra y fragmentos musicales |
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
+| [ui/DesktopLayout](ui/DesktopLayout.md) | Densidad de escritorio, tamaño de interfaz y mixer según ancho y alto útiles |
 | [ui/InputControls](ui/InputControls.md) | Campos de texto y selectores adaptativos multiplataforma |
 | [ui/SectionAutomation](ui/SectionAutomation.md) | Edición de mezcla por sección con los controles existentes |
 | [ui/SectionDetection](ui/SectionDetection.md) | Detección offline asistida, propuestas transitorias y confirmación segura |

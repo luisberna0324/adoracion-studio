@@ -1011,6 +1011,148 @@ ChannelStripCard *findMixerStrip(juce::Component &component,
   return nullptr;
 }
 
+void collectMixerStrips(juce::Component &component,
+                         std::vector<ChannelStripCard *> &strips) {
+  if (auto *strip = dynamic_cast<ChannelStripCard *>(&component))
+    strips.push_back(strip);
+  for (auto *child : component.getChildren())
+    collectMixerStrips(*child, strips);
+}
+
+void snapshotMixerLayout(ChannelGridPanel &grid, const juce::String &name) {
+  const auto output = juce::SystemStats::getEnvironmentVariable(
+      "PLAYWORSHIP_LAYOUT_SNAPSHOTS", {});
+  if (output.isEmpty()) return;
+  const juce::File folder(output);
+  expect(folder.createDirectory().wasOk(), "mixer preview directory opens");
+  auto stream = folder.getChildFile(name + ".png").createOutputStream();
+  expect(stream != nullptr, "mixer preview stream opens");
+  stream->setPosition(0);
+  stream->truncate();
+  expect(juce::PNGImageFormat{}.writeImageToStream(
+             grid.createComponentSnapshot(grid.getLocalBounds()), *stream),
+         "real mixer component snapshot writes");
+}
+
+void testDesktopMixerDensityLayouts() {
+#if !JUCE_IOS && !JUCE_ANDROID
+  const auto source = isolatedTestRoot().getChildFile("mixer-density-source.wav");
+  writeRoutingFixtureWav(source, 2048, 0.1f);
+  ImportedSongData song;
+  song.id = "mixer-density-layout";
+  song.title = "Mixer density layout";
+  song.bpm = 120.0;
+  song.timeSignature = "4/4";
+  juce::StringArray paths, ids;
+  for (int i = 0; i < 12; ++i) {
+    ImportedStemData stem;
+    stem.stemId = "density-stem-" + juce::String(i);
+    stem.displayName = "Instrument " + juce::String(i + 1);
+    stem.category = "Keys";
+    stem.fileName = source.getFileName();
+    stem.sourcePath = stem.storedPath = source.getFullPathName();
+    stem.sampleRate = 48000.0;
+    stem.channels = 1;
+    stem.durationSec = 2048.0 / 48000.0;
+    song.stems.push_back(stem);
+    paths.add(stem.storedPath);
+    ids.add(stem.stemId);
+  }
+  auto processor = std::make_unique<MTControlsAudioProcessor>();
+  expect(processor->loadSongStems(paths, song.id, song.title, "C", song.bpm),
+         "real processor loads twelve stems for desktop layout");
+  processor->setSectionAutomationStemIds(ids);
+  for (int i = 0; i < 12; ++i)
+    processor->setStemVolume(i, 0.1f + static_cast<float>(i) * 0.05f);
+  processor->setMasterVolume(0.73f);
+  ChannelStripLookAndFeel lookAndFeel;
+  ChannelGridPanel grid(lookAndFeel, *processor);
+  grid.setSize(1100, 640);
+  grid.setSong(song);
+  std::vector<ChannelStripCard *> strips;
+  collectMixerStrips(grid, strips);
+  expect(strips.size() == 15,
+         "layout fixture includes every stem, Master, Click Dyn and Guide Dyn");
+  auto *master = findMixerStrip(grid, "MASTER");
+  expect(master != nullptr, "density fixture exposes the real Master strip");
+  auto *link = dynamic_cast<juce::Button *>(
+      findMixerControl(*master, "linkInstrumentFaders"));
+  expect(link != nullptr && link->isEnabled() && static_cast<bool>(link->onClick),
+         "desktop layout fixture exposes the real link action");
+  link->setToggleState(true, juce::dontSendNotification);
+  link->onClick();
+  expect(link->getToggleState(), "density test begins with linked faders active");
+  juce::Viewport *viewport = nullptr;
+  for (auto *child : grid.getChildren())
+    if (auto *candidate = dynamic_cast<juce::Viewport *>(child)) viewport = candidate;
+  expect(viewport != nullptr && viewport->getViewedComponent() != nullptr,
+         "real mixer retains its scrolling viewport");
+
+  const auto expectMixUnchanged = [&] {
+    expect(link->getToggleState() &&
+               findMixerStrip(grid, "MASTER") == master &&
+               std::abs(processor->getMasterVolume() - 0.73f) < 1.0e-6f,
+           "resizing retains the same mixer, linking and Master volume");
+    for (int i = 0; i < 12; ++i)
+      expect(std::abs(processor->getStemVolume(i) -
+                      (0.1f + static_cast<float>(i) * 0.05f)) < 1.0e-6f,
+             "resizing does not replace or scale musical volume levels");
+  };
+  const auto expectControlsInside = [&] {
+    auto *content = viewport->getViewedComponent();
+    for (auto *strip : strips) {
+      auto *slot = strip->getParentComponent();
+      expect(content->getLocalBounds().contains(slot->getBounds()),
+             "every channel belongs entirely to the scrollable content");
+      expect(slot->getLocalBounds().contains(strip->getBounds()),
+             "each fader strip remains inside its cell");
+      for (const auto *id : {"muteButton", "soloButton"}) {
+        auto *button = findMixerControl(*strip, id);
+        if (button != nullptr && button->isVisible())
+          expect(strip->getLocalBounds().contains(button->getBounds()),
+                 "Solo and Mute remain completely inside their strip");
+      }
+    }
+    expectMixUnchanged();
+  };
+
+  grid.setResponsiveProfile(ResponsiveLayoutProfile::Standard);
+  const juce::Point<int> normalSize(master->getWidth(), master->getHeight());
+  snapshotMixerLayout(grid, "mixer-normal-1100x640");
+  grid.setResponsiveProfile(ResponsiveLayoutProfile::Compact);
+  expect(master->getWidth() < normalSize.x && master->getHeight() < normalSize.y,
+         "Compact decreases both dimensions when height permits the normal profile");
+  snapshotMixerLayout(grid, "mixer-compact-1100x640");
+  expectControlsInside();
+
+  // At these sizes two rows can fit at a readable scale. A width-only scale
+  // used to leave the bottom row partially outside the visible viewport.
+  for (const auto size : {juce::Point<int>(900, 450), {760, 450}, {1100, 470}}) {
+    grid.setSize(size.x, size.y);
+    viewport->setViewPosition(0, 0);
+    expectControlsInside();
+    for (auto *strip : strips)
+      expect(viewport->getViewArea().contains(strip->getParentComponent()->getBounds()),
+             "height-aware density shows every row when the minimum readable scale fits");
+    snapshotMixerLayout(grid, "mixer-compact-" + juce::String(size.x) + "x" + juce::String(size.y));
+  }
+
+  grid.setSize(420, 300);
+  expectControlsInside();
+  auto *content = viewport->getViewedComponent();
+  expect(content->getHeight() > viewport->getViewHeight(),
+         "short narrow windows preserve scroll rather than hiding or shrinking channels below the minimum");
+  auto *last = strips.back()->getParentComponent();
+  viewport->setViewPosition(0, content->getHeight());
+  expect(viewport->getViewArea().contains(last->getBounds()),
+         "scrolling reaches the complete final row and its bottom controls");
+  expectMixUnchanged();
+  grid.setSize(1100, 640);
+  viewport->setViewPosition(0, 0);
+  expectControlsInside();
+#endif
+}
+
 void beginLinkedFaderGesture(juce::Slider &fader) {
   if (fader.onDragStart) fader.onDragStart();
 }
@@ -1345,6 +1487,11 @@ int main(int argc, char **argv) {
       std::cout << "Song crossfade: actual host callback overlap, mono routes and cancellation passed\n";
       return 0;
     }
+    if (argc == 2 && juce::String(argv[1]) == "--mixer-layout-only") {
+      testDesktopMixerDensityLayouts();
+      std::cout << "Desktop mixer density: real rows, complete controls, scroll and retained mix passed\n";
+      return 0;
+    }
     if (argc == 2 && juce::String(argv[1]) == "--click-gain-only") {
       testClickDynGainKnobPortableRoundTrip();
       std::cout << "Click Dyn gain: mixer UI and portable-project round trip passed\n";
@@ -1364,6 +1511,7 @@ int main(int argc, char **argv) {
     testRealProcessorLayoutLimits();
     testClickDynGainKnobPortableRoundTrip();
     testLinkedInstrumentFadersPortableRoundTrip();
+    testDesktopMixerDensityLayouts();
     testRuntime(2);
     testRuntime(8);
     testRuntime(64);

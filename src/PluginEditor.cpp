@@ -1140,8 +1140,15 @@ ResponsiveLayoutProfile MTControlsAudioProcessorEditor::resolveResponsiveLayoutP
 
   const int w = getWidth() > 0 ? getWidth() : kDefaultWindowW;
   const int h = getHeight() > 0 ? getHeight() : kDefaultWindowH;
+#if !JUCE_IOS && !JUCE_ANDROID
+  // A laptop can be wide enough for Standard while still having little room
+  // below the timeline. Desktop measurements are already logical DPI units.
+  if (w < kCompactBreakpointW || h <= 780)
+    return ResponsiveLayoutProfile::Compact;
+#else
   if (w < kCompactBreakpointW || h < kCompactBreakpointH)
     return ResponsiveLayoutProfile::Compact;
+#endif
   if (w >= kLargeBreakpointW && h >= kLargeBreakpointH)
     return ResponsiveLayoutProfile::Large;
   return ResponsiveLayoutProfile::Standard;
@@ -3933,6 +3940,13 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     if (safe != nullptr) safe->shareAudioDiagnostics();
   };
 #if !JUCE_IOS && !JUCE_ANDROID
+  panel->onLayoutModeChanged = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    if (safe != nullptr) {
+      safe->resized();
+      if (safe->songListPanelRaw != nullptr)
+        safe->songListPanelRaw->refreshLayoutDensity();
+    }
+  };
   panel->setFreeShowClient(&proc.getFreeShowClient());
   if (freeShow) panel->showFreeShowSettings();
 #else
@@ -3965,8 +3979,18 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     refreshRemoteSettings();
   };
   panel->updateRemoteState(remoteSession.getMode(), remoteSession.getDiscoveredServers(), remoteConnectionStatus);
-  panel->setSize(useTouchOptimisedControls() ? 980 : 1080,
-                 useTouchOptimisedControls() ? 860 : 780);
+  int preferredSettingsWidth = useTouchOptimisedControls() ? 980 : 1080;
+  int preferredSettingsHeight = useTouchOptimisedControls() ? 860 : 780;
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (const auto *display = juce::Desktop::getInstance().getDisplays()
+                                .getDisplayForRect(getScreenBounds())) {
+    preferredSettingsWidth = juce::jmin(preferredSettingsWidth,
+                                       juce::jmax(1, display->userArea.getWidth() - 48));
+    preferredSettingsHeight = juce::jmin(preferredSettingsHeight,
+                                        juce::jmax(1, display->userArea.getHeight() - 80));
+  }
+#endif
+  panel->setSize(preferredSettingsWidth, preferredSettingsHeight);
   const auto settingsWidth = panel->getWidth();
   const auto settingsHeight = panel->getHeight();
   panel->refreshThemeColours();
@@ -5887,6 +5911,12 @@ void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile
     setlistMinW = 300;
     setlistMaxW = 360;
     contentInset = 6;
+#if !JUCE_IOS && !JUCE_ANDROID
+    waveformH = 148;
+    setlistRatio = 0.28f;
+    setlistMinW = 270;
+    setlistMaxW = 320;
+#endif
   } else if (responsiveLayoutProfile == ResponsiveLayoutProfile::Large) {
     topBarH = 62;
     waveformH = kLargeWaveformH;

@@ -420,7 +420,7 @@ void AppSettings::setLayoutMode(const AppLayoutMode mode) {
     modeText = "large";
 
   if (auto *o = root.getDynamicObject()) {
-    o->setProperty("version", 10);
+    o->setProperty("version", juce::jmax(13, static_cast<int>(o->getProperty("version"))));
     o->setProperty("layoutMode", modeText);
   }
 

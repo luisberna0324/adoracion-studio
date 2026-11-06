@@ -152,12 +152,37 @@ struct SettingsPanelTestAccess {
     expect(AppSettings::getSongCrossfadeSeconds() == 10.0, "invalid crossfade duration cannot overwrite the saved setting");
     AppSettings::setSongCrossfadeSeconds(3.0);
     testActiveRoutingChannels();
+    if (!useTouchOptimisedControls())
+      AppSettings::setLayoutMode(AppLayoutMode::Compact);
     int routingChanges = 0;
     SettingsPanel panel(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
         PadsCrossfadePreset{}, {},
         MetronomeClickStyle{}, {}, {}, {}, {}, {}, {}, 8,
         [&](const auto &, const auto &) { ++routingChanges; }, nullptr, 0, 8);
     panel.setVisible(true);
+    if (!useTouchOptimisedControls()) {
+      expect(panel.layoutModeBox.getSelectedId() == 2,
+             "interface size restores the persisted compact preference");
+      int layoutChanges = 0;
+      panel.onLayoutModeChanged = [&] {
+        ++layoutChanges;
+        expect(static_cast<int>(AppSettings::getLayoutMode()) + 1 ==
+                   panel.layoutModeBox.getSelectedId(),
+               "layout callback observes the newly persisted size");
+      };
+      for (const int id : {1, 3, 4, 2}) {
+        const int previousChanges = layoutChanges;
+        panel.layoutModeBox.setSelectedId(id, juce::sendNotificationSync);
+        expect(layoutChanges == previousChanges + 1 &&
+                   static_cast<int>(AppSettings::getLayoutMode()) + 1 == id,
+               "each interface size persists and requests one immediate relayout");
+        panel.layoutModeBox.onChange();
+        expect(layoutChanges == previousChanges + 1,
+               "confirming the current interface size does not repeat relayout");
+      }
+      panel.layoutModeBox.setSelectedId(1, juce::sendNotificationSync);
+      panel.onLayoutModeChanged = {};
+    }
     panel.songCrossfadeBox.setSelectedId(5, juce::sendNotificationSync);
     expect(AppSettings::getSongCrossfadeSeconds() == 5.0, "settings control persists the song crossfade duration");
     panel.songCrossfadeBox.setSelectedId(3, juce::sendNotificationSync);
@@ -358,6 +383,7 @@ struct SettingsPanelTestAccess {
                    "every visible preference fits in narrow pages");
         const juce::Label *const helps[] = {
             &panel.themeHelp, &panel.languageHelp,
+            &panel.layoutModeHelp,
             &panel.songCrossfadeHelp, &panel.padsCrossfadeHelp, &panel.metronomeClickStyleHelp};
         int visibleHelps = 0;
         for (const auto *help : helps)
@@ -369,6 +395,15 @@ struct SettingsPanelTestAccess {
           }
         expect(visibleHelps >= 2, "both preferences on a detail have help");
         if (page == Destination::Appearance) {
+          expect(panel.layoutModeBox.isVisible() == !useTouchOptimisedControls() &&
+                     panel.layoutModeLabel.isVisible() == !useTouchOptimisedControls() &&
+                     panel.layoutModeHelp.isVisible() == !useTouchOptimisedControls(),
+                 "interface size is available in narrow desktop Appearance only");
+          if (!useTouchOptimisedControls())
+            expect(panel.layoutModeBox.getHeight() == panel.languageBox.getHeight() &&
+                       panel.layoutModeLabel.getY() >= panel.languageHelp.getBottom() &&
+                       !panel.layoutModeBox.getBounds().intersects(panel.languageBox.getBounds()),
+                   "the interface size row has the shared field height and never overlaps language");
           expect(panel.themeHelp.getY() - panel.themeBox.getBottom() == 6 &&
                      panel.languageHelp.getY() - panel.languageBox.getBottom() == 6 &&
                      panel.languageLabel.getY() - panel.themeHelp.getBottom() == 12,
@@ -423,6 +458,14 @@ struct SettingsPanelTestAccess {
     expect(panel.generalTabButton.isVisible() && !panel.backButton.isVisible() &&
                panel.themeBox.isVisible() && panel.remoteModeControl.isVisible(),
            "wide desktop retains its full settings navigation and controls");
+    expect(panel.layoutModeBox.isVisible() == !useTouchOptimisedControls(),
+           "wide desktop General exposes interface size");
+    if (!useTouchOptimisedControls())
+      expect(panel.generalPage.getLocalBounds().contains(panel.layoutModeBox.getBounds()) &&
+                 panel.layoutModeBox.getHeight() == panel.themeBox.getHeight() &&
+                 panel.layoutModeLabel.getY() >= panel.languageHelp.getBottom() &&
+                 panel.songCrossfadeLabel.getY() >= panel.layoutModeHelp.getBottom(),
+             "wide General fits interface size between language and playback preferences");
     for (auto *child : panel.generalPage.getChildren()) {
       expect(dynamic_cast<juce::ToggleButton *>(child) == nullptr,
              "removed startup, Prime and optimization options leave no hidden toggles");

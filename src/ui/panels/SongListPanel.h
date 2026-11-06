@@ -113,6 +113,7 @@ public:
   void openSongImportWizardFromExternal();
   void refreshLanguageTexts();
   void refreshThemeColours();
+  void refreshLayoutDensity();
   void setMinimalPhoneMode(bool enabled);
   void setPhoneSafeAreaInsets(juce::BorderSize<int> insets);
   void setOnOverlayCloseRequested(std::function<void()> cb);

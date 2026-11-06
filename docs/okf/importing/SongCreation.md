@@ -29,8 +29,20 @@ En telefonos iOS/Android el asistente ocupa toda la pantalla vertical y respeta
 area segura/teclado. Detalles tiene viewport; Archivos una lista desplazable;
 el mapeo filas apiladas; Revisar un resumen desplazable. Agregar cancion en
 escritorio usa esa misma jerarquia, indicador Detalles/Archivos/Secciones/Revisar
-y navegacion inferior. Solo reduce controles (campos de 36 px, filas de archivos
-de 48 px y mapeo de 80 px). La edicion de escritorio reutiliza el mismo formulario desplazable y la pagina interna de Agregar, con datos precargados y callbacks de actualizacion.
+y navegacion inferior. En escritorio, la densidad compartida de Configuracion
+se aplica al formulario: Compacto usa campos de 32 puntos, archivos de 44 y
+mapeo de 72; Normal conserva 36/48/80; Grande usa 40/52/88. Son puntos logicos,
+sin una transformacion global ni una segunda aplicacion de la escala del monitor.
+Automático usa el espacio efectivo del asistente: Compacto con menos de 520
+puntos de ancho o hasta 680 de alto, Grande desde 600 de ancho y 820 de alto,
+y Normal en el resto. Asi una columna lateral debajo de la onda se compacta
+aunque el monitor sea grande. Las preferencias explicitas prevalecen.
+Compacto tambien reduce cabecera, indicador de pasos, portada y separaciones;
+no elimina campos ni cambia el borrador, el foco o los callbacks de guardado.
+Detalles, Archivos, Secciones y Revisar conservan sus superficies desplazables
+cuando el contenido no cabe. iOS y Android mantienen las metricas tactiles y
+del teclado anteriores, sin aplicar esta densidad de escritorio.
+La edicion de escritorio reutiliza el mismo formulario desplazable y la pagina interna de Agregar, con datos precargados y callbacks de actualizacion.
 El `+` del encabezado de Biblioteca abre Detalles como pagina interna de
 `SongListPanel` en escritorio, telefono y tablet, a continuacion de Biblioteca en su
 `PageContainer`. La pagina entra desde la derecha con la misma transicion

@@ -22,10 +22,16 @@ public:
     if (auto *parent = getParentComponent())
       setBounds(parent->getLocalBounds());
   }
+
 };
 
 class SongWizardOverlay final : public juce::Component {
 public:
+  void refreshLayoutDensity() {
+    resized();
+    panel->resized();
+  }
+
   SongWizardOverlay(std::unique_ptr<SongImportWizardComponent> content,
                     std::function<void()> dismissCallback)
       : panel(std::move(content)), onDismiss(std::move(dismissCallback)) {
@@ -1608,6 +1614,14 @@ void SongListPanel::paint(juce::Graphics &g) {
              static_cast<float>(searchRow.getBottom() + 8),
              static_cast<float>(searchRow.getRight()),
              static_cast<float>(searchRow.getBottom() + 8), 1.0f);
+}
+
+void SongListPanel::refreshLayoutDensity() {
+  resized();
+  if (libraryCreationWizard != nullptr)
+    libraryCreationWizard->resized();
+  if (songImportOverlay != nullptr)
+    songImportOverlay->refreshLayoutDensity();
 }
 
 void SongListPanel::resized() {

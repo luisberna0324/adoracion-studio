@@ -83,7 +83,9 @@ public:
     const auto mode = owner.remoteMode == Mode::Client ? L10n::tr("Cliente", "Client")
         : owner.remoteMode == Mode::Server ? L10n::tr("Servidor", "Server") : juce::String("Local");
     const juce::StringArray subtitles{
-        L10n::tr("Tema e idioma de la app", "App theme and language"),
+        useTouchOptimisedControls()
+            ? L10n::tr("Tema e idioma de la app", "App theme and language")
+            : L10n::tr(u8"Tema, tamaño e idioma de la app", "App theme, size and language"),
         L10n::tr("Click y transiciones de pads", "Click and pad transitions")};
     juce::StringArray pageSubtitles = subtitles;
     if (!useTouchOptimisedControls())
@@ -652,8 +654,9 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   accountPage.addAndMakeVisible(*actionsTitleSeparator);
   accountPage.addAndMakeVisible(*actionsRowSeparator);
 
-  generalRowSeparators.reserve(7);
-  for (int i = 0; i < 7; ++i) {
+  const int generalSeparatorCount = useTouchOptimisedControls() ? 7 : 8;
+  generalRowSeparators.reserve(generalSeparatorCount);
+  for (int i = 0; i < generalSeparatorCount; ++i) {
     auto separator = std::make_unique<SettingsRowSeparator>();
     generalPage.addAndMakeVisible(*separator);
     generalRowSeparators.push_back(std::move(separator));
@@ -696,6 +699,31 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     repaint();
   };
   generalPage.addAndMakeVisible(languageBox);
+
+  if (!useTouchOptimisedControls()) {
+    layoutModeLabel.setJustificationType(juce::Justification::centredLeft);
+    layoutModeLabel.setFont(settingsOptionLabelFont());
+    generalPage.addAndMakeVisible(layoutModeLabel);
+    layoutModeBox.addItem(L10n::tr(u8"Automático", "Automatic"), 1);
+    layoutModeBox.addItem(L10n::tr("Compacto", "Compact"), 2);
+    layoutModeBox.addItem(L10n::tr("Normal", "Standard"), 3);
+    layoutModeBox.addItem(L10n::tr("Grande", "Large"), 4);
+    layoutModeBox.setSelectedId(static_cast<int>(AppSettings::getLayoutMode()) + 1,
+                                juce::dontSendNotification);
+    layoutModeBox.setJustificationType(juce::Justification::centredLeft);
+    layoutModeBox.onChange = [this] {
+      const int id = layoutModeBox.getSelectedId();
+      if (id < 1 || id > 4)
+        return;
+      const auto mode = static_cast<AppLayoutMode>(id - 1);
+      if (mode == AppSettings::getLayoutMode())
+        return;
+      AppSettings::setLayoutMode(mode);
+      if (onLayoutModeChanged)
+        onLayoutModeChanged();
+    };
+    generalPage.addAndMakeVisible(layoutModeBox);
+  }
 
   songCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
   songCrossfadeLabel.setFont(settingsOptionLabelFont());
@@ -799,7 +827,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   remoteServerNameEditor.onFocusLost = saveRemoteServerAlias;
   generalPage.addAndMakeVisible(remoteServerNameEditor);
   generalPage.addAndMakeVisible(remoteStatus);
-  for (auto *help : {&themeHelp, &languageHelp,
+  for (auto *help : {&themeHelp, &languageHelp, &layoutModeHelp,
                      &songCrossfadeHelp, &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp}) {
     help->setFont(settingsHelpFont());
@@ -808,6 +836,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     help->setInterceptsMouseClicks(false, false);
     generalPage.addAndMakeVisible(*help);
   }
+  layoutModeHelp.setVisible(!useTouchOptimisedControls());
   remoteServersBox.onChange = [this] {
     const int index = remoteServersBox.getSelectedId() - 1;
     if (juce::isPositiveAndBelow(index, static_cast<int>(remoteServers.size())) && onRemoteConnect)
@@ -1116,7 +1145,8 @@ void SettingsPanel::resized() {
     if (tabs.getCurrentTabIndex() == 5) return 480;
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
-               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 808 : 728) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
+               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 808 : 728) +
+                    (useTouchOptimisedControls() ? 0 : 80) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
   };
   int contentWidth = juce::jmax(1, area.getWidth());
   if (requiredHeight(contentWidth) > area.getHeight())
@@ -1163,12 +1193,15 @@ void SettingsPanel::refreshThemeColours() {
     button->setClickingTogglesState(false);
   }
   themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  for (auto *help : {&themeHelp, &languageHelp,
+  layoutModeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  for (auto *help : {&themeHelp, &languageHelp, &layoutModeHelp,
                      &songCrossfadeHelp, &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp,
                      &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp, &actionDeleteHelp})
     help->setColour(juce::Label::textColourId, UITheme::textSecondary);
   applyComboBoxTheme(themeBox, UITheme::cardBgHover.withAlpha(0.78f),
+                     UITheme::cardBorder.withAlpha(0.84f));
+  applyComboBoxTheme(layoutModeBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
   languageLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   remoteControlLabel.setColour(juce::Label::textColourId,
@@ -1405,7 +1438,7 @@ int SettingsPanel::mobileGeneralCardHeight() const {
     case Destination::Integrations:
       return 0;
     case Destination::Appearance:
-      return mobileCardPadding + 2 * mobileChoiceHeight;
+      return mobileCardPadding + (useTouchOptimisedControls() ? 2 : 3) * mobileChoiceHeight;
     case Destination::Playback:
       return mobileCardPadding + 3 * mobileChoiceHeight;
     case Destination::Remote:
@@ -1451,13 +1484,15 @@ void SettingsPanel::layoutMobileGeneralPage() {
     help.setBounds(content.removeFromTop(helpHeight));
     content.removeFromTop(afterHelp);
   };
-  for (auto *box : {&themeBox, &languageBox, &songCrossfadeBox, &padsCrossfadeBox,
+  for (auto *box : {&themeBox, &languageBox, &layoutModeBox, &songCrossfadeBox, &padsCrossfadeBox,
                     &metronomeClickStyleBox, &remoteServersBox})
     box->setMobileFormMode(true);
 
   if (destination == Destination::Appearance) {
     choice(themeLabel, themeBox, themeHelp);
     choice(languageLabel, languageBox, languageHelp);
+    if (!useTouchOptimisedControls())
+      choice(layoutModeLabel, layoutModeBox, layoutModeHelp);
   } else if (destination == Destination::Playback) {
     choice(songCrossfadeLabel, songCrossfadeBox, songCrossfadeHelp);
     choice(padsCrossfadeLabel, padsCrossfadeBox, padsCrossfadeHelp);
@@ -1540,6 +1575,18 @@ void SettingsPanel::applyLanguageTexts() {
   languageHelp.setText(L10n::tr("Se aplica a menús, controles y mensajes.",
                                  "Applies to menus, controls, and messages."),
                        juce::dontSendNotification);
+  layoutModeLabel.setText(L10n::tr(u8"Tamaño de interfaz", "Interface size"),
+                          juce::dontSendNotification);
+  layoutModeHelp.setText(L10n::tr(
+      u8"Automático adapta los controles al espacio de la ventana. También puedes elegir un tamaño fijo.",
+      "Automatic adapts controls to the window space. You can also choose a fixed size."),
+      juce::dontSendNotification);
+  layoutModeBox.changeItemText(1, L10n::tr(u8"Automático", "Automatic"));
+  layoutModeBox.changeItemText(2, L10n::tr("Compacto", "Compact"));
+  layoutModeBox.changeItemText(3, L10n::tr("Normal", "Standard"));
+  layoutModeBox.changeItemText(4, L10n::tr("Grande", "Large"));
+  layoutModeBox.setTitle(layoutModeLabel.getText());
+  layoutModeBox.setDescription(layoutModeHelp.getText());
   songCrossfadeLabel.setText(L10n::tr(u8"Crossfade entre canciones", "Song crossfade"), juce::dontSendNotification);
   const bool localCrossfade = remoteMode != playworship::remote::RemoteSession::Mode::Client;
   songCrossfadeBox.setEnabled(localCrossfade);
@@ -1813,6 +1860,11 @@ void SettingsPanel::layoutGeneralPage() {
   layoutChoiceRow(area.removeFromTop(rowH), languageLabel, languageBox,
                   languageHelp);
   addSeparator();
+  if (!useTouchOptimisedControls()) {
+    layoutChoiceRow(area.removeFromTop(rowH), layoutModeLabel, layoutModeBox,
+                    layoutModeHelp);
+    addSeparator();
+  }
   layoutChoiceRow(area.removeFromTop(rowH), songCrossfadeLabel,
                   songCrossfadeBox, songCrossfadeHelp);
   addSeparator();
