@@ -614,6 +614,16 @@ recupera el estilo existente de escritorio sin cambiar posición, seguimiento,
 seek ni comandos de transporte.
 El dibujo de iOS y Android conserva su implementación vigente.
 
+Durante la revisión de sugerencias, pulsar la regla conserva el seek normal.
+`WaveformBar::keyPressed` deja pasar Espacio al transporte del editor para
+reproducir/pausar, y Alt+Espacio conserva detener; continúa interceptando los
+atajos de edición del arreglo confirmado. Los campos de nombre conservan la
+entrada de espacios como texto. **+ Agregar sección** captura el tiempo actual
+del cursor en segundos y abre el catálogo para añadir una sección al borrador;
+la inserción no publica un cambio de arrange hasta **Confirmar**. El contrato
+de revisión e inserción se describe en
+[SectionDetection](../ui/SectionDetection.md).
+
 Letras de escritorio usa esa misma regla y solicita las marcas al mapa de tempo
 de `WaveformBar`. Ambas vistas comparten la línea fina y bandera del playhead
 mediante `TimelineRulerStyle`; el cambio es de dibujo, sin alterar posición ni

@@ -2875,6 +2875,14 @@ bool SongLibraryStore::convertStemWithFfmpeg(
     juce::String &errorMessage, const double durationSec,
     const SongImportProgressFn &onProgress, const bool allowBootstrap) {
   errorMessage.clear();
+  if (source == destination) {
+    errorMessage = "Audio conversion requires a separate destination file.";
+    return false;
+  }
+  if (!source.existsAsFile()) {
+    errorMessage = "Stem source missing: " + source.getFileName();
+    return false;
+  }
   auto ffmpegBinary = resolveBundledFfmpegBinary();
   if (!ffmpegBinary.existsAsFile() && allowBootstrap) {
     juce::String bootstrapError;
@@ -2892,9 +2900,13 @@ bool SongLibraryStore::convertStemWithFfmpeg(
     return false;
   }
 
-  destination.getParentDirectory().createDirectory();
-  if (destination.existsAsFile())
-    destination.deleteFile();
+  if (destination.isDirectory() ||
+      destination.getParentDirectory().createDirectory().failed()) {
+    errorMessage = "Couldn't create the conversion destination for " +
+                   source.getFileName() + ".";
+    return false;
+  }
+  juce::TemporaryFile temporary(destination);
 
   juce::StringArray args;
   args.add(ffmpegBinary.getFullPathName());
@@ -2911,11 +2923,12 @@ bool SongLibraryStore::convertStemWithFfmpeg(
   args.add("-vn");
   args.add("-c:a");
   args.add(audioCodec);
-  args.add(destination.getFullPathName());
+  args.add(temporary.getFile().getFullPathName());
 
   juce::ChildProcess process;
-  if (!process.start(args)) {
-    errorMessage = "Couldn't launch ffmpeg conversion process.";
+  if (!process.start(args, juce::ChildProcess::wantStdOut |
+                               juce::ChildProcess::wantStdErr)) {
+    errorMessage = "Couldn't launch ffmpeg to convert " + source.getFileName() + ".";
     return false;
   }
 
@@ -2940,7 +2953,7 @@ bool SongLibraryStore::convertStemWithFfmpeg(
           onProgress(juce::jlimit(0.0, 0.995, progress), {});
         }
       } else if (line == "progress=end" && onProgress) {
-        onProgress(1.0, {});
+        onProgress(0.995, {});
       } else if (line.isNotEmpty() && !line.startsWith("bitrate=") &&
                  !line.startsWith("total_size=") &&
                  !line.startsWith("out_time=") &&
@@ -2969,7 +2982,8 @@ bool SongLibraryStore::convertStemWithFfmpeg(
     if (juce::Time::getMillisecondCounter() - startedAt >=
         static_cast<juce::uint32>(10 * 60 * 1000)) {
       process.kill();
-      errorMessage = formatLabel + " conversion timed out.";
+      errorMessage = formatLabel + " conversion timed out for " +
+                     source.getFileName() + ".";
       return false;
     }
   }
@@ -2985,15 +2999,28 @@ bool SongLibraryStore::convertStemWithFfmpeg(
       !pendingOutput.trim().containsChar('='))
     output << pendingOutput.trim();
   output = output.trim();
-  if (static_cast<int>(process.getExitCode()) != 0 || !destination.existsAsFile()) {
-    if (destination.existsAsFile())
-      destination.deleteFile();
-    errorMessage = output.isNotEmpty() ? output
-                                       : "ffmpeg failed converting stem to " +
-                                             formatLabel + ".";
+  output = output.replace(source.getFullPathName(), source.getFileName())
+                 .replace(temporary.getFile().getFullPathName(),
+                          temporary.getFile().getFileName())
+                 .replace(ffmpegBinary.getFullPathName(), ffmpegBinary.getFileName())
+                 .substring(0, 1200);
+  const auto exitCode = static_cast<int>(process.getExitCode());
+  if (exitCode != 0 || !temporary.getFile().existsAsFile() ||
+      temporary.getFile().getSize() == 0) {
+    errorMessage = "Couldn't convert " + source.getFileName() + " to " + formatLabel + ".";
+    if (exitCode != 0)
+      errorMessage += " ffmpeg exit code " + juce::String(exitCode) + ".";
+    if (output.isNotEmpty())
+      errorMessage += "\n" + output;
     return false;
   }
-
+  if (!temporary.overwriteTargetFileWithTemporary()) {
+    errorMessage = "Couldn't store the converted " + formatLabel + " for " +
+                   source.getFileName() + ".";
+    return false;
+  }
+  if (onProgress)
+    onProgress(1.0, {});
   return true;
 }
 
@@ -3029,6 +3056,15 @@ bool SongLibraryStore::convertStemForProject(const juce::File &source,
   return convertStemToStorageFormat(source, destination, errorMessage,
                                     durationSec, onProgress);
 #else
+  // Project creation accepts the same portable PCM inputs as legacy imports.
+  // Encode them in process before consulting an optional desktop executable.
+  if (portable_audio::convertToFlac(
+          source, destination, errorMessage,
+          [onProgress](double progress) {
+            if (onProgress)
+              onProgress(progress, {});
+          }))
+    return true;
   return convertStemWithFfmpeg(
       source, destination, kProjectFfmpegAudioCodec,
       kProjectStorageFormatLabel, errorMessage, durationSec, onProgress);

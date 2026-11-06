@@ -250,12 +250,45 @@ Cambiar el origen recalcula las secciones principales y las propuestas que
 dependen de intervalos de palabra; las indicaciones reconocidas y los conteos
 individuales medidos conservan su instante exacto. Se reaplican las
 correcciones de nombre/posición y los descartes de las secundarias.
+
+La barra de revisión incluye **+ Agregar sección** (**+ Sección** en ancho
+compacto). Pulsar la regla elige la posición del cursor; el botón abre el
+catálogo de secciones principales y sus variantes existentes. En escritorio,
+el menú contextual sobre una zona libre de la regla o de la onda permite
+insertar en el punto pulsado. La posición se captura al abrir el menú, de modo
+que la reproducción posterior no cambia el destino de la selección.
+El menú pertenece a esa revisión: cerrarla o cambiar de canción invalida una
+elección pendiente.
+
+La inserción manual se ajusta al inicio de compás más próximo de la cuadrícula
+de revisión. No recibe la anticipación de un compás propia de los anuncios de
+voz. Divide el rango provisional que contiene esa posición y conserva los
+límites de las demás secciones. Un límite ya ocupado o sin duración mínima
+suficiente muestra el error y conserva el borrador; se mantiene el máximo de
+256 secciones. La marca nueva puede arrastrarse, elegirse de nuevo desde el
+catálogo o descartarse antes de confirmar.
+
+`GuideAlignmentOptions::manualSections` conserva el ID, nombre del catálogo y
+posición absoluta de cada inserción. Cambiar el origen recalcula las propuestas
+automáticas y reaplica los descartes y las inserciones manuales sin perder
+sus IDs ni desplazar sus posiciones elegidas. Si la nueva cuadrícula produce
+un conflicto, se conserva la revisión anterior y se informa el error. Las
+marcas manuales no crean anuncios fuente ni confianza ASR, y no enseñan una
+equivalencia de reconocimiento al confirmar.
+
 **Confirmar** incorpora ambas clases de sugerencia en una sola operación de
-arrange, con un solo Deshacer; **Cancelar** no aplica ninguna. También puede
+arrange, incluidas las secciones añadidas manualmente, con un solo Deshacer;
+**Cancelar** descarta también esas inserciones. También puede
 confirmarse una revisión que contenga únicamente indicaciones secundarias.
 Las secciones y marcas guardadas previamente permanecen protegidas. No se
 añade un panel inferior ni se modifica el motor de reproducción para representar
 estas sugerencias: al confirmar se utiliza el formato existente de cues.
+
+La revisión deja pasar la espaciadora al transporte habitual del editor,
+también después de pulsar la regla: Espacio alterna reproducir/pausar y
+Alt+Espacio conserva la acción de detener. Los atajos que editarían el arreglo
+confirmado siguen bloqueados durante la revisión. Al escribir un nombre, los
+espacios pertenecen al editor de texto y no activan la reproducción.
 
 El resultado incluye las alternativas por idioma y la confianza heurística del
 texto elegido; sirven para revisar la decisión, no como una medida validada de

@@ -319,6 +319,19 @@ if(MTCONTROLS_BUILD_TESTS)
         COMMAND "${CMAKE_COMMAND}" -P
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_auth_provider_policy.cmake")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    juce_add_console_app(MTControlsMacEncoderTests PRODUCT_NAME "Mac Encoder Compatibility Tests")
+    target_sources(MTControlsMacEncoderTests PRIVATE tests/mac_encoder_compatibility_tests.cpp)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        target_sources(MTControlsMacEncoderTests PRIVATE
+            src/data/AssetBootstrapManager.cpp src/data/AppSettings.cpp)
+        target_link_options(MTControlsMacEncoderTests PRIVATE "-Wl,-dead_strip")
+    endif()
+    target_include_directories(MTControlsMacEncoderTests PRIVATE src)
+    target_compile_definitions(MTControlsMacEncoderTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsMacEncoderTests PRIVATE juce::juce_core juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsMacEncoderTests)
+    add_test(NAME mac_encoder_compatibility COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsMacEncoderTests>")
     juce_add_console_app(MTControlsAccountDeletionTests PRODUCT_NAME "Account Deletion Flow Tests")
     target_sources(MTControlsAccountDeletionTests PRIVATE tests/account_deletion_tests.cpp
         src/ui/components/AccountDeletionModal.cpp src/data/AccountDeletionApi.cpp
@@ -729,7 +742,8 @@ if(MTCONTROLS_BUILD_TESTS)
 
     juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
     target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
-        src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+        src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp
+        src/data/AssetBootstrapManager.cpp)
     target_compile_definitions(MTControlsSongCreationTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_include_directories(MTControlsSongCreationTests PRIVATE src)
     target_link_libraries(MTControlsSongCreationTests PRIVATE MTControls MTControlsAssets

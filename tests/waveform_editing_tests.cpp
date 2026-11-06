@@ -91,6 +91,16 @@ struct WaveformEditingTestAccess {
     expect(menu.getNumItems() >= 3, "catalogue picker includes the existing marker families");
     return items;
   }
+  static auto guideSectionAddItems(WaveformBar &wave) {
+    WaveformBar::GuideCatalogMenuItems items;
+    const auto menu = wave.buildGuideCatalogMenu({}, items, true);
+    expect(menu.getNumItems() > 0, "the manual section picker uses the native section catalogue");
+    return items;
+  }
+  static void guideSectionAdd(WaveformBar &wave,
+      const playworship::analysis::GuideCatalogChoice &choice, double seconds) {
+    wave.dispatchGuideSectionAdd(choice, seconds);
+  }
   static void guideCatalogChoose(WaveformBar &wave, const juce::String &id,
       const playworship::analysis::GuideCatalogChoice &choice) {
     wave.dispatchGuideCatalogSelection(id, choice);
@@ -3520,6 +3530,185 @@ juce::MouseEvent guidePointer(WaveformBar &wave, juce::Point<float> position,
       1, 0, 0, 0, 0, &wave, &wave, now, start, now, 1, dragged};
 }
 
+void testGuideReviewRulerSpaceReachesTransport() {
+  ProcessorFixture fixture;
+  auto &wave = fixture.edit.waveform;
+  auto &processor = fixture.processor;
+  wave.setArrangement({}, false);
+  wave.setGuideAlignmentPreview(guideDraftFixture());
+
+  // Use the real JUCE focus/bubbling path. The host is the transport receiver
+  // at this component boundary; playback itself uses the production processor.
+  struct TransportHost final : juce::Component {
+    explicit TransportHost(MTControlsAudioProcessor &value) : processor(value) {}
+    MTControlsAudioProcessor &processor;
+    int commands = 0;
+    bool keyPressed(const juce::KeyPress &key) override {
+      if (!key.isKeyCode(juce::KeyPress::spaceKey)) return false;
+      ++commands;
+      if (key.getModifiers().isAltDown()) processor.stopSong();
+      else processor.toggleSongPlayPause();
+      return true;
+    }
+  } host(processor);
+  host.setBounds(-2000, -2000, 1200, 500);
+  host.addAndMakeVisible(wave);
+  wave.setBounds(host.getLocalBounds());
+  host.addToDesktop(juce::ComponentPeer::windowIsTemporary);
+  host.setVisible(true);
+  auto *peer = host.getPeer();
+  expect(peer != nullptr, "guide keyboard regression has a native JUCE peer");
+  // Normal peer mouse dispatch focuses the clicked component before invoking
+  // mouseDown. Establish that same focus before the production ruler handlers.
+  wave.grabKeyboardFocus();
+  const auto ruler = WaveformEditingTestAccess::ruler(wave);
+  expect(ruler.getHeight() > 0, "the review ruler remains interactive");
+  const auto click = WaveformEditingTestAccess::pointAt(wave, 12.0, ruler.getCentreY());
+  wave.mouseDown(guidePointer(wave, click, click, false));
+  wave.mouseUp(guidePointer(wave, click, click, false));
+  expect(wave.hasKeyboardFocus(false), "the clicked review timeline owns keyboard focus");
+  expectNear(processor.getSongCurrentPositionSeconds(), 12.0,
+             "clicking the review ruler seeks through the real transport callback");
+  expect(!processor.isSongPlaying(), "the ruler seek remains paused before Space");
+  expect(peer->handleKeyPress(juce::KeyPress(juce::KeyPress::spaceKey)) &&
+             processor.isSongPlaying() && host.commands == 1,
+         "Space bubbles out of focused guide review and starts the real transport");
+  expect(peer->handleKeyPress(juce::KeyPress(juce::KeyPress::spaceKey)) &&
+             !processor.isSongPlaying() && host.commands == 2,
+         "a second Space pauses playback through the same existing command");
+  expect(peer->handleKeyPress(juce::KeyPress(juce::KeyPress::spaceKey,
+             juce::ModifierKeys::altModifier, 0)) && host.commands == 3 &&
+             !processor.isSongPlaying(),
+         "Alt+Space remains available to the existing stop command during review");
+  expectNear(processor.getSongCurrentPositionSeconds(), processor.getSongStartSeconds(),
+             "Alt+Space uses the real stop behavior");
+  expect(fixture.edit.command('Z') && wave.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+             fixture.edit.commits == 0 && wave.getArrangementSnapshot().parts.empty() &&
+             wave.hasGuideAlignmentPreview(),
+         "allowing transport keys keeps committed-arrangement shortcuts blocked and the review open");
+}
+
+void testGuideReviewManualSectionInsertionAndHistory() {
+  using namespace playworship::analysis;
+  Fixture fixture;
+  auto &wave = fixture.waveform;
+  wave.setArrangement({}, false);
+  wave.setSize(1200, 360);
+  GuideTranscript transcript;
+  transcript.provider = "manual-section-ui-fixture";
+  transcript.audioFingerprint = "manual-section-ui-source";
+  transcript.durationSeconds = 30;
+  transcript.segments = {{.05, .25, "Uno"}, {.5, .8, "Intro"},
+      {3.1, 3.5, "Toda la banda"}, {9.1, 9.5, "Verso 1"}, {17.1, 17.5, "Final"}};
+  const auto initial = alignGuideSections(transcript, {});
+  auto draft = initial;
+  expect(draft.error.isEmpty() && draft.suggestions.size() == 3 &&
+             draft.secondaryCues.size() == 2,
+         "manual insertion starts with real calculated sections, count and instruction");
+  auto *add = dynamic_cast<juce::Button *>(wave.findChildWithID("guide-alignment-add"));
+  expect(add && !add->isVisible(), "manual section action stays hidden outside suggestion review");
+  int additions = 0, confirmations = 0, cancellations = 0;
+  double selectedTime = -1;
+  wave.setOnGuideSectionAdd([&](GuideCatalogChoice choice, double seconds) {
+    ++additions;
+    selectedTime = seconds;
+    juce::String error;
+    expect(addGuideSectionAt(draft, choice, seconds, true, error),
+           "the native catalogue choice inserts only into the transient review");
+    wave.setGuideAlignmentPreview(draft);
+  });
+  wave.setGuideAlignmentCallbacks({}, {}, [&] {
+    const auto plan = appendConfirmedGuideSuggestions(wave.getArrangementSnapshot(), draft);
+    expect(plan.error.isEmpty() && wave.applyDetectedSections(plan.arrangement),
+           "automatic and manual proposals confirm through one ordinary arrange transaction");
+    ++confirmations;
+    wave.clearGuideAlignmentPreview();
+  }, [&] {
+    ++cancellations;
+    wave.clearGuideAlignmentPreview();
+  });
+  wave.setGuideAlignmentPreview(draft);
+  expect(add->isVisible() && add->isEnabled(),
+         "review exposes an enabled add-section action beside confirmation");
+  const auto items = WaveformEditingTestAccess::guideSectionAddItems(wave);
+  const auto catalogue = guideCatalogEntries();
+  for (const auto &entry : catalogue) {
+    if (entry.kind != GuideAnnouncementKind::section) continue;
+    expect(std::any_of(items.begin(), items.end(), [&](const auto &item) {
+      return item.second.kind == entry.kind && item.second.key == entry.key &&
+             item.second.type == entry.type && item.second.ordinal == entry.ordinal;
+    }), "manual picker retains every existing musical section and numbered variant");
+  }
+  expect(std::all_of(items.begin(), items.end(), [](const auto &item) {
+    return item.second.kind == GuideAnnouncementKind::section;
+  }), "manual section insertion keeps counts and instructions in their existing roles");
+  const auto chorus = std::find_if(items.begin(), items.end(), [](const auto &item) {
+    return item.second.type == SectionType::chorus && item.second.ordinal == 2;
+  });
+  expect(chorus != items.end(), "the native picker exposes the existing Coro 2 variant");
+  WaveformEditingTestAccess::guideSectionAdd(wave, chorus->second, 6.0);
+  expect(additions == 1 && selectedTime == 6.0 && draft.suggestions.size() == 4 &&
+             fixture.commits == 0 && wave.getArrangementSnapshot().parts.empty(),
+         "adding at the selected musical position leaves the committed song untouched");
+  const auto manual = std::find_if(draft.suggestions.begin(), draft.suggestions.end(),
+      [&](const auto &mark) { return isManualGuideSection(draft, mark.id); });
+  expect(manual != draft.suggestions.end() && manual->type == SectionType::chorus &&
+             manual->userEdited && !manual->matchedCueTimeSeconds,
+         "the inserted section is a manual catalogue choice without invented speech timing");
+  expectNear(manual->startSeconds, 6.0, "manual placement uses the chosen position without announcement anticipation");
+  expectNear(manual->endSeconds, 10.0, "the missing section ends at the next existing proposal");
+  expectNear(draft.suggestions.front().endSeconds, 6.0, "the preceding proposal closes at the inserted section");
+  for (size_t i = 0; i < initial.secondaryCues.size(); ++i)
+    expect(draft.secondaryCues[i].id == initial.secondaryCues[i].id &&
+               draft.secondaryCues[i].name == initial.secondaryCues[i].name &&
+               draft.secondaryCues[i].timeSeconds == initial.secondaryCues[i].timeSeconds,
+           "adding a section preserves every count and secondary point");
+  const auto manualId = manual->id;
+  expect(WaveformEditingTestAccess::guideMarkerCount(wave) == 6,
+         "the inserted section appears on the same waveform with its automatic and secondary proposals");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_GUIDE_MANUAL_CAPTURE_PATH", {});
+  if (capturePath.isNotEmpty()) {
+    const juce::File file(capturePath);
+    expect(file.getParentDirectory().createDirectory().wasOk(), "manual review capture directory opens");
+    auto output = file.createOutputStream();
+    expect(output && juce::PNGImageFormat().writeImageToStream(
+        wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.5f), *output),
+        "the production waveform renders the inserted manual section and compact review actions");
+  }
+  for (const int width : {320, 390, 768, 1200}) {
+    wave.setSize(width, 360);
+    expect(wave.getLocalBounds().contains(add->getBounds()) &&
+               !add->getBounds().intersects(WaveformEditingTestAccess::guideAccept(wave).getBounds()) &&
+               !add->getBounds().intersects(WaveformEditingTestAccess::guideCancel(wave).getBounds()),
+           "manual insertion fits the existing review toolbar at phone and desktop widths");
+  }
+  WaveformEditingTestAccess::guideCancel(wave).onClick();
+  expect(cancellations == 1 && fixture.commits == 0 && !wave.hasGuideAlignmentPreview() &&
+             !add->isVisible() && wave.getArrangementSnapshot().parts.empty(),
+         "cancel discards the visual review without publishing the manual insertion");
+  WaveformEditingTestAccess::guideSectionAdd(wave, chorus->second, 6.0);
+  expect(additions == 1, "a stale picker cannot insert after review cancellation");
+  draft = initial;
+  wave.setSize(1200, 360);
+  wave.setGuideAlignmentPreview(draft);
+  WaveformEditingTestAccess::guideSectionAdd(wave, chorus->second, 6.0);
+  WaveformEditingTestAccess::guideAccept(wave).onClick();
+  expect(confirmations == 1 && fixture.commits == 1 &&
+             wave.getArrangementSnapshot().parts.size() == 4 &&
+             wave.getArrangementSnapshot().cues.size() == 2 && !wave.hasGuideAlignmentPreview(),
+         "one confirmation publishes the missing section together with all recognized marks");
+  const auto accepted = wave.getArrangementSnapshot();
+  expect(std::none_of(accepted.parts.begin(), accepted.parts.end(),
+      [&](const auto &part) { return part.id == manualId; }),
+      "a cancelled manual proposal never leaks into the later confirmed review");
+  expect(fixture.command('Z') && wave.getArrangementSnapshot().parts.empty() &&
+             wave.getArrangementSnapshot().cues.empty(),
+         "one ordinary undo restores the complete pre-review arrangement");
+  expect(fixture.command('Y') && wave.getArrangementSnapshot().parts.size() == 4 &&
+             wave.getArrangementSnapshot().cues == accepted.cues,
+         "one redo restores both manual and automatic review marks");
+}
+
 void testCalculatedGuideAlignmentReview() {
   using namespace playworship::analysis;
   Fixture fixture;
@@ -4601,6 +4790,8 @@ int main() {
   run("cue component previews", testCueVisualPreview);
   run("section detection preview, safe confirmation and undo", testDetectedSectionsReviewAndHistory);
   run("guide waveform review, origin and marker gestures, confirmation and undo", testGuideAlignmentWaveformReview);
+  run("guide review ruler and focused Space reach real transport", testGuideReviewRulerSpaceReachesTransport);
+  run("manual guide section insertion, cancellation, confirmation and history", testGuideReviewManualSectionInsertionAndHistory);
   run("calculated guide grid, live origin and boundary edits, atomic confirmation", testCalculatedGuideAlignmentReview);
   run("closed guide catalogue, pending points, role selection and atomic history", testClosedGuideCatalogueReviewAndRoleSelection);
   run("pending guide review focuses once without changing zoom or playback", testPendingGuideReviewFocusesOnlyOnEntry);

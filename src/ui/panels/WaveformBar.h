@@ -131,6 +131,8 @@ public:
   void setOnGuideAlignmentRename(std::function<void(juce::String, juce::String)>);
   void setOnGuideCatalogSelection(std::function<void(juce::String,
       playworship::analysis::GuideCatalogChoice)>);
+  void setOnGuideSectionAdd(std::function<void(
+      playworship::analysis::GuideCatalogChoice, double)>);
   void setOnGuideAlignmentRemove(std::function<void(const juce::String &)>);
   void setOnGuideSecondaryCueMove(std::function<void(const juce::String &, double, bool)>);
   SongArrangementSnapshot getArrangementSnapshot() const { return arrangement; }
@@ -389,16 +391,18 @@ private:
   std::vector<SongArrangementPartSnapshot> sectionDetectionPreview;
   playworship::analysis::GuideAlignmentDraft guideAlignmentPreview;
   bool guideAlignmentActive = false;
+  juce::uint64 guideAlignmentGeneration = 0;
   juce::String guideAlignmentError;
   std::function<void(double)> onGuideOriginMoved;
   std::function<void(const juce::String &, double, bool)> onGuideBoundaryMoved;
   std::function<void()> onGuideAlignmentAccept, onGuideAlignmentCancel;
   std::function<void(juce::String, juce::String)> onGuideAlignmentRename;
   std::function<void(juce::String, playworship::analysis::GuideCatalogChoice)> onGuideCatalogSelection;
+  std::function<void(playworship::analysis::GuideCatalogChoice, double)> onGuideSectionAdd;
   std::function<void(const juce::String &)> onGuideAlignmentRemove;
   std::function<void(const juce::String &, double, bool)> onGuideSecondaryCueMove;
   juce::Label guideAlignmentLabel;
-  juce::TextButton guideAlignmentAcceptButton, guideAlignmentCancelButton;
+  juce::TextButton guideAlignmentAcceptButton, guideAlignmentCancelButton, guideAlignmentAddButton;
   juce::TextButton suggestSectionsButton;
   juce::Rectangle<int> guideAlignmentToolbarBounds;
   struct GuideAlignmentMarkerBounds {
@@ -426,8 +430,11 @@ private:
   void beginGuideAlignmentRename(const juce::String &);
   void finishGuideAlignmentRename(bool);
   using GuideCatalogMenuItems = std::vector<std::pair<int, playworship::analysis::GuideCatalogChoice>>;
-  juce::PopupMenu buildGuideCatalogMenu(const juce::String &, GuideCatalogMenuItems &) const;
+  juce::PopupMenu buildGuideCatalogMenu(const juce::String &, GuideCatalogMenuItems &,
+                                       bool sectionsOnly = false) const;
   void showGuideCatalogPicker(const juce::String &);
+  void showGuideSectionAddPicker(double seconds, juce::Rectangle<int> anchor);
+  void dispatchGuideSectionAdd(const playworship::analysis::GuideCatalogChoice &, double seconds);
   void dispatchGuideCatalogSelection(const juce::String &,
       const playworship::analysis::GuideCatalogChoice &);
   std::function<void()> onCloudSettingsSyncRequested;

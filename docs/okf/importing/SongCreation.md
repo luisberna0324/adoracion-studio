@@ -80,6 +80,13 @@ prioridad posterior. El cierre sólo se ejecuta por la acción explícita existe
    ser legibles por JUCE. Escritorio admite tambien M4A (AAC o ALAC); si la
    plataforma no dispone de lector nativo, su decodificacion se valida en el
    worker de creacion antes de guardar. Revalidar antes del guardado definitivo.
+   El guardado portable intenta convertir WAV, AIFF y MP3 a FLAC mediante los
+   codecs integrados en todas las plataformas. Los FLAC existentes se empaquetan
+   directamente. El escritorio normal reserva FFmpeg para entradas que los
+   codecs integrados no puedan convertir, conservando su preparación automática
+   en ese fallback. La salida de FFmpeg usa un temporal y reemplazo atómico;
+   un fallo informa la pista y conserva el destino anterior. La conversión y
+   su progreso se ejecutan dentro del worker de creación.
 2. En escritorio, mostrar el diálogo nativo asíncrono `Biblioteca local` /
    `Elegir ubicación...` / `Cancelar`. Biblioteca conserva la resolución de nombre
    disponible en `MTControls/projects/` mediante `SongProjectCreation::resolveDestination`;
@@ -183,7 +190,22 @@ destino. MP3 reutiliza el decoder MinMP3 embebido en `juce_core`
 al FLAC destino. Conserva frecuencia y canales (hasta 8); PCM hasta 24 bits
 conserva precision, y fuentes flotantes/32 bits pasan a PCM24, limite del
 escritor FLAC de JUCE. No se descarga ni ejecuta FFmpeg en iOS/Android.
-Escritorio sigue usando FFmpeg para empaquetar FLAC. La creacion admite
+Escritorio intenta la misma conversión integrada antes de consultar FFmpeg;
+el fallback permite empaquetar entradas que los codecs integrados no admiten.
+En macOS, el encoder opcional se selecciona comprobando su arquitectura Mach-O,
+incluidas las variantes universales. Si falta una copia compatible, el proceso
+Intel descarga `encoder/macos/2026-11-06-1/x86_64/ffmpeg`; Apple Silicon conserva
+`encoder/macos/2026-04-18-1/ffmpeg`. Una aplicación Intel ejecutada con Rosetta
+también selecciona x86_64. Una copia ARM guardada en un Mac Intel se ignora y
+se reemplaza automáticamente al necesitar el encoder, sin borrado manual.
+Cada descarga usa un temporal único y verifica tamaño, SHA-256 y arquitectura
+antes del reemplazo atómico. Un fallo conserva el archivo anterior y permite
+reintentar; el estado `Ready` y el progreso completo requieren instalación
+correcta. Las copias locales compatibles siguen siendo reutilizables.
+Los proyectos WAV usan el conversor integrado también en Intel.
+La receta Intel, fuentes fijadas, licencias y cobertura de códecs están en
+[`third_party/encoder/README.md`](../../../third_party/encoder/README.md).
+La creacion admite
 WAV/AIFF/FLAC/MP3/M4A; la edicion conserva ademas AAC, OGG y WMA.
 El selector, las ayudas de formatos y la validacion comparten esa lista.
 `SongProjectCreation::save` convierte los M4A a FLAC en un staging privado

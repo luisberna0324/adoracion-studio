@@ -1326,12 +1326,24 @@ WaveformBar::WaveformBar() {
   guideAlignmentLabel.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
   guideAlignmentLabel.setInterceptsMouseClicks(false, false);
   addChildComponent(guideAlignmentLabel);
-  guideAlignmentLabel.setTooltip(L10n::tr("Secciones en el compás siguiente al anuncio. Arrastra las marcas para ajustarlas.",
-      "Sections start in the bar after the announcement. Drag markers to adjust them."));
+  guideAlignmentLabel.setTooltip(L10n::tr(
+      "Las secciones detectadas empiezan en el compás siguiente al anuncio. Arrastra las marcas o agrega las que falten.",
+      "Detected sections start in the bar after the announcement. Drag markers or add missing sections."));
   guideAlignmentAcceptButton.setButtonText(L10n::tr("Confirmar", "Confirm"));
   guideAlignmentAcceptButton.setComponentID("guide-alignment-accept");
   guideAlignmentCancelButton.setButtonText(L10n::tr("Cancelar", "Cancel"));
   guideAlignmentCancelButton.setComponentID("guide-alignment-cancel");
+  guideAlignmentAddButton.setComponentID("guide-alignment-add");
+  guideAlignmentAddButton.setTooltip(L10n::tr(
+      "Agregar una sección en el cursor. Pulsa la regla para elegir la posición.",
+      "Add a section at the cursor. Click the ruler to choose its position."));
+  guideAlignmentAddButton.onClick = [this] {
+    finishGuideAlignmentRename(true);
+    const double position = positionProvider ? positionProvider() : 0.0;
+    if (std::isfinite(position))
+      showGuideSectionAddPicker(juce::jlimit(0.0, getSongLengthSeconds(), position),
+          guideAlignmentAddButton.getBounds());
+  };
   guideAlignmentAcceptButton.onClick = [this] {
     finishGuideAlignmentRename(true);
     if (guideAlignmentActive && guideAlignmentPreview.pendingAnnouncements.empty() &&
@@ -1341,7 +1353,8 @@ WaveformBar::WaveformBar() {
     finishGuideAlignmentRename(false);
     if (guideAlignmentActive && onGuideAlignmentCancel) onGuideAlignmentCancel();
   };
-  for (auto *button : {&guideAlignmentAcceptButton, &guideAlignmentCancelButton}) {
+  for (auto *button : {&guideAlignmentAcceptButton, &guideAlignmentCancelButton, &guideAlignmentAddButton}) {
+    button->setWantsKeyboardFocus(false);
     button->setViewportIgnoreDragFlag(true);
     addChildComponent(*button);
   }
@@ -2045,6 +2058,7 @@ void WaveformBar::setGuideAlignmentPreview(const playworship::analysis::GuideAli
   if (blankSongTimeline) return;
   const bool entering = !guideAlignmentActive;
   if (entering) {
+    ++guideAlignmentGeneration;
     if (liveMode) setLiveMode(false);
     resetTouchWaveformNavigation();
     cancelDeferredPartJumpFromDoubleClick();
@@ -2078,6 +2092,7 @@ void WaveformBar::setGuideAlignmentPreview(const playworship::analysis::GuideAli
 void WaveformBar::clearGuideAlignmentPreview() {
   if (!guideAlignmentActive && guideRenamingId.isEmpty()) return;
   guideAlignmentActive = false;
+  ++guideAlignmentGeneration;
   guideAlignmentPreview = {};
   guideAlignmentError.clear();
   guideOriginDragging = guideBoundaryDragging = guideSecondaryDragging = guidePanning = false;
@@ -2114,6 +2129,12 @@ void WaveformBar::setOnGuideAlignmentRemove(std::function<void(const juce::Strin
   onGuideAlignmentRemove = std::move(callback);
 }
 
+void WaveformBar::setOnGuideSectionAdd(std::function<void(
+    playworship::analysis::GuideCatalogChoice, double)> callback) {
+  onGuideSectionAdd = std::move(callback);
+  if (guideAlignmentActive) layoutGuideAlignmentToolbar();
+}
+
 void WaveformBar::setOnGuideSecondaryCueMove(
     std::function<void(const juce::String &, double, bool)> callback) {
   onGuideSecondaryCueMove = std::move(callback);
@@ -2121,16 +2142,23 @@ void WaveformBar::setOnGuideSecondaryCueMove(
 
 void WaveformBar::layoutGuideAlignmentToolbar() {
   for (auto *component : std::initializer_list<juce::Component *>{&guideAlignmentLabel,
-       &guideAlignmentAcceptButton, &guideAlignmentCancelButton})
+       &guideAlignmentAcceptButton, &guideAlignmentCancelButton, &guideAlignmentAddButton})
     component->setVisible(guideAlignmentActive && !liveMode);
   guideAlignmentToolbarBounds = {};
   if (!guideAlignmentActive || liveMode) return;
   auto row = getEditToolbarBounds(getLocalBounds().toFloat()).toNearestInt().reduced(1);
   guideAlignmentToolbarBounds = row;
   const bool compact = row.getWidth() < 530;
-  guideAlignmentLabel.setBounds(row.removeFromLeft(compact ? 85 : 108));
+  guideAlignmentLabel.setBounds(row.removeFromLeft(juce::jmax(0, juce::jmin(
+      compact ? 85 : 108, row.getWidth() - (compact ? 251 : 334)))));
   guideAlignmentCancelButton.setBounds(row.removeFromRight(compact ? 77 : 88).reduced(2, 0));
   guideAlignmentAcceptButton.setBounds(row.removeFromRight(compact ? 82 : 98).reduced(2, 0));
+  guideAlignmentAddButton.setButtonText(compact ? L10n::tr("+ Sección", "+ Section")
+      : L10n::tr("+ Agregar sección", "+ Add section"));
+  guideAlignmentAddButton.setBounds(row.removeFromRight(compact ? 92 : 148).reduced(2, 0));
+  guideAlignmentAddButton.setEnabled(onGuideSectionAdd != nullptr && !songLoadingActive &&
+      playworship::analysis::canReviewGuideAlignment(guideAlignmentPreview) &&
+      guideAlignmentPreview.suggestions.size() < playworship::analysis::maximumSectionSuggestions);
   guideAlignmentAcceptButton.setEnabled((!guideAlignmentPreview.suggestions.empty() ||
       !guideAlignmentPreview.secondaryCues.empty()) && guideAlignmentPreview.pendingAnnouncements.empty() &&
       guideAlignmentPreview.error.isEmpty());
@@ -2266,11 +2294,13 @@ void WaveformBar::finishGuideAlignmentRename(const bool save) {
 }
 
 juce::PopupMenu WaveformBar::buildGuideCatalogMenu(const juce::String &id,
-                                                  GuideCatalogMenuItems &items) const {
+                                                  GuideCatalogMenuItems &items,
+                                                  const bool sectionsOnly) const {
   using namespace playworship::analysis;
   items.clear();
   juce::PopupMenu menu;
   const auto entries = guideCatalogEntries();
+  const bool primaryOnly = sectionsOnly || isManualGuideSection(guideAlignmentPreview, id);
   const auto displayName = [](const GuideCatalogChoice &choice) {
     if (choice.kind == GuideAnnouncementKind::section) {
       if (const auto *section = playworship::guide::findSectionDefinition(choice.type)) {
@@ -2289,7 +2319,8 @@ juce::PopupMenu WaveformBar::buildGuideCatalogMenu(const juce::String &id,
   const auto addChoice = [&](juce::PopupMenu &target, const GuideCatalogChoice &choice) {
     const int itemId = int(items.size()) + 1;
     items.emplace_back(itemId, choice);
-    target.addItem(itemId, displayName(choice), onGuideCatalogSelection != nullptr);
+    target.addItem(itemId, displayName(choice), sectionsOnly
+        ? onGuideSectionAdd != nullptr : onGuideCatalogSelection != nullptr);
   };
   const auto pending = std::find_if(guideAlignmentPreview.pendingAnnouncements.begin(),
       guideAlignmentPreview.pendingAnnouncements.end(), [&](const auto &value) { return value.id == id; });
@@ -2324,6 +2355,7 @@ juce::PopupMenu WaveformBar::buildGuideCatalogMenu(const juce::String &id,
     if (numberOfEntries > 1)
       sections.addSubMenu(L10n::tr(definition.spanishLabel, definition.englishLabel), variants);
   }
+  if (primaryOnly) return sections;
   for (const auto &entry : entries) {
     if (entry.kind == GuideAnnouncementKind::instruction) addChoice(instructions, entry);
     else if (entry.kind == GuideAnnouncementKind::count) addChoice(counts, entry);
@@ -2332,6 +2364,38 @@ juce::PopupMenu WaveformBar::buildGuideCatalogMenu(const juce::String &id,
   menu.addSubMenu(L10n::tr("Indicaciones", "Instructions"), instructions);
   menu.addSubMenu(L10n::tr("Conteos", "Counts"), counts);
   return menu;
+}
+
+void WaveformBar::dispatchGuideSectionAdd(
+    const playworship::analysis::GuideCatalogChoice &choice, const double seconds) {
+  using namespace playworship::analysis;
+  if (!guideAlignmentActive || !onGuideSectionAdd || songLoadingActive ||
+      !canReviewGuideAlignment(guideAlignmentPreview) || !std::isfinite(seconds)) return;
+  const auto catalogue = guideCatalogEntries();
+  const auto found = std::find_if(catalogue.begin(), catalogue.end(), [&](const auto &entry) {
+    return entry.kind == GuideAnnouncementKind::section && choice.kind == entry.kind &&
+        choice.key == entry.key && choice.type == entry.type && choice.ordinal == entry.ordinal;
+  });
+  if (found != catalogue.end()) onGuideSectionAdd(*found, seconds);
+}
+
+void WaveformBar::showGuideSectionAddPicker(const double seconds, juce::Rectangle<int> anchor) {
+  if (!guideAlignmentActive || !guideAlignmentAddButton.isEnabled()) return;
+  GuideCatalogMenuItems items;
+  auto menu = buildGuideCatalogMenu({}, items, true);
+  const auto safe = juce::Component::SafePointer<WaveformBar>(this);
+  const auto generation = guideAlignmentGeneration;
+  menu.showMenuAsync(makeTouchPopupMenuOptions(this)
+      .withTargetScreenArea(localAreaToGlobal(anchor))
+      .withMinimumWidth(220).withMaximumNumColumns(1),
+      [safe, generation, seconds, choices = std::move(items)](int result) {
+        if (!safe || result <= 0 || !safe->guideAlignmentActive ||
+            safe->guideAlignmentGeneration != generation) return;
+        for (const auto &entry : choices) if (entry.first == result) {
+          safe->dispatchGuideSectionAdd(entry.second, seconds);
+          return;
+        }
+      });
 }
 
 void WaveformBar::dispatchGuideCatalogSelection(const juce::String &id,
@@ -2657,7 +2721,8 @@ void WaveformBar::openSectionPicker(const juce::Rectangle<float> &anchor,
 void WaveformBar::refreshThemeColours() {
   invalidateWaveformRenderCaches();
   guideAlignmentLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  for (auto *button : {&suggestSectionsButton, &guideAlignmentAcceptButton, &guideAlignmentCancelButton}) {
+  for (auto *button : {&suggestSectionsButton, &guideAlignmentAcceptButton, &guideAlignmentCancelButton,
+                       &guideAlignmentAddButton}) {
     button->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
     button->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   }
@@ -2990,6 +3055,7 @@ void WaveformBar::resized() {
       auto *component = getChildComponent(i);
       if (component != &guideAlignmentLabel &&
           component != &guideAlignmentAcceptButton && component != &guideAlignmentCancelButton &&
+          component != &guideAlignmentAddButton &&
           component != &guideNameEditor) component->setVisible(false);
     }
     return;
@@ -3886,6 +3952,17 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
               else if (action == 2) safe->beginGuideAlignmentRename(id);
               else if (action == 3 && safe->onGuideAlignmentRemove) safe->onGuideAlignmentRemove(id);
             });
+      } else {
+        const auto body = getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
+        const auto ruler = getSeekRulerBounds(getMainWaveBounds(getLocalBounds().toFloat()));
+        if (body.getWidth() > 0 && (body.contains(event.position) || ruler.contains(event.position))) {
+          const auto window = getVisibleWindow();
+          const double seconds = juce::jlimit(0.0, getSongLengthSeconds(),
+              (window.first + double((event.position.x - body.getX()) / body.getWidth()) * window.second)
+                  * getSongLengthSeconds());
+          showGuideSectionAddPicker(seconds,
+              juce::Rectangle<int>(juce::roundToInt(event.position.x), juce::roundToInt(event.position.y), 1, 1));
+        }
       }
       return;
     }
@@ -5249,6 +5326,7 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
 
 bool WaveformBar::keyPressed(const juce::KeyPress &key) {
   if (guideAlignmentActive) {
+    if (key.isKeyCode(juce::KeyPress::spaceKey)) return false;
     if (key == juce::KeyPress::escapeKey && onGuideAlignmentCancel) onGuideAlignmentCancel();
     else if (key == juce::KeyPress::returnKey && onGuideAlignmentAccept && guideAlignmentAcceptButton.isEnabled()) onGuideAlignmentAccept();
     else if ((key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) &&

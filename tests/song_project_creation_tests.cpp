@@ -1,6 +1,7 @@
 #include "data/ProjectStore.h"
 #include "data/CloudProjectArchive.h"
 #include "data/ApplicationDataPaths.h"
+#include "data/AssetBootstrapManager.h"
 #include "data/ArrangementSourceMapping.h"
 #include "network/RemoteStateCodec.h"
 #include "platform/NativeSongLyricsEditor.h"
@@ -968,6 +969,53 @@ void runRoundtripAndFailureChecks(Fixtures &fixtures) {
          "package-only operations do not register prematurely in the library");
   testLibraryRegistration(fixtures, opened.song);
 }
+void testProjectWavUsesNativeEncoder(const Fixtures &fixtures) {
+  const auto source = fixtures.directory.getChildFile("native-project.wav");
+  const auto cover = fixtures.directory.getChildFile("native-project.png");
+  const auto archive = fixtures.directory.getChildFile("native-project.pwproj");
+  writeWav(source);
+  writePng(cover);
+  const auto encoder = AssetBootstrapManager::getEncoderBinaryPath();
+  expect(encoder.isAChildOf(ApplicationDataPaths::isolatedTestRoot()),
+         "the unusable encoder fixture belongs exclusively to this test's storage");
+  expect(!encoder.exists() && encoder.replaceWithText("unavailable external encoder"),
+         "isolated project test starts with an unusable managed encoder");
+  auto document = makeDocument(fixtures, source, cover);
+  document.song.id = document.song.projectId = juce::Uuid().toString();
+  juce::String error;
+  double progress = 0.0;
+  expect(ProjectStore::save(document, archive, &error, &progress) &&
+             error.isEmpty() && progress == 1.0,
+         "a WAV project saves with native FLAC despite an unusable external encoder");
+  ProjectDocument opened;
+  expect(ProjectStore::open(archive, opened, &error) && opened.song.stems.size() == 1,
+         "the native-encoded project reopens through the regular project reader");
+  const juce::File stored(opened.song.stems.front().storedPath);
+  juce::AudioFormatManager formats;
+  formats.registerBasicFormats();
+  auto reader = std::unique_ptr<juce::AudioFormatReader>(formats.createReaderFor(stored));
+  expect(stored.hasFileExtension("flac") && reader != nullptr &&
+             reader->sampleRate == sampleRate && reader->numChannels == 1 &&
+             reader->lengthInSamples == sampleCount && reader->bitsPerSample == 16,
+         "native project conversion preserves rate, channels, frames and PCM precision");
+  juce::AudioBuffer<float> decoded(1, sampleCount);
+  expect(reader->read(&decoded, 0, sampleCount, 0, true, false),
+         "the project FLAC decodes every source frame");
+  for (int frame = 0; frame < sampleCount; ++frame)
+    expect(std::abs(decoded.getSample(0, frame) - expectedSample(frame)) < 0.0001f,
+           "native-encoded project preserves the source PCM samples");
+  reader.reset();
+  juce::MemoryBlock before, after;
+  expect(archive.loadFileAsData(before) && source.deleteFile(),
+         "record completed project before removing its isolated source");
+  expect(!ProjectStore::save(document, archive, &error) && error.isNotEmpty() &&
+             archive.loadFileAsData(after) && before == after,
+         "failed project replacement preserves the previous complete archive");
+  expect(encoder.loadFileAsString() == "unavailable external encoder" && encoder.deleteFile(),
+         "native project encoding leaves the external encoder untouched");
+  ProjectStore::discardLocalState(document.song.projectId, archive);
+}
+
 void testAutomaticLegacyStemStorage(const Fixtures &fixtures) {
   // Old settings must not disable automatic storage conversion. Write the
   // historical key directly so the removed public toggle is not needed.
@@ -1700,6 +1748,7 @@ int main() {
     testArrangementCues(fixtures);
     testMusicalWaveform(fixtures);
     runRoundtripAndFailureChecks(fixtures);
+    testProjectWavUsesNativeEncoder(fixtures);
     testAutomaticLegacyStemStorage(fixtures);
     testColdProjectExtractionProgress(fixtures);
     testNativeLyricsPersistence(fixtures);

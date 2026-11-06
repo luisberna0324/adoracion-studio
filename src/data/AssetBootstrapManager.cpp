@@ -2,6 +2,10 @@
 
 #include "AppSettings.h"
 #include "ApplicationDataPaths.h"
+#include "MacEncoderCompatibility.h"
+#if JUCE_MAC
+#include "MacEncoderDownload.h"
+#endif
 
 namespace {
 #if defined(MTCONTROLS_ASSETS_BASE_URL)
@@ -10,7 +14,7 @@ constexpr const char *kAssetsBaseUrl = MTCONTROLS_ASSETS_BASE_URL;
 constexpr const char *kAssetsBaseUrl = "https://storage.googleapis.com/playworship-assets";
 #endif
 
-constexpr const char *kEncoderVersion = "2026-04-18-1";
+[[maybe_unused]] constexpr const char *kEncoderVersion = "2026-04-18-1";
 constexpr const char *kPadsVersion = "roman-v1";
 constexpr const char *kClicksVersion = "clicks-v1";
 constexpr const char *kGuidesVersion = "en-es-v3";
@@ -21,11 +25,19 @@ juce::String buildEncoderUrl() {
   return juce::String(kAssetsBaseUrl) + "/encoder/windows/" + kEncoderVersion +
          "/ffmpeg.exe";
 #elif JUCE_MAC
-  return juce::String(kAssetsBaseUrl) + "/encoder/macos/" + kEncoderVersion +
-         "/ffmpeg";
+  return juce::String(kAssetsBaseUrl) +
+         mac_encoder::downloadAsset(mac_encoder::currentArchitecture()).relativePath;
 #else
   return juce::String(kAssetsBaseUrl) + "/encoder/linux/" + kEncoderVersion +
          "/ffmpeg";
+#endif
+}
+
+juce::String encoderVersion() {
+#if JUCE_MAC
+  return mac_encoder::downloadAsset(mac_encoder::currentArchitecture()).version;
+#else
+  return kEncoderVersion;
 #endif
 }
 
@@ -176,21 +188,23 @@ juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
   return {};
 #else
   const auto managed = getEncoderBinaryPath();
+#if !JUCE_MAC
   if (managed.existsAsFile() && managed.getSize() > 0)
     return managed;
+#endif
 
   const auto executable =
       juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+#if JUCE_MAC
+  const auto bundled = executable.existsAsFile()
+      ? executable.getParentDirectory().getSiblingFile("Resources")
+            .getChildFile("ffmpeg").getChildFile("ffmpeg")
+      : juce::File{};
+  return mac_encoder::firstCompatible({managed, bundled}, mac_encoder::currentArchitecture());
+#else
   if (!executable.existsAsFile())
     return {};
-
-#if JUCE_MAC
-  const auto macOSDir = executable.getParentDirectory();
-  const auto resourcesDir = macOSDir.getSiblingFile("Resources");
-  const auto bundled = resourcesDir.getChildFile("ffmpeg").getChildFile("ffmpeg");
-  if (bundled.existsAsFile() && bundled.getSize() > 0)
-    return bundled;
-#elif JUCE_WINDOWS
+#if JUCE_WINDOWS
   const auto bundled = executable.getParentDirectory()
                           .getChildFile("ffmpeg")
                           .getChildFile("ffmpeg.exe");
@@ -204,6 +218,7 @@ juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
 #endif
 
   return {};
+#endif
 #endif
 }
 
@@ -404,7 +419,7 @@ void AssetBootstrapManager::persistState(const juce::String &encoderStatus,
                                          const juce::String &padsStatus,
                                          const juce::String &errorMessage) {
   auto state = AppSettings::getAssetsBootstrapState();
-  state.encoderVersion = kEncoderVersion;
+  state.encoderVersion = encoderVersion();
   state.encoderStatus = encoderStatus;
   state.padsVersion = kPadsVersion;
   state.padsStatus = padsStatus;
@@ -431,12 +446,29 @@ bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
     return true;
   }
 
+#if JUCE_MAC
+  const auto asset = mac_encoder::downloadAsset(mac_encoder::currentArchitecture());
+  if (!mac_encoder::validateDownloadAsset(asset, localError)) {
+    persistState("Error", AppSettings::getAssetsBootstrapState().padsStatus, localError);
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+#endif
+
   encoder = getEncoderBinaryPath();
   if (progress)
     progress(0.02, "Preparing encoder download");
   persistState("Downloading", AppSettings::getAssetsBootstrapState().padsStatus,
                {});
-  auto temp = encoder.getSiblingFile(encoder.getFileName() + ".download");
+#if JUCE_MAC
+  // A failed or overlapping transfer cannot overwrite another transfer's
+  // temporary file or the currently installed encoder.
+  juce::TemporaryFile temporary(encoder);
+  const auto temp = temporary.getFile();
+#else
+  const auto temp = encoder.getSiblingFile(encoder.getFileName() + ".download");
+#endif
   if (!downloadFile(buildEncoderUrl(), temp, localError,
                     [progress](double p, const juce::String &phase) {
                       if (progress)
@@ -450,10 +482,20 @@ bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
     return false;
   }
 
-  if (encoder.existsAsFile())
-    encoder.deleteFile();
+#if JUCE_MAC
+  if (progress)
+    progress(0.96, "Verifying and installing encoder");
+  if (!mac_encoder::installVerifiedDownload(temp, encoder, asset, localError)) {
+    persistState("Error", AppSettings::getAssetsBootstrapState().padsStatus, localError);
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+#else
   if (progress)
     progress(0.96, "Installing encoder");
+  if (encoder.existsAsFile())
+    encoder.deleteFile();
   if (!temp.moveFileTo(encoder)) {
     localError = "Couldn't move downloaded encoder into final location.";
     temp.deleteFile();
@@ -466,6 +508,7 @@ bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
 
 #if !JUCE_WINDOWS
   encoder.setExecutePermission(true);
+#endif
 #endif
 
   if (progress)

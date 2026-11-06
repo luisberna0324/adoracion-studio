@@ -1614,6 +1614,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         detection.available() || detection.guideAvailable(),
         detection.guideAvailable() ? juce::String{} : detection.unavailableReason());
     waveformBarRaw->setOnSectionDetectionRequest([this] { showSectionDetection(); });
+    waveformBarRaw->setOnGuideSectionAdd([this](playworship::analysis::GuideCatalogChoice choice, double seconds) {
+      if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id ||
+          !waveformBarPtr || playbackSession.isRemote()) return;
+      juce::String error;
+      if (!playworship::analysis::addGuideSectionAt(guideReviewDraft, choice, seconds, true, error)) {
+        waveformBarPtr->setGuideAlignmentError(error); return;
+      }
+      waveformBarPtr->setGuideAlignmentPreview(guideReviewDraft);
+    });
     waveformBarRaw->setGuideAlignmentCallbacks(
         [this](double origin) {
           if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id) return;
@@ -1707,6 +1716,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         return;
       }
       guideReviewDiscarded.insert(id.toStdString());
+      auto &manualSections = guideReviewDraft.options.manualSections;
+      manualSections.erase(std::remove_if(manualSections.begin(), manualSections.end(),
+          [&id](const auto &section) { return section.id == id; }), manualSections.end());
       const auto index = size_t(std::distance(guideReviewDraft.suggestions.begin(), found));
       guideReviewDraft.suggestions.erase(found);
       if (index > 0) guideReviewDraft.suggestions[index - 1].endSeconds = index < guideReviewDraft.suggestions.size()
@@ -4524,7 +4536,9 @@ void MTControlsAudioProcessorEditor::beginGuideSectionReview(
 void MTControlsAudioProcessorEditor::rebuildGuideSectionReview(
     const playworship::analysis::GuideAlignmentOptions &options) {
   if (!guideReviewTranscript || guideReviewSongId != currentLoadedSong.id || !waveformBarPtr || playbackSession.isRemote()) return;
-  auto rebuilt = playworship::analysis::alignGuideSections(*guideReviewTranscript, options);
+  auto automaticOptions = options;
+  automaticOptions.manualSections.clear();
+  auto rebuilt = playworship::analysis::alignGuideSections(*guideReviewTranscript, automaticOptions);
   if (!playworship::analysis::canReviewGuideAlignment(rebuilt)) {
     waveformBarPtr->setGuideAlignmentError(rebuilt.error.isNotEmpty() ? rebuilt.error :
         L10n::tr("La propuesta tiene datos inválidos.", "The suggestion contains invalid data.")); return;
@@ -4548,6 +4562,10 @@ void MTControlsAudioProcessorEditor::rebuildGuideSectionReview(
     if (corrected != guideReviewNames.end()) {
       applyReviewedGuideSectionName(suggestion, corrected->second);
     }
+  }
+  juce::String manualError;
+  if (!playworship::analysis::reapplyManualGuideSections(rebuilt, options.manualSections, manualError)) {
+    waveformBarPtr->setGuideAlignmentError(manualError); return;
   }
   // Apply explicit per-source review decisions before deciding whether a
   // rebuilt timing issue is still pending. Structural errors were rejected above.

@@ -401,6 +401,76 @@ bool validDraftAnnotations(const GuideAlignmentDraft &draft, juce::String &error
   }
   return true;
 }
+
+void applyManualSectionChoice(SectionSuggestion &section, const GuideCatalogChoice &choice) {
+  section.type = choice.type;
+  section.occurrence = choice.ordinal.value_or(1);
+  section.displayName = sectionTypeName(choice.type);
+  if (choice.ordinal) section.displayName += " " + juce::String(*choice.ordinal);
+  section.userEdited = true;
+}
+
+bool insertManualSection(GuideAlignmentDraft &draft, const GuideManualSection &manual,
+                          juce::String &error) {
+  const auto canonical = canonicalChoice(manual.choice);
+  if (!canonical || canonical->kind != GuideAnnouncementKind::section ||
+      manual.id.trim().isEmpty() || !std::isfinite(manual.seconds) ||
+      !validDraftAnnotations(draft, error, true) || !validReviewGrid(draft, error)) {
+    if (error.isEmpty()) error = juce::String::fromUTF8("Elige una sección del catálogo y un tiempo válido.");
+    return false;
+  }
+  if (draft.suggestions.size() >= maximumSectionSuggestions) {
+    error = juce::String::fromUTF8("La revisión ya contiene el máximo de 256 secciones."); return false;
+  }
+  for (size_t i = 0; i < draft.suggestions.size(); ++i) {
+    const auto &item = draft.suggestions[i];
+    if (item.id == manual.id ||
+        (i > 0 && (item.startSeconds <= draft.suggestions[i - 1].startSeconds ||
+          std::abs(draft.suggestions[i - 1].endSeconds - item.startSeconds) > epsilon)) ||
+        (i + 1 == draft.suggestions.size() && std::abs(item.endSeconds - draft.durationSeconds) > epsilon)) {
+      error = juce::String::fromUTF8("Las secciones de la revisión tienen límites o IDs inconsistentes."); return false;
+    }
+  }
+  const auto containsId = [&](const auto &items) {
+    return std::any_of(items.begin(), items.end(), [&](const auto &item) { return item.id == manual.id; });
+  };
+  if (containsId(draft.secondaryCues) || containsId(draft.pendingAnnouncements) ||
+      containsId(draft.timingIssues) || containsId(draft.sourceAnnouncements)) {
+    error = juce::String::fromUTF8("El ID de la sección manual ya está utilizado."); return false;
+  }
+  if (manual.seconds < 0.0 || manual.seconds > draft.durationSeconds ||
+      draft.durationSeconds - manual.seconds < minimumAcceptedSectionDurationSeconds) {
+    error = juce::String::fromUTF8("No queda espacio suficiente para una sección en ese tiempo."); return false;
+  }
+  const auto next = std::lower_bound(draft.suggestions.begin(), draft.suggestions.end(), manual.seconds,
+      [](const auto &item, double seconds) { return item.startSeconds < seconds; });
+  const auto index = size_t(next - draft.suggestions.begin());
+  const auto end = next == draft.suggestions.end() ? draft.durationSeconds : next->startSeconds;
+  if (end - manual.seconds < minimumAcceptedSectionDurationSeconds ||
+      (index > 0 && manual.seconds - draft.suggestions[index - 1].startSeconds < minimumAcceptedSectionDurationSeconds)) {
+    error = juce::String::fromUTF8("La sección está demasiado cerca de un límite existente; elige otro compás."); return false;
+  }
+  const auto gridBars = bars(draft);
+  SectionSuggestion section;
+  section.id = manual.id;
+  applyManualSectionChoice(section, *canonical);
+  // This field is the original manual placement, not a manufactured spoken
+  // onset. No source announcement, ASR confidence or matched cue is created.
+  section.rawStartSeconds = section.startSeconds = manual.seconds;
+  section.endSeconds = end;
+  section.startBarIndex = exactBar(gridBars, manual.seconds);
+  section.endBarIndex = exactBar(gridBars, end);
+  section.sources.add(manualGuideSectionSource);
+  section.reason = juce::String::fromUTF8("Sección añadida manualmente durante la revisión; sin anuncio de voz asociado.");
+  if (index > 0) {
+    auto &previous = draft.suggestions[index - 1];
+    previous.endSeconds = manual.seconds;
+    previous.endBarIndex = section.startBarIndex;
+    previous.userEdited = true;
+  }
+  draft.suggestions.insert(draft.suggestions.begin() + std::ptrdiff_t(index), std::move(section));
+  return true;
+}
 } // namespace
 
 GuideAlignmentOptions makeInitialGuideAlignmentOptions(
@@ -535,6 +605,17 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
         !selectionIds.insert(selection.announcementId.toStdString()).second) {
       draft.error = juce::String::fromUTF8("Las elecciones del catálogo no son válidas."); return draft;
     }
+  std::unordered_set<std::string> manualIds;
+  if (options.manualSections.size() > maximumSectionSuggestions) {
+    draft.error = juce::String::fromUTF8("Hay demasiadas secciones manuales en esta revisión."); return draft;
+  }
+  for (const auto &manual : options.manualSections) {
+    const auto choice = canonicalChoice(manual.choice);
+    if (manual.id.trim().isEmpty() || !manualIds.insert(manual.id.toStdString()).second ||
+        !choice || choice->kind != GuideAnnouncementKind::section || !std::isfinite(manual.seconds)) {
+      draft.error = juce::String::fromUTF8("Las secciones manuales contienen IDs, nombres o tiempos inválidos."); return draft;
+    }
+  }
   const auto gridBars = bars(draft);
   if (gridBars.empty()) { draft.error = juce::String::fromUTF8("No hay compases válidos desde el origen propuesto."); return draft; }
   auto latestStart = draft.durationSeconds - minimumAcceptedSectionDurationSeconds;
@@ -762,7 +843,73 @@ GuideAlignmentDraft alignGuideSections(const GuideTranscript &transcript, const 
     draft.suggestions.push_back(std::move(suggestion));
   }
   draft.error = timingIssuesError(draft.timingIssues);
+  // Reapply explicit entries at their chosen absolute positions, using the
+  // rebuilt automatic sections only as neighbours. A conflict rejects this
+  // rebuilt draft so the editor can retain the previous review intact.
+  juce::String manualError;
+  if (!options.manualSections.empty() &&
+      !reapplyManualGuideSections(draft, options.manualSections, manualError)) draft.error = manualError;
   return draft;
+}
+
+bool reapplyManualGuideSections(GuideAlignmentDraft &draft,
+                                const std::vector<GuideManualSection> &manualSections,
+                                juce::String &error) {
+  error.clear();
+  if (manualSections.size() > maximumSectionSuggestions || !canReviewGuideAlignment(draft)) {
+    error = juce::String::fromUTF8("La revisión o la lista de secciones manuales no es válida."); return false;
+  }
+  std::unordered_set<std::string> ids;
+  for (const auto &manual : manualSections)
+    if (!ids.insert(manual.id.toStdString()).second) {
+      error = juce::String::fromUTF8("Las secciones manuales contienen IDs repetidos."); return false;
+    }
+  if (manualSections.empty()) {
+    draft.options.manualSections.clear();
+    return true;
+  }
+  auto working = draft;
+  for (const auto &manual : manualSections)
+    if (!insertManualSection(working, manual, error)) return false;
+  working.options.manualSections = manualSections;
+  draft = std::move(working);
+  return true;
+}
+
+bool isManualGuideSection(const GuideAlignmentDraft &draft, const juce::String &id) {
+  return std::any_of(draft.options.manualSections.begin(), draft.options.manualSections.end(),
+      [&](const auto &manual) { return manual.id == id; });
+}
+
+bool addGuideSectionAt(GuideAlignmentDraft &draft, const GuideCatalogChoice &choice,
+                       double seconds, bool snapToBars, juce::String &error) {
+  error.clear();
+  const auto canonical = canonicalChoice(choice);
+  if (!canonical || canonical->kind != GuideAnnouncementKind::section || !std::isfinite(seconds) ||
+      seconds < 0.0 || seconds >= draft.durationSeconds ||
+      draft.options.manualSections.size() >= maximumSectionSuggestions || !canReviewGuideAlignment(draft)) {
+    error = juce::String::fromUTF8("Elige una sección del catálogo y un tiempo válido de la propuesta."); return false;
+  }
+  double target = seconds;
+  if (snapToBars) {
+    double nearest = std::numeric_limits<double>::quiet_NaN();
+    for (const auto &mark : draft.grid) {
+      if (!mark.strong || draft.durationSeconds - mark.timeSeconds < minimumAcceptedSectionDurationSeconds) continue;
+      if (!std::isfinite(nearest) || std::abs(mark.timeSeconds - target) < std::abs(nearest - target) - epsilon ||
+          (std::abs(std::abs(mark.timeSeconds - target) - std::abs(nearest - target)) <= epsilon &&
+           mark.timeSeconds > nearest)) nearest = mark.timeSeconds;
+    }
+    if (!std::isfinite(nearest)) {
+      error = juce::String::fromUTF8("No hay un compás válido para agregar esta sección."); return false;
+    }
+    target = nearest;
+  }
+  GuideManualSection manual{"guide-manual-" + juce::Uuid().toString(), *canonical, target};
+  auto working = draft;
+  if (!insertManualSection(working, manual, error)) return false;
+  working.options.manualSections.push_back(std::move(manual));
+  draft = std::move(working);
+  return true;
 }
 
 bool moveGuideSectionBoundary(GuideAlignmentDraft &draft, const juce::String &id, double seconds, bool snapToBars, juce::String &error) {
@@ -822,6 +969,8 @@ bool moveGuideSectionBoundary(GuideAlignmentDraft &draft, const juce::String &id
   if (suggestion.matchedCueTimeSeconds) suggestion.guideAnticipationSeconds = target - *suggestion.matchedCueTimeSeconds;
   suggestion.userEdited = true;
   suggestion.reason += juce::String::fromUTF8(" Inicio ajustado manualmente durante la revisión.");
+  for (auto &manual : draft.options.manualSections)
+    if (manual.id == id) manual.seconds = target;
   if (selected > 0) {
     auto &previous = draft.suggestions[selected - 1];
     previous.endSeconds = target; previous.endBarIndex = suggestion.startBarIndex;
@@ -930,6 +1079,19 @@ bool chooseGuideCatalogMark(GuideAlignmentDraft &draft, const juce::String &id,
           std::abs(draft.suggestions[i].endSeconds - draft.durationSeconds) > epsilon)) {
       error = juce::String::fromUTF8("Las secciones de la revisión tienen límites inconsistentes."); return false;
     }
+  const auto manual = std::find_if(draft.options.manualSections.begin(), draft.options.manualSections.end(),
+      [&](const auto &item) { return item.id == id; });
+  if (manual != draft.options.manualSections.end()) {
+    if (primary == draft.suggestions.end() || canonical->kind != GuideAnnouncementKind::section) {
+      error = juce::String::fromUTF8("La sección manual sólo puede cambiarse por otra sección del catálogo."); return false;
+    }
+    // A manually placed section has no source speech to reinterpret. Keep its
+    // exact selected boundary and stable identity while replacing its name.
+    applyManualSectionChoice(*primary, *canonical);
+    manual->choice = *canonical;
+    manual->seconds = primary->startSeconds;
+    return true;
+  }
   std::optional<GuideSourceAnnouncement> source;
   for (const auto &item : draft.sourceAnnouncements) if (item.id == id) {
     if (source && (source->rawText != item.rawText || source->startSeconds != item.startSeconds ||

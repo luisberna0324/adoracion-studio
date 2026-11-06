@@ -1540,6 +1540,142 @@ void testCatalogueSelectionCapacityAndPendingDiscard() {
          "a stale discard is harmless and resolving the final pending source enables canonical-only acceptance");
 }
 
+void testManualGuideSectionInsertionAndSourceIsolation() {
+  const auto transcript=guide(30,{{.1,.3,"One"},{1,1.4,"Intro"},{9,9.4,"Verse"},{17,17.4,"Bridge"}});
+  auto draft=alignGuideSections(transcript,{});
+  const auto original=draft;
+  juce::String error;
+  expect(addGuideSectionAt(draft,catalogChoice(GuideAnnouncementKind::section,"Chorus 2"),6.3,true,error) &&
+         error.isEmpty() && draft.suggestions.size()==4 && draft.options.manualSections.size()==1,
+         "a canonical missing section can be added provisionally at the nearest musical bar");
+  const auto &added=draft.suggestions[1];
+  const auto id=added.id;
+  expect(close(draft.suggestions[0].startSeconds,2) && close(draft.suggestions[0].endSeconds,6) &&
+         close(added.startSeconds,6) && close(added.endSeconds,10) &&
+         close(draft.suggestions[2].startSeconds,10) && close(draft.suggestions[3].startSeconds,18),
+         "manual insertion splits only the preceding draft range and does not delay the chosen entry by another bar");
+  expect(id.startsWith("guide-manual-") && isManualGuideSection(draft,id) &&
+         added.type==SectionType::chorus && added.occurrence==2 && added.displayName=="Coro 2" &&
+         added.userEdited && added.sources.contains(manualGuideSectionSource) &&
+         !added.matchedCueTimeSeconds && !added.guideAnticipationSeconds &&
+         draft.options.catalogueSelections.empty(),
+         "a user-selected section has its own stable identity and manual provenance without invented spoken evidence");
+  expect(draft.secondaryCues.size()==original.secondaryCues.size() &&
+         draft.secondaryCues[0].id==original.secondaryCues[0].id &&
+         close(draft.secondaryCues[0].timeSeconds,original.secondaryCues[0].timeSeconds) &&
+         draft.sourceAnnouncements.size()==original.sourceAnnouncements.size(),
+         "adding a musical section neither consumes count points nor manufactures a source announcement");
+  for(size_t i=0;i<original.sourceAnnouncements.size();++i)
+    expect(draft.sourceAnnouncements[i].id==original.sourceAnnouncements[i].id &&
+           draft.sourceAnnouncements[i].rawText==original.sourceAnnouncements[i].rawText &&
+           close(draft.sourceAnnouncements[i].startSeconds,original.sourceAnnouncements[i].startSeconds),
+           "all original spoken identities, literal text and measured timings survive manual insertion");
+  const auto plan=appendConfirmedGuideSuggestions({},draft);
+  expect(plan.error.isEmpty() && plan.arrangement.parts.size()==4 && plan.arrangement.cues.size()==1 &&
+         plan.arrangement.parts[1].id==id && close(plan.arrangement.parts[1].startSec,6),
+         "manual and recognized suggestions use the same explicit atomic acceptance plan");
+  expect(guideSectionCorrectionsForConfirmedReview(transcript,{added},{{id,"Coro 2"}}).empty(),
+         "confirming a manually added section cannot teach an ASR correction for speech that never existed");
+
+  auto empty=alignGuideSections(guide(12,{}),{});
+  expect(addGuideSectionAt(empty,catalogChoice(GuideAnnouncementKind::section,"Intro"),0,false,error) &&
+         empty.suggestions.size()==1 && close(empty.suggestions[0].startSeconds,0) &&
+         close(empty.suggestions[0].endSeconds,12),
+         "a review without recognized primary sections can receive its first section");
+  auto before=original;
+  expect(addGuideSectionAt(before,catalogChoice(GuideAnnouncementKind::section,"Intro"),0,false,error) &&
+         close(before.suggestions[0].endSeconds,2) && before.suggestions[1].id==original.suggestions[0].id,
+         "a manual section before the first recognized boundary preserves that original boundary and identity");
+}
+
+void testManualGuideSectionRebuildRenameAndDiscard() {
+  const auto transcript=guide(30,{{1,1.4,"Intro"},{9,9.4,"Verse"},{17,17.4,"Bridge"}});
+  auto draft=alignGuideSections(transcript,{});
+  juce::String error;
+  expect(addGuideSectionAt(draft,catalogChoice(GuideAnnouncementKind::section,"Chorus"),6,false,error),
+         "manual-section rebuild fixture can insert the omitted chorus");
+  const auto id=draft.options.manualSections[0].id;
+  expect(chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::section,"Bridge 2"),error) &&
+         draft.suggestions[1].displayName=="Puente 2" && close(draft.suggestions[1].startSeconds,6) &&
+         draft.options.manualSections[0].choice.key=="Bridge 2" && draft.options.catalogueSelections.empty() &&
+         draft.sourceAnnouncements.size()==3,
+         "catalogue renaming of a manual section changes only its explicit musical choice without a fictional source");
+  expect(!chooseGuideCatalogMark(draft,id,catalogChoice(GuideAnnouncementKind::instruction,"Drums In"),error) &&
+         draft.suggestions[1].displayName=="Puente 2" && draft.secondaryCues.empty(),
+         "a manual primary section cannot accidentally be reinterpreted as spoken secondary evidence");
+  expect(moveGuideSectionBoundary(draft,id,7,false,error) && close(draft.options.manualSections[0].seconds,7),
+         "dragging a manual entry also updates its origin-independent rebuild position");
+  auto options=draft.options;options.originSeconds=.25;
+  const auto rebuilt=alignGuideSections(transcript,options);
+  const auto mark=std::find_if(rebuilt.suggestions.begin(),rebuilt.suggestions.end(),[&](const auto &item){return item.id==id;});
+  expect(rebuilt.error.isEmpty() && mark!=rebuilt.suggestions.end() && close(mark->startSeconds,7) &&
+         close(mark->endSeconds,10.25) && mark->displayName=="Puente 2" && mark->userEdited &&
+         !mark->matchedCueTimeSeconds && isManualGuideSection(rebuilt,id),
+         "a changed origin rebuilds automatic neighbours while retaining the added identity, name and chosen absolute entry");
+  auto collision=draft.options;collision.originSeconds=7;
+  const auto rejected=alignGuideSections(transcript,collision);
+  expect(rejected.error.isNotEmpty() && !canReviewGuideAlignment(rejected) &&
+         draft.options.manualSections.size()==1 && close(draft.suggestions[1].startSeconds,7),
+         "a rebuilt automatic boundary colliding with a manual entry is rejected rather than silently deleting that entry");
+  options.manualSections.clear();
+  const auto discarded=alignGuideSections(transcript,options);
+  expect(discarded.error.isEmpty() && discarded.suggestions.size()==3 && !isManualGuideSection(discarded,id) &&
+         std::none_of(discarded.suggestions.begin(),discarded.suggestions.end(),[&](const auto &item){return item.id==id;}) &&
+         close(discarded.suggestions[0].endSeconds,10.25),
+         "removing a manual option before rebuilding discards only that addition and reconnects the automatic ranges");
+
+  auto replacement=alignGuideSections(transcript,{});
+  const auto discardedAutomaticId=replacement.suggestions[1].id;
+  replacement.suggestions.erase(replacement.suggestions.begin()+1);
+  replacement.suggestions[0].endSeconds=replacement.suggestions[1].startSeconds;
+  expect(addGuideSectionAt(replacement,catalogChoice(GuideAnnouncementKind::section,"Chorus"),10,false,error),
+         "a manual section may occupy the boundary of an automatic suggestion the reviewer already discarded");
+  const auto replacementId=replacement.options.manualSections.front().id;
+  auto automaticOptions=replacement.options;automaticOptions.manualSections.clear();
+  auto replay=alignGuideSections(transcript,automaticOptions);
+  replay.suggestions.erase(std::remove_if(replay.suggestions.begin(),replay.suggestions.end(),
+      [&](const auto &part){return part.id==discardedAutomaticId;}),replay.suggestions.end());
+  replay.suggestions[0].endSeconds=replay.suggestions[1].startSeconds;
+  expect(reapplyManualGuideSections(replay,replacement.options.manualSections,error) &&
+         replay.options.manualSections.front().id==replacementId && replay.suggestions[1].id==replacementId &&
+         close(replay.suggestions[1].startSeconds,10) && replay.suggestions[1].type==SectionType::chorus,
+         "filtering discarded automatic entries before replay restores the manual replacement with its original stable ID");
+  auto duplicateEntries=replay.options.manualSections;duplicateEntries.push_back(duplicateEntries[0]);
+  expect(!reapplyManualGuideSections(replay,duplicateEntries,error) && replay.suggestions.size()==3 &&
+         replay.options.manualSections.size()==1 && replay.options.manualSections[0].id==replacementId,
+         "invalid replay metadata is rejected without consuming or duplicating an existing manual replacement");
+}
+
+void testManualGuideSectionRejectionIsAtomic() {
+  auto draft=alignGuideSections(guide(30,{{1,1.4,"Intro"},{9,9.4,"Verse"},{17,17.4,"Bridge"}}),{});
+  const auto original=draft;
+  const auto sameRanges=[&] {
+    if(draft.suggestions.size()!=original.suggestions.size() || !draft.options.manualSections.empty()) return false;
+    for(size_t i=0;i<original.suggestions.size();++i)
+      if(draft.suggestions[i].id!=original.suggestions[i].id ||
+          draft.suggestions[i].startSeconds!=original.suggestions[i].startSeconds ||
+          draft.suggestions[i].endSeconds!=original.suggestions[i].endSeconds ||
+          draft.suggestions[i].userEdited!=original.suggestions[i].userEdited) return false;
+    return true;
+  };
+  juce::String error;
+  const auto choice=catalogChoice(GuideAnnouncementKind::section,"Chorus");
+  for(const auto time:{-1.0,2.0,2.1,9.9,29.9,30.0,std::numeric_limits<double>::quiet_NaN()})
+    expect(!addGuideSectionAt(draft,choice,time,false,error) && !error.isEmpty() && sameRanges(),
+           "invalid or too-close manual insertion leaves all draft ranges, edit flags and rebuild options unchanged");
+  auto invalidChoice=choice;invalidChoice.key="not a catalog section";
+  expect(!addGuideSectionAt(draft,invalidChoice,6,false,error) && sameRanges() &&
+         !addGuideSectionAt(draft,catalogChoice(GuideAnnouncementKind::count,"2"),6,false,error) && sameRanges(),
+         "manual primary insertion accepts only canonical section choices, never an unknown name or a count");
+  auto full=alignGuideSections(guide(600,{}),{});
+  for(size_t i=0;i<maximumSectionSuggestions;++i)
+    full.suggestions.push_back(suggestion("capacity-"+juce::String(int(i)),double(i)*2,
+        i+1==maximumSectionSuggestions?600:double(i+1)*2));
+  expect(!addGuideSectionAt(full,choice,599,false,error) && full.suggestions.size()==maximumSectionSuggestions &&
+         full.options.manualSections.empty(),
+         "adding beyond the native section capacity cannot partially split a range or retain a phantom manual option");
+}
+
 } // namespace
 int main() {
   testSpeechNormalization(); testBilingualCatalogAndUtilities(); testBilingualCatalogCacheCompatibility();
@@ -1565,6 +1701,9 @@ int main() {
   testCatalogueRoleSelectionPreservesSourceAndManualEdits();
   testWordCountCatalogueOverrideSurvivesOriginRebuild();
   testCatalogueSelectionCapacityAndPendingDiscard();
+  testManualGuideSectionInsertionAndSourceIsolation();
+  testManualGuideSectionRebuildRenameAndDiscard();
+  testManualGuideSectionRejectionIsAtomic();
   testGuideBoundaryEditingAndInvalidInput();
   std::cout << "Section detection: " << checks << " checks passed.\n";
 }

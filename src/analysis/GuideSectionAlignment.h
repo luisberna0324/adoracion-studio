@@ -17,6 +17,16 @@ struct GuideCatalogSelection {
   GuideCatalogChoice choice;
 };
 
+// A section deliberately placed by the reviewer, independent of speech. Its
+// stable identity and absolute entry survive rebuilding the automatic grid.
+struct GuideManualSection {
+  juce::String id;
+  GuideCatalogChoice choice;
+  double seconds = 0.0;
+};
+
+inline constexpr const char *manualGuideSectionSource = "manual-guide-review";
+
 struct GuideAlignmentOptions {
   double originSeconds = 0.0;
   double bpm = 120.0;
@@ -26,6 +36,7 @@ struct GuideAlignmentOptions {
   // identities are retained regardless of the chosen musical interpretation.
   std::vector<GuideLearnedMapping> learnedMappings;
   std::vector<GuideCatalogSelection> catalogueSelections;
+  std::vector<GuideManualSection> manualSections;
 };
 
 // A spoken instruction/count is a point, independent of musical boundaries.
@@ -97,6 +108,20 @@ GuideAlignmentOptions makeInitialGuideAlignmentOptions(
 bool moveGuideSectionBoundary(GuideAlignmentDraft &, const juce::String &id,
                               double seconds, bool snapToBars,
                               juce::String &error);
+
+// Insert a canonical primary section at the explicitly selected musical
+// position, without applying the automatic following-announcement-bar policy.
+// The previous proposed range is split; all changes remain in the draft.
+bool addGuideSectionAt(GuideAlignmentDraft &, const GuideCatalogChoice &,
+                       double seconds, bool snapToBars, juce::String &error);
+bool isManualGuideSection(const GuideAlignmentDraft &, const juce::String &id);
+
+// Reapply saved manual entries to an automatic draft after editor-level
+// discards have been filtered. Preserves IDs and updates options atomically;
+// the input draft must not already contain those manual sections.
+bool reapplyManualGuideSections(GuideAlignmentDraft &,
+                                const std::vector<GuideManualSection> &,
+                                juce::String &error);
 
 // Secondary points never alter section boundaries. An instruction's proposed
 // musical entry may be adjusted independently of its original spoken time.
