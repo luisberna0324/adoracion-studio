@@ -51,7 +51,7 @@ ImportedSongData makeSong(const juce::File &audio) {
   song.bpm = 120; song.timeSignature = "3/4";
   ImportedStemData music;
   music.stemId = "music"; music.sourcePath = audio.getFullPathName();
-  music.storedPath = music.sourcePath; music.displayName = "Guia nombre ambiguo";
+  music.storedPath = music.sourcePath; music.displayName = "Instrumento con nombre ambiguo";
   music.fileName = "Guia.mp3"; music.category = "Other";
   music.durationSec = 6; music.sampleRate = 8000; music.channels = 1;
   auto guide = music; guide.stemId = "guide"; guide.category = "Cues";
@@ -98,6 +98,7 @@ class FakeGuideTranscriber final : public IGuideTranscriber {
 public:
   std::atomic<bool> entered{false}, release{false};
   juce::String requestedLanguage;
+  juce::File requestedAudio;
   bool available() const override { return true; }
   juce::String unavailableReason() const override { return {}; }
   juce::String providerId() const override { return "injected-guide-ui"; }
@@ -106,6 +107,7 @@ public:
                   const GuideTranscriptionProgress &progress, GuideTranscript &out,
                   juce::String &error) override {
     requestedLanguage = request.language;
+    requestedAudio = request.audioFile;
     entered = true;
     while (!release && !cancelled()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
     if (cancelled()) { error = "Cancelado"; return false; }
@@ -201,6 +203,8 @@ struct SectionDetectionPanelTestAccess {
   static auto &all(SectionDetectionPanel &p) { return p.selectAll; }
   static auto &transcribe(SectionDetectionPanel &p) { return p.transcribe; }
   static auto &language(SectionDetectionPanel &p) { return p.guideLanguage; }
+  static auto &guideTrack(SectionDetectionPanel &p) { return p.guideTrack; }
+  static const auto &sourceSong(const SectionDetectionPanel &p) { return p.song; }
   static auto &tracks(SectionDetectionPanel &p) { return p.showTracks; }
   static auto transcript(const SectionDetectionPanel &p) { return p.transcript.getText(); }
   static bool transcriptVisible(const SectionDetectionPanel &p) { return p.transcript.isVisible(); }
@@ -713,6 +717,61 @@ void modelDownloadConsentCanBeDeclined(const juce::File &root, const ImportedSon
          "declining closes consent without downloading, transcribing or reviewing the song");
 }
 
+void conflictingGuideMetadataRequiresSelection(const juce::File &root,
+                                               const ImportedSongData &song) {
+  auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
+  auto guide = std::make_shared<FakeGuideTranscriber>(); guide->release = true;
+  auto source = std::make_shared<FakeModelSource>();
+  const auto guideAudio = root.getChildFile("legacy-voice-guide.wav");
+  writeAudio(guideAudio);
+  auto legacy = song;
+  legacy.id = "legacy-guide-category-conflict";
+  auto voice = legacy.stems[1];
+  voice.displayName = "GUIA"; voice.category = "Other";
+  voice.sourcePath = voice.storedPath = guideAudio.getFullPathName();
+  auto strings = legacy.stems[0];
+  strings.displayName = "CUERDAS"; strings.category = "Cues";
+  legacy.stems = {voice, strings};
+  juce::Component host; host.setSize(1000, 700); host.setVisible(true);
+  int reviewed = 0, closed = 0;
+  SectionDetectionPanel::Actions actions;
+  actions.reviewGuide = [&](const GuideTranscript &) { ++reviewed; };
+  actions.close = [&] { ++closed; };
+  SectionDetectionPanel panel(legacy, actions, unavailable, guide);
+  const auto model = root.getChildFile("legacy-guide-selection-model.bin");
+  expect(model.replaceWithText("synthetic model identity"), "legacy selection has a local model");
+  SectionDetectionPanelTestAccess::cache(panel, root.getChildFile("legacy-guide-selection-cache"));
+  SectionDetectionPanelTestAccess::model(panel, model);
+  SectionDetectionPanelTestAccess::downloadSource(panel, source, source->asset());
+  panel.showModal(host);
+  panel.beginSuggestionFlow();
+  auto &selector = SectionDetectionPanelTestAccess::guideTrack(panel);
+  expect(panel.isCurrentlyModal(false) && selector.isVisible() &&
+             selector.getNumItems() == 2 && selector.getSelectedId() == 0 &&
+             !SectionDetectionPanelTestAccess::transcribe(panel).isEnabled() &&
+             !SectionDetectionPanelTestAccess::busy(panel) && !guide->entered && source->calls == 0,
+         "a contradictory guide category requires explicit selection before analysis or download");
+  expect(!SectionDetectionPanelTestAccess::setupReady(panel) &&
+             SectionDetectionPanelTestAccess::card(panel).getWidth() <= 480,
+         "guide selection uses the compact task card");
+  captureModelFlow(panel, "PW_SECTION_GUIDE_SELECTION_CAPTURE_PATH");
+  selector.setSelectedId(1, juce::sendNotificationSync);
+  pump();
+  expect(SectionDetectionPanelTestAccess::transcribe(panel).isEnabled() &&
+             SectionDetectionPanelTestAccess::transcribe(panel).getButtonText() == "Continuar",
+         "a selected guide can be explicitly confirmed");
+  click(SectionDetectionPanelTestAccess::transcribe(panel));
+  pumpUntil([&] { return reviewed == 1 && closed == 1; },
+            "the confirmed voice track reaches waveform review");
+  expect(guide->requestedAudio == guideAudio && source->calls == 0 &&
+             SectionDetectionPanelTestAccess::role(panel, 0) == 2 &&
+             SectionDetectionPanelTestAccess::role(panel, 1) == 1,
+         "the voice track is transcribed while the mislabeled strings are excluded from guide analysis");
+  const auto &original = SectionDetectionPanelTestAccess::sourceSong(panel);
+  expect(original.stems[0].category == "Other" && original.stems[1].category == "Cues",
+         "analysis selection leaves the imported song metadata intact");
+}
+
 void guideHandoffOwnerCanClose(const ImportedSongData &song) {
   auto unavailable = std::make_shared<FakeAnalyzer>(); unavailable->supported = false;
   std::unique_ptr<SectionDetectionPanel> panel;
@@ -1051,6 +1110,8 @@ int main(int argc, char **argv) {
     modelDownloadConsentCanBeDeclined(temporary.file, song);
     modelDownloadContinuesSuggestionFlow(temporary.file, song);
     std::cout << "PASS: model preparation integrity, offline reuse, cancellation and automatic suggestion continuation\n";
+    conflictingGuideMetadataRequiresSelection(temporary.file, song);
+    std::cout << "PASS: contradictory legacy guide categories require an explicit voice-track selection\n";
     guideCancellationAfterQueuedSuccess(temporary.file, song);
     std::cout << "PASS: cancelling discards guide success already queued for the UI\n";
     modalGuideProgressCancellationAndRetry(temporary.file, song);

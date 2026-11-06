@@ -93,6 +93,14 @@ SectionDetectionPanel::SectionDetectionPanel(ImportedSongData s, Actions a,
   guideLanguage.setComponentID("section-guide-language");
   guideLanguage.setTooltip(juce::String::fromUTF8(
       "Español e inglés compara ambos idiomas en cada anuncio de la guía, localmente."));
+  addChildComponent(guideTrack);
+  guideTrack.setComponentID("section-guide-track");
+  guideTrack.setTextWhenNothingSelected(L10n::tr("Seleccionar pista…", "Choose track…"));
+  for (size_t i = 0; i < song.stems.size(); ++i) {
+    const auto &stem = song.stems[i];
+    guideTrack.addItem(stem.displayName.isNotEmpty() ? stem.displayName : stem.fileName, int(i) + 1);
+  }
+  guideTrack.onChange = [this] { if (!busy) setBusy(false); };
   modelStatus.setFont(makeAppFont(12.0f));
   transcript.setMultiLine(true); transcript.setReadOnly(true);
   transcript.setScrollbarsShown(true); transcript.setCaretVisible(false);
@@ -104,7 +112,22 @@ SectionDetectionPanel::SectionDetectionPanel(ImportedSongData s, Actions a,
     setBusy(false); resized();
   };
   chooseModel.onClick = [this] { chooseGuideModel(); };
-  transcribe.onClick = [this] { start(true); };
+  transcribe.onClick = [this] {
+    if (guideSelectionRequired) {
+      const int chosen = guideTrack.getSelectedId() - 1;
+      if (chosen < 0 || chosen >= int(roles.size())) return;
+      for (size_t i = 0; i < roles.size(); ++i) {
+        if (int(i) == chosen) roles[i]->role.setSelectedId(2, juce::dontSendNotification);
+        else if (roles[i]->role.getSelectedId() == 2)
+          roles[i]->role.setSelectedId(1, juce::dontSendNotification);
+      }
+      guideSelectionRequired = false;
+      guideSelectionConfirmed = true;
+      beginSuggestionFlow();
+      return;
+    }
+    start(true);
+  };
   viewport.setViewedComponent(&content, false); viewport.setScrollBarsShown(true, false);
   for (const auto &stem : song.stems) { auto row = std::make_unique<RoleRow>(stem); content.addAndMakeVisible(*row); roles.push_back(std::move(row)); }
   analyze.onClick = [this] { start(); };
@@ -116,6 +139,8 @@ SectionDetectionPanel::SectionDetectionPanel(ImportedSongData s, Actions a,
   transcribe.setColour(juce::TextButton::buttonColourId, UITheme::accent);
   transcribe.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
   applyComboBoxTheme(guideLanguage, UITheme::cardBgHover,
+                    UITheme::cardBorder.withAlpha(0.75f));
+  applyComboBoxTheme(guideTrack, UITheme::cardBgHover,
                     UITheme::cardBorder.withAlpha(0.75f));
   add.onClick = [this] { addProposal(); };
   acceptSelected.onClick = [this] { accept(); };
@@ -213,6 +238,27 @@ void SectionDetectionPanel::beginSuggestionFlow() {
   const auto guideCount = std::count_if(roles.begin(), roles.end(), [](const auto &row) {
     return row->role.getSelectedId() == 2;
   });
+  bool conflictingGuide = false;
+  if (actions.reviewGuide && !guideSelectionConfirmed) {
+    for (size_t i = 0; i < song.stems.size(); ++i) {
+      const auto &stem = song.stems[i];
+      if (!stem.include) continue;
+      const auto namedCategory = suggestCategoryFromFilename(
+          stem.displayName.isNotEmpty() ? stem.displayName : stem.fileName);
+      const bool guideRole = roles[i]->role.getSelectedId() == 2;
+      if ((guideRole && namedCategory != "Cues" && namedCategory != "Other") ||
+          (!guideRole && namedCategory == "Cues")) conflictingGuide = true;
+    }
+  }
+  if (actions.reviewGuide && (guideCount != 1 || conflictingGuide)) {
+    guideSelectionRequired = true;
+    modelDownloadPrompt = false;
+    setBusy(false);
+    status.setText(L10n::tr("Elige la pista con la voz de guía.",
+                           "Choose the track with the spoken guide."), juce::dontSendNotification);
+    if (modalPresented) guideTrack.grabKeyboardFocus();
+    return;
+  }
   if (guideCount != 1) {
     status.setText(L10n::tr("Elige una sola pista como Guía para detectar las secciones.",
                            "Choose one Guide track to detect sections."), juce::dontSendNotification); return;
@@ -235,10 +281,11 @@ void SectionDetectionPanel::paint(juce::Graphics &g) {
   g.setColour(juce::Colours::white.withAlpha(0.2f)); g.drawRect(getLocalBounds());
 }
 void SectionDetectionPanel::resized() {
-  const bool compact = modalPresented && (busy || modelDownloadPrompt);
+  const bool compact = modalPresented && (busy || modelDownloadPrompt || guideSelectionRequired);
   for (auto *component : std::initializer_list<juce::Component *>{&help, &chooseModel,
        &guideLanguage, &transcribe, &modelStatus}) component->setVisible(!compact);
   if (compact && !busy) transcribe.setVisible(true);
+  guideTrack.setVisible(guideSelectionRequired && !busy);
   for (auto *legacy : std::initializer_list<juce::Component *>{&gridConfirmed, &analyze,
        &add, &acceptSelected, &selectAll}) legacy->setVisible(!compact && !actions.reviewGuide);
   spinner.setVisible(busy);
@@ -265,7 +312,9 @@ void SectionDetectionPanel::resized() {
       }
       title.setBounds(inner.removeFromTop(juce::jmin(30, inner.getHeight())));
       inner.removeFromTop(juce::jmin(8, inner.getHeight()));
-      status.setBounds(inner.removeFromTop(juce::jmin(busy ? 48 : 84, inner.getHeight())));
+      status.setBounds(inner.removeFromTop(juce::jmin(busy || guideSelectionRequired ? 48 : 84, inner.getHeight())));
+      if (guideSelectionRequired && !busy)
+        guideTrack.setBounds(inner.removeFromTop(juce::jmin(36, inner.getHeight())));
       inner.removeFromTop(juce::jmin(14, inner.getHeight()));
       spinner.setBounds(inner.removeFromTop(juce::jmin(22, inner.getHeight())));
       return;
@@ -332,12 +381,13 @@ void SectionDetectionPanel::setBusy(bool value) {
   busy = value;
   spinner.setVisible(value);
   const bool modelPresent = guideModelFile.existsAsFile();
-  transcribe.setEnabled(!busy && service.guideAvailable());
-  transcribe.setButtonText(actions.reviewGuide
+  transcribe.setEnabled(!busy && service.guideAvailable() &&
+                       (!guideSelectionRequired || guideTrack.getSelectedId() > 0));
+  transcribe.setButtonText(guideSelectionRequired ? L10n::tr("Continuar", "Continue") : actions.reviewGuide
       ? !modelPresent ? L10n::tr("Descargar modelo", "Download model")
                       : L10n::tr("Detectar secciones", "Detect sections")
       : juce::String::fromUTF8(!modelPresent ? "Descargar y continuar" : "Transcribir guía"));
-  chooseModel.setEnabled(!busy); guideLanguage.setEnabled(!busy);
+  chooseModel.setEnabled(!busy); guideLanguage.setEnabled(!busy); guideTrack.setEnabled(!busy);
   showTracks.setVisible(transcriptReview); showTracks.setEnabled(!busy);
   modelStatus.setText(modelPresent ? "Modelo local listo" : juce::String::fromUTF8("Descarga única · 57 MiB"), juce::dontSendNotification);
   modelStatus.setTooltip(guideModelFile.getFullPathName());

@@ -622,12 +622,7 @@ juce::String makeDisplayNameFromFile(const juce::File &file) {
 
 juce::String suggestCategoryFromFilename(const juce::String &filename) {
   const auto lower = filename.toLowerCase();
-  juce::String normalized;
-  normalized.preallocateBytes(lower.getNumBytesAsUTF8());
-  for (int i = 0; i < lower.length(); ++i) {
-    const juce::juce_wchar c = lower[i];
-    normalized += static_cast<juce::juce_wchar>(juce::CharacterFunctions::isLetterOrDigit(c) ? c : ' ');
-  }
+  const auto normalized = playworship::guide::normalizedWords(filename);
   auto tokens = juce::StringArray::fromTokens(normalized, " ", "");
   tokens.removeEmptyStrings();
 
@@ -641,8 +636,7 @@ juce::String suggestCategoryFromFilename(const juce::String &filename) {
 
   if (lower.contains("click") || hasToken("click"))
     return "Click";
-  if (lower.contains("cue") || lower.contains("guide") || hasToken("cue") ||
-      hasToken("cues"))
+  if (hasToken("cue") || hasToken("cues") || hasToken("guide") || hasToken("guia"))
     return "Cues";
   if (lower.contains("bass") || hasToken("bass"))
     return "Bass";
@@ -664,7 +658,7 @@ juce::String suggestCategoryFromFilename(const juce::String &filename) {
       hasToken("ambience") || hasToken("ambient"))
     return "Pads/Ambience";
   if (lower.contains("string") || hasToken("string") || hasToken("strings") ||
-      hasToken("violin") || hasToken("cello"))
+      hasToken("violin") || hasToken("cello") || hasToken("cuerdas") || hasToken("cuerda"))
     return "Strings";
   if (lower.contains("brass") || hasToken("brass") || hasToken("trumpet") ||
       hasToken("trombone") || hasToken("horn"))

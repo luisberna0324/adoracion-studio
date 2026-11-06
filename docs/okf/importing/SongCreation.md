@@ -3,7 +3,7 @@ type: Import Contract
 title: Song Creation
 description: Creacion portable compartida entre escritorio y movil
 resource: src/ui/panels/SongImportWizardComponent.cpp
-timestamp: 2026-10-12T00:00:00-03:00
+timestamp: 2026-11-06T00:00:00-03:00
 ---
 
 # Creacion de canciones
@@ -17,6 +17,13 @@ En Archivos, cada fila muestra el nombre visible del stem (`displayName`), con e
 El asistente mantiene un borrador al recorrer Detalles, Archivos, Secciones
 (mapeo de pistas) y Revisar. Retroceder no descarta nombres, categorias ni la
 seleccion Cargar. Cancelar el selector de archivos conserva los archivos previos.
+
+La sugerencia de categoría al agregar archivos reconoce `cue`, `cues`, `guide`,
+`guia` y `guía` como palabras completas, con acentos normalizados. `Cuerdas`
+y `Cuerda` proponen `Strings`. Así, `CUERDAS` conserva su tratamiento musical
+y su transposición, mientras `GUIA` propone `Cues`. Las categorías existentes
+se conservan al abrir o editar una canción; la sugerencia se aplica a los
+archivos que se agregan al asistente.
 
 En telefonos iOS/Android el asistente ocupa toda la pantalla vertical y respeta
 area segura/teclado. Detalles tiene viewport; Archivos una lista desplazable;

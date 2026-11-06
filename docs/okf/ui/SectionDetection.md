@@ -116,7 +116,13 @@ El editor presenta un modal centrado que cubre la aplicación y llama explícita
 `SectionDetectionPanel::beginSuggestionFlow()`: si hay una única pista Guía,
 backend y modelo locales, empieza el análisis sin otro clic. Construir el
 componente no inicia trabajo ni descargas. Si falta o hay más de una guía, el
-modal conserva los selectores de rol y explica cómo elegir una sola. Esta ruta
+modal presenta un selector compacto para elegir la pista con voz y **Continuar**.
+También exige esa elección cuando el nombre de una pista señala una guía que
+contradice su categoría, o una pista categorizada como guía tiene un nombre
+musical reconocido. Los nombres sirven para detectar la contradicción y pedir
+confirmación. La elección explícita determina la fuente de este análisis.
+Los roles de esa petición son transitorios y respetan las categorías guardadas.
+Esta ruta
 no exige stems musicales ni los decodifica. **Analizar** mantiene por separado
 el flujo de estructura Apple para diagnóstico; su disponibilidad es independiente.
 

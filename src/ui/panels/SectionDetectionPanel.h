@@ -72,7 +72,7 @@ private:
   juce::Component content;
   juce::Label title, status, help;
   juce::Label modelStatus;
-  AdaptiveComboBox guideLanguage;
+  AdaptiveComboBox guideLanguage, guideTrack;
   juce::TextEditor transcript;
   juce::File guideModelFile;
   std::unique_ptr<juce::FileChooser> modelChooser;
@@ -84,6 +84,7 @@ private:
   bool busy = false, reviewing = false, reviewModified = false, transcriptReview = false;
   bool modalPresented = false, cancelling = false;
   bool modelDownloadPrompt = false;
+  bool guideSelectionRequired = false, guideSelectionConfirmed = false;
   juce::Component::SafePointer<juce::Component> modalHost;
   juce::Rectangle<int> cardBounds, lastAvailableBounds;
   juce::uint64 operationGeneration = 0;

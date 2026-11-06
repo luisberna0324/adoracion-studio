@@ -142,6 +142,28 @@ struct SongImportWizardTestAccess {
   using Wizard = SongImportWizardComponent;
   using Step = Wizard::Step;
 
+  static void testGuideAndStringsCategories(const AudioFixtures &files) {
+    Wizard wizard({}, Wizard::Mode::Import);
+    struct Case { const char *name, *category; };
+    for (const auto &item : {
+             Case{"01-CUE.wav", "Cues"}, {"02-CUES.wav", "Cues"},
+             {"03-GUIDE.wav", "Cues"}, {"04-GUIA.wav", "Cues"},
+             {"05-GUÍA.wav", "Cues"}, {"06-GUÍA.wav", "Cues"},
+             {"07-CUERDAS.wav", "Strings"}, {"08-CUERDA.wav", "Strings"},
+             {"09-Rescue.wav", "Other"}, {"10-Guidebook.wav", "Other"},
+             {"11-STRINGS.wav", "Strings"}}) {
+      const auto file = files.directory.getChildFile(juce::String::fromUTF8(item.name));
+      expect(files.first.copyFileTo(file), "create a named stem category fixture");
+      wizard.handleSelectedStemFiles({file}, false);
+      expect(wizard.stems.back().category == item.category,
+             "import recognizes complete guide words and keeps strings musical");
+      ImportedStemData stem;
+      stem.category = wizard.stems.back().category;
+      expect(isStemPitchShiftable(stem) == (stem.category != "Cues"),
+             "a strings import stays pitchable and a guide import stays unpitched");
+    }
+  }
+
   static void testDecimalTempoInput() {
     double parsed = 123.0;
     for (const auto *invalid : {"", ".", ",", "0", "-120.5", "120..5",
@@ -1156,6 +1178,7 @@ int main() {
   expect(searchRejected && detailRejected, "retired catalog cannot return remote metadata");
   SongImportWizardTestAccess::testDecimalTempoInput();
   AudioFixtures fixtures;
+  SongImportWizardTestAccess::testGuideAndStringsCategories(fixtures);
   SongImportWizardTestAccess::testStepLayouts(fixtures);
   SongImportWizardTestAccess::testDesktopEditLayout();
   SongImportWizardTestAccess::testDraftNavigation(fixtures);
