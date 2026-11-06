@@ -673,6 +673,49 @@ Si `deferTransitionFadeInUntilConfigured` es `false`, `loadSongStems()` completa
 automáticamente el fade-in. La UI principal usa `true` para aplicar antes del
 fade-in mezcla, routing, tempo, click, guía, ventana y arrangement.
 
+### Crossfade de canciones con DSP y buses virtuales
+
+`requestSongCrossfade(seconds)` arma un cambio explícito (0.1–10 s), sin cambiar
+la canción ni iniciar sonido. Requiere una canción reproduciéndose con stems,
+sin custom arrange, salto/loop/ensayo ni otro fade activo. Pitch/tempo modificados,
+click y guía dinámicos son compatibles; no se recurre a audio seco para el tail.
+
+El control prepara lectores y recursos de reemplazo antes del handoff. El
+callback toma la captura mediante CAS (solicitada → capturando → retenida), de
+modo que un timeout no pueda retirar las fuentes después de un load fallido.
+En ese límite de bloque se intercambian los owners del vector de tracks y del
+`SongProcessingState`: `StemMixEngine`, voces individuales Bungee/SoundTouch y
+líneas de compensación conservan sus historiales, sin reconstruirse en audio.
+Se retienen máscaras de pitch/percussion/guía, rutas, master, ventana y rampa
+de tempo. Cada deck consume su propio número de frames fuente.
+
+`RetainedVirtualBuses` conserva las voces y la fase del metrónomo, voces de guía
+en curso, anuncios/cues pendientes de la línea temporal lineal y sus dos delays.
+Los catálogos de samples se comparten en control y la captura realtime sólo
+copia estado fijo o intercambia buffers ya preparados. Mute/solo y destinos
+son independientes por deck; el master de la entrante no modifica la saliente.
+Al llegar a Fin, se alimentan ceros y se drenan las latencias sin disparar nuevos
+clicks ni anuncios más allá del final. Ver `engine/RetainedVirtualBuses.md`.
+
+Durante la configuración entrante, el callback reproduce la saliente sin usar
+`suspendProcessing()`, que haría silenciar al host. `finishPendingSongTransition()`
+publica el destino configurado. Mientras su DSP resuelve el arranque y acumula
+su latencia conocida, la salida saliente conserva nivel completo. No se decide
+por la amplitud del contenido: una canción puede empezar intencionalmente en
+silencio. Después se aplica un fundido lineal complementario (salida=1−t,
+entrada=t) a stems, click y guía. La duración efectiva se limita al audio real
+que aún queda en la saliente, convertido a frames de salida según su tempo.
+Pads continúa siendo un único bus global con sus envolventes propias.
+
+Stop/Pause cancelan la cola; un Stop durante la configuración impide el autoplay.
+Un seek durante el overlap cancela la saliente; el seek interno que configura la
+ventana entrante se permite durante el hold. Unload y cambio de dispositivo
+cancelan y liberan recursos fuera del callback. Al concluir, el timer de control
+llama `releaseRetiredSongCrossfade()` para liberar tracks y DSP bajo la
+sincronización del servicio de mantenimiento, sin retener una segunda canción
+completa hasta el siguiente load. La estructura/automatización saliente se
+congela al capturar; loops, saltos y custom arrange siguen fuera de este flujo.
+
 ## Seek lock-free
 
 El seek usa atomics para ser thread-safe:

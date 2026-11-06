@@ -73,6 +73,7 @@ struct DynamicGuideSettings {
 /** Comportamiento al terminar esta posición dentro del setlist. */
 struct SetlistTransition {
   bool autoPlay = false;
+  bool crossfade = false;
 };
 
 struct SetlistItem {
@@ -136,6 +137,8 @@ public:
   static bool setAutoPlayNextForSetlist(const juce::String &setlistId,
                                         const juce::String &songId,
                                         bool enabled);
+  static bool setCrossfadeNextForSetlist(const juce::String &setlistId,
+                                       const juce::String &songId, bool enabled);
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
   /** Registra un .pwproj abierto sin copiar sus recursos a la biblioteca legacy. */

@@ -10,6 +10,10 @@
 class MetronomeEngine {
 public:
   void prepare(double sampleRate);
+  // Control-side preparation shares immutable sample generations. The second
+  // operation copies only fixed-size live state and is audio-thread safe.
+  void prepareRetainedCopyFrom(MetronomeEngine &source);
+  void captureRealtimeStateFrom(const MetronomeEngine &source) noexcept;
   // Direct reset is only valid while stopped or from the audio thread.
   void reset();
   // Control-thread-safe reset request consumed by the next audio-thread sync.

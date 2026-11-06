@@ -205,6 +205,24 @@ void testIndependentCuesAndSampleOffsets() {
   juce::AudioFormatManager formats; formats.registerBasicFormats();
   DynamicGuideEngine engine; engine.prepare(1000.0);
   expect(engine.loadGuideDirectories({directory}, formats), "guide fixtures load");
+  {
+    DynamicGuideEngine retained;
+    retained.prepareRetainedCopyFrom(engine);
+    expect(engine.triggerForSectionKey("1"), "start the phrase before retaining its live voice");
+    juce::AudioBuffer<float> prefix(1, 4); prefix.clear(); engine.render(prefix);
+    retained.captureRealtimeStateFrom(engine);
+    juce::AudioBuffer<float> expected(1, 20), actual(1, 20); expected.clear(); actual.clear();
+    engine.render(expected);
+    expect(engine.loadGuideDirectories({directory}, formats), "incoming guide reloads its independent catalog");
+    retained.render(actual);
+    expect(actual.getMagnitude(0, 0, 8) > 0.09f && actual.getMagnitude(0, 8, 12) == 0.0f,
+        "retained guide finishes its in-flight phrase instead of restarting or truncating it");
+    for (int sample = 0; sample < 20; ++sample)
+      expect(expected.getSample(0, sample) == actual.getSample(0, sample),
+          "retained guide voice remains exact after incoming catalog replacement");
+    expect(retained.triggerForSectionKey("Build"), "outgoing guide keeps its catalog for future timeline cues");
+  }
+  engine.reset();
   using Scheduler = playworship::audio::SectionScheduler;
   Scheduler::Snapshot snapshot; snapshot.valid = true; snapshot.cueCount = 3;
   snapshot.cues[0] = {110, engine.resolveTriggerId("1")};

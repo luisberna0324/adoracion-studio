@@ -21,7 +21,8 @@ public:
                 const std::atomic<bool> *pitchShiftStates, int stemCount,
                 int inputSamples, int numChannels,
                 const std::atomic<int> *outputChannels = nullptr,
-                const std::atomic<int> *outputWidths = nullptr);
+                const std::atomic<int> *outputWidths = nullptr,
+                int sourceSamplesToRead = -1);
   void renderDirect(const std::vector<std::unique_ptr<StemTrack>> &stems,
                     int stemCount, juce::AudioBuffer<float> &output);
 

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -140,6 +141,16 @@ struct SettingsPanelTestAccess {
   }
 
   static void run() {
+    expect(AppSettings::getSongCrossfadeSeconds() == 3.0, "song crossfade defaults to three seconds");
+    AppSettings::setSongCrossfadeSeconds(5.0);
+    expect(AppSettings::getSongCrossfadeSeconds() == 5.0, "song crossfade duration persists independently of pads");
+    AppSettings::setSongCrossfadeSeconds(0.0);
+    expect(AppSettings::getSongCrossfadeSeconds() == 1.0, "song crossfade duration clamps its lower boundary");
+    AppSettings::setSongCrossfadeSeconds(100.0);
+    expect(AppSettings::getSongCrossfadeSeconds() == 10.0, "song crossfade duration clamps its upper boundary");
+    AppSettings::setSongCrossfadeSeconds(std::numeric_limits<double>::quiet_NaN());
+    expect(AppSettings::getSongCrossfadeSeconds() == 10.0, "invalid crossfade duration cannot overwrite the saved setting");
+    AppSettings::setSongCrossfadeSeconds(3.0);
     testActiveRoutingChannels();
     int routingChanges = 0;
     SettingsPanel panel(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
@@ -147,6 +158,9 @@ struct SettingsPanelTestAccess {
         MetronomeClickStyle{}, {}, {}, {}, {}, {}, {}, 8,
         [&](const auto &, const auto &) { ++routingChanges; }, nullptr, 0, 8);
     panel.setVisible(true);
+    panel.songCrossfadeBox.setSelectedId(5, juce::sendNotificationSync);
+    expect(AppSettings::getSongCrossfadeSeconds() == 5.0, "settings control persists the song crossfade duration");
+    panel.songCrossfadeBox.setSelectedId(3, juce::sendNotificationSync);
 
     // Portrait phones, landscape phones/tablets, narrow desktop windows, and
     // tall desktops exercise both row layouts and the scrollbar threshold.
@@ -310,12 +324,17 @@ struct SettingsPanelTestAccess {
       panel.updateRemoteState(mode, {}, "Buscando servidores");
     };
     panel.remoteClientButton.onClick();
+    expect(!panel.songCrossfadeBox.isEnabled() && panel.songCrossfadeHelp.getText().containsIgnoreCase("servidor"),
+           "remote client delegates crossfade duration to its playback server");
+    panel.songCrossfadeBox.setSelectedId(10, juce::sendNotificationSync);
+    expect(AppSettings::getSongCrossfadeSeconds() == 3.0, "disabled client duration cannot modify an ignored local setting");
     expect(modeChanges == 1 && panel.remoteServersBox.isVisible() &&
                !panel.remoteServerNameEditor.isVisible() &&
                panel.mobileGeneralCardHeight() > localRemoteHeight,
            "client selector reveals discovery and expands the compact local card");
     panel.showSettingsPage(Destination::Appearance);
     panel.updateRemoteState(Mode::Server, {}, "Servidor activo");
+    expect(panel.songCrossfadeBox.isEnabled(), "playback server can configure its crossfade duration");
     expect(!panel.remoteServerNameEditor.isVisible() && panel.themeBox.isVisible(),
            "background remote updates cannot reveal remote controls on another page");
     panel.showSettingsPage(Destination::Remote);
@@ -339,7 +358,7 @@ struct SettingsPanelTestAccess {
                    "every visible preference fits in narrow pages");
         const juce::Label *const helps[] = {
             &panel.themeHelp, &panel.languageHelp,
-            &panel.padsCrossfadeHelp, &panel.metronomeClickStyleHelp};
+            &panel.songCrossfadeHelp, &panel.padsCrossfadeHelp, &panel.metronomeClickStyleHelp};
         int visibleHelps = 0;
         for (const auto *help : helps)
           if (help->isVisible()) {

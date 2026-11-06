@@ -7,6 +7,7 @@
 #include "../../data/SongData.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 
 namespace {
@@ -89,7 +90,7 @@ public:
       pageSubtitles.add(L10n::tr("Interfaz, entradas y salidas", "Interface, inputs and outputs"));
     pageSubtitles.addArray({L10n::tr(u8"Dispositivo y salidas por categoría", "Device and outputs by category"),
         mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections")});
-    if (desktopIntegrations) pageSubtitles.add("FreeShow");
+    if (desktopIntegrations) pageSubtitles.add("FreeShow / Holyrics");
     if (owner.teamsManagementEnabled)
       pageSubtitles.add(L10n::tr("Usuarios de tu nube", "Your Cloud users"));
     pageSubtitles.addArray({(DevelopmentFeatures::testLogin && owner.session.localDemo) ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
@@ -651,8 +652,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   accountPage.addAndMakeVisible(*actionsTitleSeparator);
   accountPage.addAndMakeVisible(*actionsRowSeparator);
 
-  generalRowSeparators.reserve(6);
-  for (int i = 0; i < 6; ++i) {
+  generalRowSeparators.reserve(7);
+  for (int i = 0; i < 7; ++i) {
     auto separator = std::make_unique<SettingsRowSeparator>();
     generalPage.addAndMakeVisible(*separator);
     generalRowSeparators.push_back(std::move(separator));
@@ -695,6 +696,23 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     repaint();
   };
   generalPage.addAndMakeVisible(languageBox);
+
+  songCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
+  songCrossfadeLabel.setFont(settingsOptionLabelFont());
+  generalPage.addAndMakeVisible(songCrossfadeLabel);
+  for (const int seconds : {1, 2, 3, 5, 8, 10})
+    songCrossfadeBox.addItem(juce::String(seconds) + " s", seconds);
+  const double initialSongCrossfadeSeconds = AppSettings::getSongCrossfadeSeconds();
+  if (std::abs(initialSongCrossfadeSeconds - juce::roundToInt(initialSongCrossfadeSeconds)) < 1.0e-6)
+    songCrossfadeBox.setSelectedId(juce::roundToInt(initialSongCrossfadeSeconds), juce::dontSendNotification);
+  if (songCrossfadeBox.getSelectedId() == 0)
+    songCrossfadeBox.setText(juce::String(initialSongCrossfadeSeconds, 1) + " s", juce::dontSendNotification);
+  songCrossfadeBox.setJustificationType(juce::Justification::centredLeft);
+  songCrossfadeBox.onChange = [this] {
+    if (remoteMode != playworship::remote::RemoteSession::Mode::Client && songCrossfadeBox.getSelectedId() > 0)
+      AppSettings::setSongCrossfadeSeconds(songCrossfadeBox.getSelectedId());
+  };
+  generalPage.addAndMakeVisible(songCrossfadeBox);
 
   padsCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
   padsCrossfadeLabel.setFont(settingsOptionLabelFont());
@@ -782,7 +800,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(remoteServerNameEditor);
   generalPage.addAndMakeVisible(remoteStatus);
   for (auto *help : {&themeHelp, &languageHelp,
-                     &padsCrossfadeHelp, &metronomeClickStyleHelp,
+                     &songCrossfadeHelp, &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp}) {
     help->setFont(settingsHelpFont());
     help->setJustificationType(juce::Justification::topLeft);
@@ -1098,7 +1116,7 @@ void SettingsPanel::resized() {
     if (tabs.getCurrentTabIndex() == 5) return 480;
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
-               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 728 : 648) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
+               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 808 : 728) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
   };
   int contentWidth = juce::jmax(1, area.getWidth());
   if (requiredHeight(contentWidth) > area.getHeight())
@@ -1146,7 +1164,7 @@ void SettingsPanel::refreshThemeColours() {
   }
   themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   for (auto *help : {&themeHelp, &languageHelp,
-                     &padsCrossfadeHelp, &metronomeClickStyleHelp,
+                     &songCrossfadeHelp, &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp,
                      &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp, &actionDeleteHelp})
     help->setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -1166,6 +1184,9 @@ void SettingsPanel::refreshThemeColours() {
   applyTextEditorTheme(remoteServerNameEditor, UITheme::cardBgHover,
                        UITheme::cardBorder);
   applyComboBoxTheme(languageBox, UITheme::cardBgHover.withAlpha(0.78f),
+                     UITheme::cardBorder.withAlpha(0.84f));
+  songCrossfadeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  applyComboBoxTheme(songCrossfadeBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
   padsCrossfadeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   applyComboBoxTheme(padsCrossfadeBox, UITheme::cardBgHover.withAlpha(0.78f),
@@ -1386,7 +1407,7 @@ int SettingsPanel::mobileGeneralCardHeight() const {
     case Destination::Appearance:
       return mobileCardPadding + 2 * mobileChoiceHeight;
     case Destination::Playback:
-      return mobileCardPadding + 2 * mobileChoiceHeight;
+      return mobileCardPadding + 3 * mobileChoiceHeight;
     case Destination::Remote:
       return mobileCardPadding + mobileRemoteChoiceHeight +
              (remoteMode == playworship::remote::RemoteSession::Mode::Local ? 44 : 158);
@@ -1430,7 +1451,7 @@ void SettingsPanel::layoutMobileGeneralPage() {
     help.setBounds(content.removeFromTop(helpHeight));
     content.removeFromTop(afterHelp);
   };
-  for (auto *box : {&themeBox, &languageBox, &padsCrossfadeBox,
+  for (auto *box : {&themeBox, &languageBox, &songCrossfadeBox, &padsCrossfadeBox,
                     &metronomeClickStyleBox, &remoteServersBox})
     box->setMobileFormMode(true);
 
@@ -1438,6 +1459,7 @@ void SettingsPanel::layoutMobileGeneralPage() {
     choice(themeLabel, themeBox, themeHelp);
     choice(languageLabel, languageBox, languageHelp);
   } else if (destination == Destination::Playback) {
+    choice(songCrossfadeLabel, songCrossfadeBox, songCrossfadeHelp);
     choice(padsCrossfadeLabel, padsCrossfadeBox, padsCrossfadeHelp);
     choice(metronomeClickStyleLabel, metronomeClickStyleBox,
            metronomeClickStyleHelp);
@@ -1518,6 +1540,12 @@ void SettingsPanel::applyLanguageTexts() {
   languageHelp.setText(L10n::tr("Se aplica a menús, controles y mensajes.",
                                  "Applies to menus, controls, and messages."),
                        juce::dontSendNotification);
+  songCrossfadeLabel.setText(L10n::tr(u8"Crossfade entre canciones", "Song crossfade"), juce::dontSendNotification);
+  const bool localCrossfade = remoteMode != playworship::remote::RemoteSession::Mode::Client;
+  songCrossfadeBox.setEnabled(localCrossfade);
+  songCrossfadeHelp.setText(localCrossfade
+      ? L10n::tr(u8"Duración del fundido al marcar Crossfade a la siguiente en el setlist.", "Fade duration when Crossfade to next is selected in the setlist.")
+      : L10n::tr(u8"Configura esta duración en el equipo servidor que reproduce las canciones.", "Set this duration on the server computer that plays the songs."), juce::dontSendNotification);
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);
@@ -1784,6 +1812,9 @@ void SettingsPanel::layoutGeneralPage() {
   addSeparator();
   layoutChoiceRow(area.removeFromTop(rowH), languageLabel, languageBox,
                   languageHelp);
+  addSeparator();
+  layoutChoiceRow(area.removeFromTop(rowH), songCrossfadeLabel,
+                  songCrossfadeBox, songCrossfadeHelp);
   addSeparator();
   layoutChoiceRow(area.removeFromTop(rowH), padsCrossfadeLabel,
                   padsCrossfadeBox, padsCrossfadeHelp);
@@ -2278,6 +2309,10 @@ void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode m
   using Mode = playworship::remote::RemoteSession::Mode;
   const bool modeChanged = remoteMode != mode;
   remoteMode = mode;
+  songCrossfadeBox.setEnabled(mode != Mode::Client);
+  songCrossfadeHelp.setText(mode == Mode::Client
+      ? L10n::tr(u8"Configura esta duración en el equipo servidor que reproduce las canciones.", "Set this duration on the server computer that plays the songs.")
+      : L10n::tr(u8"Duración del fundido al marcar Crossfade a la siguiente en el setlist.", "Fade duration when Crossfade to next is selected in the setlist."), juce::dontSendNotification);
   remoteLocalButton.setToggleState(mode == Mode::Local, juce::dontSendNotification);
   remoteClientButton.setToggleState(mode == Mode::Client, juce::dontSendNotification);
   remoteServerButton.setToggleState(mode == Mode::Server, juce::dontSendNotification);

@@ -307,7 +307,7 @@ if(MTCONTROLS_USE_BUNGEE)
     message(STATUS "Bungee backend: required and enabled (${MTCONTROLS_BUNGEE_DIR})")
 endif()
 
-add_library(PlayWorshipLyricsModel STATIC src/integrations/FreeShowModel.cpp)
+add_library(PlayWorshipLyricsModel STATIC src/integrations/FreeShowModel.cpp src/integrations/HolyricsModel.cpp)
 target_include_directories(PlayWorshipLyricsModel PUBLIC src)
 target_compile_definitions(PlayWorshipLyricsModel PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(PlayWorshipLyricsModel PUBLIC juce::juce_core)
@@ -1353,6 +1353,7 @@ target_sources(MTControls
         src/audio/StemOutputRoutingState.cpp
         src/audio/StemOutputRoutingState.h
         src/data/AppSettings.cpp
+        src/data/IntegrationTokenStore.cpp
         src/data/AppSettings.h
         src/data/AssetBootstrapManager.cpp
         src/data/AssetBootstrapManager.h

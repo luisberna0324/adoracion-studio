@@ -13,6 +13,7 @@
 #include "data/SongLibraryStore.h"
 #include "audio/SimpleDelayLine.h"
 #include "audio/SongTransitionEnvelope.h"
+#include "audio/RetainedSongCrossfade.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
 #include "audio/SectionScheduler.h"
 #include "audio/SectionAutomation.h"
@@ -92,6 +93,10 @@ public:
   /** Safely releases the active song and leaves the transport stopped. */
   bool unloadSong();
   void finishPendingSongTransition();
+  bool requestSongCrossfade(double seconds);
+  bool isSongCrossfadeActive() const noexcept;
+  void cancelSongCrossfade() noexcept;
+  void releaseRetiredSongCrossfade();
   void playSong();
   void pauseSong();
   void stopSong();
@@ -516,16 +521,13 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemPitchShiftStates;
   std::array<std::atomic<int>, maxStemCount> stemOutputChannels;
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
-  std::array<TimeStretchProcessor, maxStemCount> stemPitchProcessors;
-  std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
-  std::atomic<int> preparedRoutingProcessorCount{0};
+  std::unique_ptr<playworship::audio::SongProcessingState> songDsp = std::make_unique<playworship::audio::SongProcessingState>();
   std::atomic<int> loadedStemCount{0};
   std::atomic<int> practiceListeningState{0}; // ((stem + 1) << 2) | mode
   std::atomic<uint64_t> practiceListeningRevision{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
   std::atomic<bool> masterMuted{false};
-  StemMixEngine mixEngine;
   StemOutputRouter stemOutputRouter;
   StemOutputRoutingState stemOutputRoutingState;
   StandaloneAudioDeviceBridge standaloneAudioDeviceBridge;
@@ -575,6 +577,20 @@ private:
   std::atomic<uint64_t> transportControlRevision{0};
   std::atomic<double> songCurrentPositionSeconds{0.0};
   std::atomic<bool> audioCallbackActive{false};
+  // 0 idle, 1 capture requested, 2 outgoing-only/configuring incoming,
+  // 3 overlap, 4 retired (safe for control-side destruction), 5 capture owned by callback, -1 rejected.
+  std::atomic<int> songCrossfadePhase{0};
+  std::atomic<bool> songCrossfadeCancelled{false};
+  std::atomic<double> requestedSongCrossfadeSeconds{0.0};
+  std::atomic<bool> crossfadeProcessingReady{false};
+  bool crossfadeIncomingWarmupPending = false;
+  int crossfadeIncomingWarmupFrames = 0;
+  playworship::audio::RetainedSongCrossfade outgoingSongCrossfade;
+  double activeSongCrossfadeSeconds = 3.0;
+  juce::int64 crossfadeElapsedFrames = 0, crossfadeTotalFrames = 1;
+  bool songCrossfadeEligible() const noexcept;
+  void renderCrossfadeHolding(juce::AudioBuffer<float>&);
+
   std::atomic<bool> remoteClientMode{false};
   std::atomic<int> songLoadTransitionState{
       static_cast<int>(SongLoadTransitionState::idle)};

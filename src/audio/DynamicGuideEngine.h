@@ -9,6 +9,10 @@
 class DynamicGuideEngine {
 public:
   void prepare(double sampleRate);
+  // Copy immutable catalogs off the callback, then preserve exact in-flight
+  // phrase positions with a fixed-size audio-thread capture.
+  void prepareRetainedCopyFrom(const DynamicGuideEngine &source);
+  void captureRealtimeStateFrom(const DynamicGuideEngine &source) noexcept;
   void reset() noexcept;
   void resetExceptTrigger(int triggerId) noexcept;
 

@@ -86,6 +86,8 @@ public:
   int getSongIndexById(const juce::String &songId) const;
   void setSelectedSongIndex(int songIndex);
   bool isAutoPlayNextEnabledForSong(const juce::String &songId) const;
+  bool isCrossfadeNextEnabledForSong(const juce::String &songId) const;
+  std::optional<ImportedSongData> getCrossfadeNextSong(const juce::String &currentSongId) const;
   int resolveAutoPlayNextIndex(const juce::String &currentSongId) const;
   /** Transport navigation uses the active setlist, independently of the visible page. */
   std::optional<ImportedSongData> getAutoPlayNextSong(const juce::String &currentSongId) const;
@@ -167,6 +169,7 @@ private:
     double cloudUploadFraction = -1.0;
     juce::String cloudUploadPhase;
     bool requiresOptimization = false;
+    bool crossfadeNext = false;
   };
 
   class ListContent : public juce::Component {
@@ -180,6 +183,7 @@ private:
     void setOnSongsReordered(std::function<void(int, int)> cb);
     void setOnDragStateChanged(std::function<void(bool)> cb);
     void setOnAutoPlayNextToggled(std::function<void(int)> cb);
+    void setOnCrossfadeNextToggled(std::function<void(int)> cb);
     void setOnSongRemoveRequested(std::function<void(int)> cb);
     void setOnAddSongsRequested(std::function<void()> cb);
     void setOnOptimizeRequested(std::function<void(int)> cb);
@@ -216,6 +220,7 @@ private:
     std::function<void(int, int)> onSongsReordered;
     std::function<void(bool)> onDragStateChanged;
     std::function<void(int)> onAutoPlayNextToggled;
+    std::function<void(int)> onCrossfadeNextToggled;
     std::function<void(int)> onSongRemoveRequested;
     std::function<void()> onAddSongsRequested;
     std::function<void(int)> onOptimizeRequested;
@@ -350,6 +355,7 @@ private:
   int songsSwipeDurationMs = 250;
   int transitionDurationMs = 150;
   juce::StringArray autoPlayNextMarks;
+  juce::StringArray crossfadeNextMarks;
   struct CloudUploadIndicator {
     double fraction = 0.0;
     juce::String phase;

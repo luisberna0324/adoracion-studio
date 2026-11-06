@@ -9,6 +9,7 @@
 #include "audio/AudioDeviceMonitor.h"
 #include "audio/SongMixExporter.h"
 #include "data/AppSettings.h"
+#include <utility>
 #include "data/AssetBootstrapManager.h"
 #include "data/AuthSessionApi.h"
 #include "data/CloudSyncIndexStore.h"
@@ -2153,6 +2154,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) -> bool {
+    const bool crossfadeRequested = std::exchange(crossfadeRequestedForSongLoad, false);
     if (demoLoadingOverlay) return false;
     if (playbackSession.isRemote()) { playbackSession.send("song.load", {}, song.id); return true; }
     if (songLoadBusy)
@@ -2364,6 +2366,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         "loadSong", "processor.loadSongStems",
         "stems=" + juce::String(stemPaths.size()) +
             " prev=" + juce::String(hadLoadedSongBeforeLoad ? 1 : 0));
+    if (crossfadeRequested && !p.requestSongCrossfade(AppSettings::getSongCrossfadeSeconds())) {
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::InfoIcon,
+          L10n::tr("Crossfade no disponible", "Crossfade unavailable"),
+          L10n::tr(u8"El crossfade requiere canciones con pistas de audio, sin loops, saltos pendientes, arreglo personalizado ni otro fundido activo. Los cambios de tono y tempo, el click y la guía dinámicos son compatibles.",
+                   "Crossfade requires songs with audio tracks, without loops, pending jumps, custom arrangement or another active fade. Pitch and tempo changes, dynamic click and guide are supported."));
+      return false;
+    }
     const bool loaded = p.loadSongStems(
         stemPaths, sourceSong.id, sourceSong.title, sourceSong.key,
         static_cast<double>(sourceSong.bpm),
@@ -2712,6 +2722,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     // stale audio or settings; ordinary repeated navigation still stays a no-op.
     if ((!isSameLoadedSong || preparedProjectForNextSongLoad) && loadSongAction)
       (void)loadSongAction(song, songIndex);
+    crossfadeRequestedForSongLoad = false;
   };
 
   songListRaw->setOnSongActivated(
@@ -2892,8 +2903,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       auto next = songListRaw->getAutoPlayNextSong(currentLoadedSong.id);
       if (!next)
         next = songListRaw->getPlaybackAdjacentSong(currentLoadedSong.id, 1, true);
-      if (next && requestSongLoadAction)
+      if (next && requestSongLoadAction) {
+        crossfadeRequestedForSongLoad = static_cast<MTControlsAudioProcessor &>(processor).isSongPlaying()
+            && songListRaw->isCrossfadeNextEnabledForSong(currentLoadedSong.id);
         requestSongLoadAction(*next, songListRaw->getSongIndexById(next->id));
+      }
       return;
     }
     const int count = songListRaw->getSongCount();
@@ -5189,6 +5203,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     return;
   }
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  if (!songLoadBusy) processorRef.releaseRetiredSongCrossfade();
   MTControlsAudioProcessor::MidiBinding learnedBinding;
   if (processorRef.consumePendingMidiLearnBinding(learnedBinding)) {
     // The audio callback only publishes the fixed-size learn result. Mutating
@@ -5276,6 +5291,34 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) {
       grid->setLibraryNowPlayingSong(
           hasPlayingSong ? currentLoadedSong.id : juce::String(), hasPlayingSong);
+    }
+  }
+
+  // Start preparing the destination before Fin, while the outgoing deck still
+  // has real audio to overlap. Attempt once per pass; failures keep it playing.
+  if (hasCurrentLoadedSong && songListPanelRaw && !songLoadBusy) {
+    const double originalBpm = processorRef.getLoadedSongBpm();
+    const double tempoRatio = originalBpm > 0.0
+        ? juce::jlimit(0.75, 2.0, processorRef.getPlaybackTempoBpm() / originalBpm) : 1.0;
+    const double remaining = (processorRef.getSongEndSeconds() - currentPosSec) / tempoRatio;
+    const double duration = AppSettings::getSongCrossfadeSeconds();
+    if (crossfadeAttemptSongId != currentLoadedSong.id || remaining > duration + 0.5)
+      crossfadeAttemptSongId.clear();
+    if (isPlayingNow && remaining > 0.0 && remaining <= duration
+        && crossfadeAttemptSongId != currentLoadedSong.id
+        && !processorRef.isPracticeLoopActive() && processorRef.getArrangementPartLoopIndex() < 0
+        && !processorRef.isSongCrossfadeActive()
+        && !(learningGuide && learningLessonId == "demo-song")) {
+      if (const auto next = songListPanelRaw->getCrossfadeNextSong(currentLoadedSong.id); next && loadSongAction) {
+        crossfadeAttemptSongId = currentLoadedSong.id;
+        const int visibleIndex = songListPanelRaw->getSongIndexById(next->id);
+        crossfadeRequestedForSongLoad = true;
+        if (loadSongAction(*next, visibleIndex)) {
+          if (visibleIndex >= 0) songListPanelRaw->setSelectedSongIndex(visibleIndex);
+          wasSongPlaying = processorRef.isSongPlaying();
+          return;
+        }
+      }
     }
   }
 

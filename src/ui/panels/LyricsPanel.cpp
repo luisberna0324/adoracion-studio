@@ -201,7 +201,7 @@ void LyricsPanel::setSongLyrics(const SongLyrics &next) {
   const auto previousShow = lyrics.showId;
   ++catalogueRequest; // A pending user selection must never bind a subsequently loaded song.
   loadingCatalogue = false;
-  if (previousShow != next.showId || next.showId.isEmpty()) {
+  if (previousShow != next.showId || lyrics.provider != next.provider || next.showId.isEmpty()) {
     catalogue = {};
     catalogueError.clear();
     loadingCatalogue = false;
@@ -212,7 +212,7 @@ void LyricsPanel::setSongLyrics(const SongLyrics &next) {
   if (findMark(selectedId) == nullptr) selectedId.clear();
   enabledToggle.setToggleState(lyrics.enabled, juce::dontSendNotification);
   rebuildShowSelectors(); rebuildMapLayout(); resized(); repaint();
-  if (client != nullptr && next.showId.isNotEmpty()
+  if (client != nullptr && client->getSettings().provider == next.provider && next.showId.isNotEmpty()
       && (previousShow != next.showId || catalogue.id != next.showId)) loadShow(next.showId, false);
 }
 
@@ -417,6 +417,7 @@ const Mark *LyricsPanel::findMark(const juce::String &id) const {
   return nullptr;
 }
 juce::String LyricsPanel::reviewReason(const Mark &mark) const {
+  if (client && mark.target.provider != client->getSettings().provider) return "El destino pertenece a otro programa de letras";
   if (mark.target.hide) return {};
   if (catalogueError.isNotEmpty()) return catalogueError;
   if (loadingCatalogue) return juce::String::fromUTF8("verificando catálogo FreeShow");
@@ -476,11 +477,11 @@ void LyricsPanel::placeInsertionAnchor(double seconds) {
 
 juce::PopupMenu LyricsPanel::buildDestinationMenu(std::vector<Target> &targets) const {
   juce::PopupMenu menu;
-  Target hide; hide.hide = true; hide.title = "Ocultar letras";
+  Target hide; hide.hide = true; hide.provider = client ? client->getSettings().provider : lyrics.provider; hide.title = "Ocultar letras";
   targets.push_back(hide);
   menu.addItem(1, "Ocultar letras");
   if (catalogue.groups.empty()) {
-    menu.addItem(0, "Conecta FreeShow y elige un show para consultar sus grupos", false);
+    menu.addItem(0, "Conecta el programa de letras y elige una canción", false);
     return menu;
   }
   for (const auto &group : catalogue.groups) {
@@ -503,6 +504,7 @@ juce::PopupMenu LyricsPanel::buildDestinationMenu(std::vector<Target> &targets) 
 
 void LyricsPanel::applyDestination(const Target &target, double seconds, const juce::String &id) {
   if (id.isEmpty() && lyrics.marks.size() >= markLimit) return;
+  if (lyrics.marks.empty()) lyrics.provider = target.provider;
   if (id.isNotEmpty() && findMark(id) == nullptr) return;
   if (auto *mark = findMark(id)) mark->target = target;
   else {
@@ -543,8 +545,8 @@ bool LyricsPanel::canTestMark(const Mark &mark) const {
 juce::PopupMenu LyricsPanel::buildMarkMenu(const Mark &mark) const {
   juce::PopupMenu menu;
   menu.addSectionHeader(formatTimeSeconds(mark.seconds) + juce::String::fromUTF8(" · ") + markTitle(mark));
-  menu.addItem(2, juce::String::fromUTF8("Cambiar destino FreeShow…"));
-  menu.addItem(7, "Probar en FreeShow", canTestMark(mark));
+  menu.addItem(2, juce::String::fromUTF8(mark.target.provider == "holyrics" ? "Cambiar destino Holyrics…" : "Cambiar destino FreeShow…"));
+  menu.addItem(7, mark.target.provider == "holyrics" ? "Probar en Holyrics" : "Probar en FreeShow", canTestMark(mark));
   menu.addSeparator();
   menu.addItem(8, "Eliminar marca");
   return menu;
@@ -580,7 +582,8 @@ void LyricsPanel::refreshCatalogue() {
       if (safe == nullptr) return;
       safe->shows = std::move(result); safe->catalogueError = std::move(error);
       safe->loadingCatalogue = false; safe->rebuildShowSelectors();
-      if (safe->lyrics.showId.isNotEmpty()) safe->loadShow(safe->lyrics.showId, false);
+      if (safe->lyrics.showId.isNotEmpty() && safe->client && safe->lyrics.provider == safe->client->getSettings().provider) safe->loadShow(safe->lyrics.showId, false);
+      else safe->catalogue = {};
       safe->timerCallback();
     });
   });
@@ -600,6 +603,7 @@ void LyricsPanel::loadShow(const juce::String &id, bool updateBinding) {
       }
       safe->catalogueError.clear(); safe->catalogue = std::move(result);
       if (updateBinding) {
+        safe->lyrics.provider = safe->catalogue.provider;
         safe->lyrics.showId = safe->catalogue.id; safe->lyrics.showName = safe->catalogue.name;
         safe->lyrics.layoutId = safe->catalogue.activeLayoutId;
         if (safe->lyrics.layoutId.isEmpty()) safe->lyrics.layoutId = safe->catalogue.layouts.front().id;
@@ -617,7 +621,7 @@ void LyricsPanel::rebuildShowSelectors() {
   int selection = 0;
   for (size_t i = 0; i < shows.size(); ++i) {
     showCombo.addItem(shows[i].name.isNotEmpty() ? shows[i].name : "Show sin nombre", static_cast<int>(i) + 1);
-    if (shows[i].id == lyrics.showId) selection = static_cast<int>(i) + 1;
+    if (shows[i].id == lyrics.showId && client && client->getSettings().provider == lyrics.provider) selection = static_cast<int>(i) + 1;
   }
   if (selection > 0) showCombo.setSelectedId(selection, juce::dontSendNotification);
   else if (lyrics.showId.isNotEmpty()) showCombo.setText(lyrics.showName.isNotEmpty() ? lyrics.showName : "Show sin nombre", juce::dontSendNotification);
@@ -645,12 +649,16 @@ void LyricsPanel::timerCallback() {
       lastReviewRevision = status.reviewRevision;
       refreshCatalogue();
     }
-    connectionButton.setButtonText(connected ? juce::String::fromUTF8("● FreeShow conectado") : juce::String::fromUTF8("○ FreeShow · Conexión"));
+    const auto provider = client->getSettings().provider == "holyrics" ? juce::String("Holyrics") : juce::String("FreeShow");
+    showLabel.setText(provider == "Holyrics" ? "CANCIÓN" : "SHOW", juce::dontSendNotification);
+    showCombo.setTextWhenNothingSelected(provider == "Holyrics" ? "Elegir canción…" : "Elegir show…");
+    refreshButton.setTooltip("Actualizar canciones y diapositivas de " + provider);
+    connectionButton.setButtonText((connected ? juce::String::fromUTF8("● ") : juce::String::fromUTF8("○ ")) + provider + (connected ? " conectado" : " · Conexión"));
     connectionButton.setColour(juce::TextButton::textColourOffId, connected ? AppColours::accentSuccess : UITheme::textSecondary);
     statusText = status.message;
     if (connected && status.lastSent.isNotEmpty())
       statusText = status.outputConfirmed
-          ? juce::String::fromUTF8("Proyectado · confirmado por FreeShow · ") + status.lastProjected
+          ? juce::String::fromUTF8("Proyectado · confirmado por ") + provider + " · " + status.lastProjected
           : juce::String::fromUTF8("Enviado · proyección sin confirmar · ") + status.lastSent;
     if (loadingCatalogue) statusText += juce::String::fromUTF8(" · Consultando catálogo…");
     else if (catalogueError.isNotEmpty()) statusText += juce::String::fromUTF8(" · ") + catalogueError;

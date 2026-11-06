@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <atomic>
+#include <thread>
 
 namespace {
 void expect(bool condition, const char *message) {
@@ -309,6 +311,431 @@ std::vector<CategoryRoutingDefaults> monoBusDefaults(int clickChannel, int guide
     if (category == "Cues") defaults[i] = {guideChannel, 1};
   }
   return defaults;
+}
+
+// Exercise the real AudioProcessorPlayer path: a direct processBlock call would
+// miss host-generated silence when a loader suspends the processor.
+void testRealProcessorSongCrossfade() {
+  const auto sourceA = isolatedTestRoot().getChildFile("crossfade-outgoing.wav");
+  const auto sourceB = isolatedTestRoot().getChildFile("crossfade-incoming.wav");
+  writeRoutingFixtureWav(sourceA, 48000 * 20, 0.20f);
+  writeRoutingFixtureWav(sourceB, 48000 * 20, 0.35f);
+  auto processor = std::make_unique<MTControlsAudioProcessor>();
+  auto &p = *processor;
+  auto &bridge = p.getAudioDeviceBridge();
+  auto &manager = bridge.getAudioDeviceManager();
+  manager.addAudioDeviceType(std::make_unique<TestDeviceType>(2));
+  juce::PropertySet settings;
+  const auto setup = juce::parseXML(
+      "<DEVICESETUP deviceType=\"Test audio\" audioOutputDeviceName=\"Test output\" "
+      "audioDeviceRate=\"48000\" audioDeviceBufferSize=\"64\"/>");
+  settings.setValue("audioSetup", setup.get());
+  StandaloneAudioRuntime runtime(p, bridge, &settings);
+  expect(runtime.start(64).isEmpty(), "crossfade real runtime starts");
+  auto *device = dynamic_cast<TestDevice *>(manager.getCurrentAudioDevice());
+  expect(device != nullptr, "crossfade renders through the actual standalone audio callback");
+  const auto configure = [&](int channel) {
+    p.setPadsEnabled(false);
+    p.setMetronomeEnabled(false);
+    p.setMetronomeMuted(true);
+    auto guide = p.getDynamicGuideSettings(); guide.enabled = false;
+    p.setDynamicGuideSettings(guide); p.setDynamicGuideMuted(true);
+    p.setMasterVolume(1.0f); p.setMasterGain(1.0f); p.setMasterMute(false);
+    p.setStemVolume(0, 1.0f); p.setStemGain(0, 1.0f);
+    p.setStemMute(0, false); p.setStemSolo(0, false);
+    p.setStemOutputChannel(0, channel); p.setStemOutputWidth(0, 1);
+    p.setStemClickGuideMask({false}); p.setStemGuideMask({false});
+    p.setSongFadeOutSeconds(0.0);
+  };
+  expect(p.loadSongStems({sourceA.getFullPathName()}, "crossfade-a", "Outgoing", "C", 120.0),
+         "crossfade loads its actual outgoing source");
+  configure(1); p.setMasterVolume(0.7f); p.setMasterGain(0.8f); p.playSong();
+
+  struct Observation { float left = 0, right = 0; int phase = 0; };
+  constexpr size_t maxObservations = 12000;
+  std::vector<Observation> observations(maxObservations);
+  std::atomic<size_t> count{0};
+  std::atomic<int> phase{0};
+  std::atomic<bool> renderRunning{true};
+  std::atomic<bool> renderFailed{false};
+  std::thread render([&] {
+    try {
+      juce::AudioBuffer<float> output(2, 64);
+      while (renderRunning.load(std::memory_order_acquire)) {
+        output.clear();
+        const int currentPhase = phase.load(std::memory_order_acquire);
+        device->render(output);
+        const size_t index = count.load(std::memory_order_relaxed);
+        if (index < observations.size()) {
+          observations[index] = {output.getMagnitude(0, 0, 64), output.getMagnitude(1, 0, 64), currentPhase};
+          count.store(index + 1, std::memory_order_release);
+        }
+        juce::Thread::sleep(1);
+      }
+    } catch (...) { renderFailed.store(true, std::memory_order_release); }
+  });
+  struct JoinRender {
+    std::atomic<bool> &running; std::thread &thread;
+    ~JoinRender() { running.store(false, std::memory_order_release); if (thread.joinable()) thread.join(); }
+  } join{renderRunning, render};
+  const auto wait = [&](const std::function<bool()> &condition, const char *message) {
+    for (int i = 0; i < 5000 && !condition() && !renderFailed.load(std::memory_order_acquire); ++i)
+      juce::Thread::sleep(1);
+    expect(!renderFailed.load(std::memory_order_acquire) && condition(), message);
+  };
+  const auto blocks = [&](size_t amount) {
+    const auto before = count.load(std::memory_order_acquire);
+    wait([&] { return count.load(std::memory_order_acquire) >= before + amount; }, "crossfade audio callback keeps advancing");
+  };
+  blocks(250);
+  expect(p.requestSongCrossfade(1.0), "dry original-tempo outgoing song accepts crossfade");
+  phase.store(1, std::memory_order_release);
+  expect(p.loadSongStems({sourceB.getFullPathName()}, "crossfade-b", "Incoming", "C", 120.0, {}, true),
+         "incoming deck prepares while outgoing real host callbacks continue");
+  configure(2);
+  phase.store(2, std::memory_order_release);
+  p.finishPendingSongTransition();
+  wait([&] { return !p.isSongCrossfadeActive(); }, "crossfade finishes within its bounded duration");
+  phase.store(3, std::memory_order_release); blocks(100);
+  const size_t firstCount = count.load(std::memory_order_acquire);
+  int holdingBlocks = 0, holdingSilent = 0, overlapBlocks = 0, incomingOnlyBlocks = 0;
+  float minHoldingLevel = 1.0f, maxHoldingLevel = 0.0f;
+  for (size_t index = 0; index < firstCount; ++index) {
+    const auto &sample = observations[index];
+    if (sample.phase == 1) {
+      ++holdingBlocks;
+      minHoldingLevel = juce::jmin(minHoldingLevel, sample.left);
+      maxHoldingLevel = juce::jmax(maxHoldingLevel, sample.left);
+      if (sample.left < 0.01f) ++holdingSilent;
+      expect(sample.right < 0.00001f, "preparing incoming song does not leak into the outgoing route");
+    }
+    if (sample.phase == 2 && sample.left > 0.01f && sample.right > 0.01f) ++overlapBlocks;
+    if (sample.phase == 3 && sample.left < 0.00001f && sample.right > 0.1f) ++incomingOnlyBlocks;
+  }
+  std::cout << "Crossfade actual callbacks: hold=" << holdingBlocks << ", silent=" << holdingSilent
+            << ", both=" << overlapBlocks << ", incoming=" << incomingOnlyBlocks
+            << ", outgoing range=" << minHoldingLevel << ".." << maxHoldingLevel << '\n';
+  expect(holdingBlocks > 0 && holdingSilent == 0,
+         "outgoing source stays audible throughout load: no host-suspension or handoff gap");
+  expect(minHoldingLevel > 0.10f && maxHoldingLevel < 0.125f,
+         "outgoing deck preserves its own master gain without adopting or doubling the incoming master");
+  expect(overlapBlocks > 50, "two real songs overlap on their independent mono routes during the fade");
+  expect(incomingOnlyBlocks > 50, "finished crossfade leaves only the incoming source and its own route");
+
+  // Repeated transitions must not leave a fading old deck after Pause/Stop or
+  // after an explicit cancellation. Each new destination has a distinct route.
+  for (const int action : {0, 1, 2}) {
+    phase.store(0, std::memory_order_release);
+    if (!p.isSongPlaying()) p.playSong();
+    blocks(100);
+    expect(p.requestSongCrossfade(1.0), "repeated dry crossfade can be armed");
+    const bool toA = (action % 2) == 0;
+    expect(p.loadSongStems({(toA ? sourceA : sourceB).getFullPathName()},
+                          toA ? "crossfade-a" : "crossfade-b", "Cancellation destination", "C", 120.0, {}, true),
+           "cancellation fixture prepares its next source");
+    configure(toA ? 1 : 2); p.finishPendingSongTransition(); blocks(30);
+    if (action == 0) p.pauseSong();
+    else if (action == 1) p.stopSong();
+    else p.cancelSongCrossfade();
+    wait([&] { return !p.isSongCrossfadeActive(); }, "Pause, Stop and explicit cancel retire the outgoing deck");
+    const auto checkStart = count.load(std::memory_order_acquire); blocks(40);
+    const auto checkEnd = count.load(std::memory_order_acquire);
+    for (size_t index = checkStart + 2; index < checkEnd; ++index) {
+      const auto &sample = observations[index];
+      if (action < 2)
+        expect(sample.left < 0.00001f && sample.right < 0.00001f, "paused/stopped transition leaves no outgoing tail");
+      else
+        expect((toA ? sample.right : sample.left) < 0.00001f,
+               "explicit cancel keeps only the current incoming route");
+    }
+  }
+  renderRunning.store(false, std::memory_order_release); render.join();
+  expect(!renderFailed.load(), "crossfade host callback completes without an exception");
+  runtime.stop();
+}
+
+void writeCrossfadeTone(const juce::File &file, double frequency) {
+  expect(file.isAChildOf(isolatedTestRoot()), "crossfade tone fixture is isolated");
+  file.deleteFile();
+  auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream());
+  juce::WavAudioFormat format;
+  auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+      .withSampleRate(48000.0).withNumChannels(1).withBitsPerSample(24));
+  expect(writer != nullptr, "crossfade tone fixture writer opens");
+  juce::AudioBuffer<float> block(1, 4096);
+  constexpr double pi = 3.14159265358979323846;
+  for (int frame = 0; frame < 48000 * 40;) {
+    const int count = juce::jmin(4096, 48000 * 40 - frame);
+    for (int i = 0; i < count; ++i) {
+      const double t = static_cast<double>(frame + i) / 48000.0;
+      // The carrier detects pitch; its slow amplitude envelope independently
+      // detects source-time scaling. A dry retained-deck fallback fails both.
+      block.setSample(0, i, static_cast<float>((0.20 + 0.12 * std::cos(2.0 * pi * 6.0 * t))
+                                              * std::sin(2.0 * pi * frequency * t)));
+    }
+    expect(writer->writeFromAudioSampleBuffer(block, 0, count), "crossfade tone fixture writes");
+    frame += count;
+  }
+}
+
+double crossingFrequency(const std::vector<float> &samples) {
+  if (samples.size() < 100) return 0.0;
+  int crossings = 0;
+  for (size_t i = 1; i < samples.size(); ++i)
+    if (samples[i - 1] <= 0.0f && samples[i] > 0.0f) ++crossings;
+  return static_cast<double>(crossings) * 48000.0 / static_cast<double>(samples.size());
+}
+
+double envelopeFrequency(const std::vector<float> &samples) {
+  constexpr int window = 480; // 10 ms RMS rejects carrier phase.
+  const int count = static_cast<int>(samples.size()) / window;
+  if (count < 60) return 0.0;
+  std::vector<double> levels(static_cast<size_t>(count));
+  double mean = 0;
+  for (int block = 0; block < count; ++block) {
+    double squared = 0;
+    for (int i = 0; i < window; ++i) {
+      const double sample = samples[static_cast<size_t>(block * window + i)];
+      squared += sample * sample;
+    }
+    levels[static_cast<size_t>(block)] = std::sqrt(squared / window);
+    mean += levels[static_cast<size_t>(block)];
+  }
+  mean /= count;
+  double bestFrequency = 0, bestPower = 0;
+  constexpr double pi = 3.14159265358979323846;
+  for (int candidate = 30; candidate <= 110; ++candidate) {
+    const double frequency = candidate / 10.0;
+    double real = 0, imaginary = 0;
+    for (int i = 0; i < count; ++i) {
+      const double hann = 0.5 - 0.5 * std::cos(2.0 * pi * i / (count - 1));
+      const double value = (levels[static_cast<size_t>(i)] - mean) * hann;
+      const double angle = 2.0 * pi * frequency * i / 100.0;
+      real += value * std::cos(angle); imaginary += value * std::sin(angle);
+    }
+    const double power = real * real + imaginary * imaginary;
+    if (power > bestPower) { bestPower = power; bestFrequency = frequency; }
+  }
+  return bestFrequency;
+}
+
+void testProcessedSongCrossfade(int channels, double outgoingTempo) {
+  const auto sourceA = isolatedTestRoot().getChildFile("crossfade-processed-a.wav");
+  const auto sourceB = isolatedTestRoot().getChildFile("crossfade-processed-b.wav");
+  writeCrossfadeTone(sourceA, 110.0); writeCrossfadeTone(sourceB, 330.0);
+  auto processor = std::make_unique<MTControlsAudioProcessor>(); auto &p = *processor;
+  auto &bridge = p.getAudioDeviceBridge(); auto &manager = bridge.getAudioDeviceManager();
+  manager.addAudioDeviceType(std::make_unique<TestDeviceType>(channels));
+  juce::PropertySet settings;
+  const auto setup = juce::parseXML("<DEVICESETUP deviceType=\"Test audio\" audioOutputDeviceName=\"Test output\" audioDeviceRate=\"48000\" audioDeviceBufferSize=\"64\"/>");
+  settings.setValue("audioSetup", setup.get());
+  StandaloneAudioRuntime runtime(p, bridge, &settings);
+  expect(runtime.start(64).isEmpty(), "processed crossfade real runtime starts");
+  auto *device = dynamic_cast<TestDevice *>(manager.getCurrentAudioDevice());
+  expect(device != nullptr, "processed crossfade uses the actual host callback");
+  const auto configure = [&](int channel, int pitch, double tempo) {
+    p.setPadsEnabled(false); p.setMetronomeEnabled(false); p.setMetronomeMuted(true);
+    auto guide = p.getDynamicGuideSettings(); guide.enabled = false; p.setDynamicGuideSettings(guide); p.setDynamicGuideMuted(true);
+    p.setMasterVolume(1); p.setMasterGain(1); p.setMasterMute(false);
+    p.setStemVolume(0, 1); p.setStemGain(0, 1); p.setStemMute(0, false); p.setStemSolo(0, false);
+    p.setStemOutputChannel(0, channel); p.setStemOutputWidth(0, 1);
+    p.setStemClickGuideMask({false}); p.setStemGuideMask({false}); p.setStemPitchShiftMask({true});
+    p.setPitchSemiTones(pitch); p.setPlaybackTempoBpm(tempo); p.setSongFadeOutSeconds(0);
+  };
+  expect(p.loadSongStems({sourceA.getFullPathName()}, "processed-a", "Processed outgoing", "C", 120), "processed outgoing loads");
+  configure(1, 12, outgoingTempo); p.playSong();
+  struct Block { std::array<float, 64> outgoing{}, incoming{}; std::array<float, 8> peaks{}; int phase = 0; };
+  std::vector<Block> captured(15000);
+  std::atomic<size_t> count{0}; std::atomic<int> phase{0}; std::atomic<bool> running{true}, failed{false};
+  std::thread render([&] {
+    try {
+      juce::AudioBuffer<float> output(channels, 64);
+      while (running.load(std::memory_order_acquire)) {
+        const int currentPhase = phase.load(std::memory_order_acquire); output.clear(); device->render(output);
+        const auto index = count.load(std::memory_order_relaxed);
+        if (index < captured.size()) {
+          auto &block = captured[index]; block.phase = currentPhase;
+          std::copy_n(output.getReadPointer(0), 64, block.outgoing.begin());
+          std::copy_n(output.getReadPointer(channels - 1), 64, block.incoming.begin());
+          for (int channel = 0; channel < channels; ++channel) block.peaks[static_cast<size_t>(channel)] = output.getMagnitude(channel, 0, 64);
+          count.store(index + 1, std::memory_order_release);
+        }
+        juce::Thread::sleep(1);
+      }
+    } catch (...) { failed.store(true, std::memory_order_release); }
+  });
+  struct Guard { std::atomic<bool>& running; std::thread& thread; ~Guard() { running.store(false); if(thread.joinable()) thread.join(); } } guard{running,render};
+  const auto wait = [&](const std::function<bool()>& condition) {
+    for(int i=0;i<10000 && !condition() && !failed.load();++i) juce::Thread::sleep(1);
+    expect(!failed.load() && condition(), "processed crossfade callback advances within deadline");
+  };
+  const auto blocks = [&](size_t n) { const auto before=count.load(); wait([&]{return count.load()>=before+n;}); };
+  blocks(1000);
+  expect(p.requestSongCrossfade(1.0), "pitched and stretched outgoing playback accepts crossfade");
+  phase.store(1);
+  bool held = false;
+  expect(p.loadSongStems({sourceB.getFullPathName()}, "processed-b", "Processed incoming", "G", 120,
+      [&](double progress) {
+        if (!held && progress >= 0.90) {
+          held = true; phase.store(10); blocks(900); phase.store(1);
+        }
+      }, true), "processed incoming prepares while outgoing DSP remains live");
+  configure(channels, -5, 132);
+  phase.store(2); p.finishPendingSongTransition();
+  wait([&]{return !p.isSongCrossfadeActive();});
+  phase.store(3); blocks(500);
+  const auto published=count.load(std::memory_order_acquire);
+  std::vector<float> heldAudio, overlapAudio, incomingAudio;
+  int heldSilent=0, heldCount=0, overlap=0, finalLeak=0, overlapSilent=0;
+  for(size_t i=0;i<published;++i) {
+    const auto &block=captured[i];
+    if(block.phase==10) {
+      ++heldCount; if(block.peaks[0]<0.002f) ++heldSilent;
+      heldAudio.insert(heldAudio.end(),block.outgoing.begin(),block.outgoing.end());
+      expect(block.peaks[static_cast<size_t>(channels-1)]<0.00001f,"incoming processed route stays silent until configured");
+    }
+    if(block.phase==2 && block.peaks[0]<0.002f && block.peaks[static_cast<size_t>(channels-1)]<0.002f) ++overlapSilent;
+    if(block.phase==2 && block.peaks[0]>0.002f && block.peaks[static_cast<size_t>(channels-1)]>0.002f) {
+      ++overlap;
+      // Analyze the first half, while the fade has useful signal-to-noise.
+      if(overlap<350) overlapAudio.insert(overlapAudio.end(),block.outgoing.begin(),block.outgoing.end());
+    }
+    if(block.phase==3) {
+      if(block.peaks[0]>0.00001f) ++finalLeak;
+      incomingAudio.insert(incomingAudio.end(),block.incoming.begin(),block.incoming.end());
+    }
+    for(int channel=1;channel<channels-1;++channel)
+      expect(block.peaks[static_cast<size_t>(channel)]<0.00001f,"processed crossfade never leaks into unused physical outputs");
+  }
+  const double heldPitch=crossingFrequency(heldAudio), overlapPitch=crossingFrequency(overlapAudio);
+  const double heldTempo=envelopeFrequency(heldAudio), incomingPitch=crossingFrequency(incomingAudio);
+  std::cout<<"Processed crossfade "<<channels<<" outputs tempo="<<outgoingTempo<<": held="<<heldCount
+      <<", silent="<<heldSilent<<", overlap="<<overlap<<", held Hz="<<heldPitch
+      <<", overlap Hz="<<overlapPitch<<", envelope Hz="<<heldTempo<<", incoming Hz="<<incomingPitch<<'\n';
+  expect(heldCount>=850 && heldSilent==0,"processed outgoing remains audible through a prolonged loader hold");
+  expect(std::abs(heldPitch-220.0)<10.0 && std::abs(overlapPitch-220.0)<12.0,"outgoing octave shift and DSP history survive capture and overlap instead of dry fallback");
+  expect(std::abs(heldTempo-6.0*outgoingTempo/120.0)<0.65,"outgoing faster/slower tempo survives ownership transfer");
+  expect(overlap>150 && finalLeak==0,"processed songs overlap then retire the outgoing route completely");
+  expect(overlapSilent==0,"cold incoming pitch/tempo latency cannot produce a silent block while retiring the outgoing deck");
+  expect(std::abs(incomingPitch-330.0*std::pow(2.0,-5.0/12.0))<12.0,"incoming song keeps its independent pitch while old DSP fades");
+  running.store(false); render.join(); runtime.stop();
+}
+
+void testGeneratedBusSongCrossfade() {
+  juce::String error;
+  expect(AssetBootstrapManager::ensureGuidesPackReady(&error), "crossfade guide pack is available locally");
+  for(const auto *language:{"en","es"}) {
+    const auto directory=AssetBootstrapManager::getGuidesLanguageSectionsDirectory(language);
+    for(const auto &old:directory.findChildFiles(juce::File::findFiles,false,"1.*")) old.deleteFile();
+    // Keep an actual spoken-cue voice alive across capture, then schedule new
+    // cues beyond capture. A restarted/omitted guide cannot satisfy both.
+    writeRoutingFixtureWav(directory.getChildFile("1.wav"),48000,0.22f);
+  }
+  const auto source=isolatedTestRoot().getChildFile("crossfade-virtual-silence.wav");
+  writeRoutingFixtureWav(source,48000*30,0);
+  auto processor=std::make_unique<MTControlsAudioProcessor>(); auto &p=*processor;
+  auto &bridge=p.getAudioDeviceBridge(); auto &manager=bridge.getAudioDeviceManager();
+  manager.addAudioDeviceType(std::make_unique<TestDeviceType>(8));
+  juce::PropertySet settings;
+  const auto setup=juce::parseXML("<DEVICESETUP deviceType=\"Test audio\" audioOutputDeviceName=\"Test output\" audioDeviceRate=\"48000\" audioDeviceBufferSize=\"64\"/>");
+  settings.setValue("audioSetup",setup.get()); StandaloneAudioRuntime runtime(p,bridge,&settings);
+  expect(runtime.start(64).isEmpty(),"generated crossfade runtime starts");
+  auto *device=dynamic_cast<TestDevice*>(manager.getCurrentAudioDevice()); expect(device,"generated crossfade has actual host callback");
+  const auto configure=[&](bool incoming) {
+    p.setPadsEnabled(false); p.setMasterVolume(1);p.setMasterGain(1);p.setMasterMute(false);
+    p.setStemVolume(0,1);p.setStemGain(0,1);p.setStemMute(0,false);p.setStemSolo(0,false);
+    p.setStemOutputChannel(0,incoming?2:1);p.setStemOutputWidth(0,1);
+    p.setStemClickGuideMask({false});p.setStemGuideMask({false});p.setStemPitchShiftMask({true});p.setSongFadeOutSeconds(0);
+    p.setPitchSemiTones(3);p.setPlaybackTempoBpm(incoming?180:120);
+    p.clearMetronomeClickSamples();p.setMetronomeClickStemIndex(-1);
+    p.setMetronomeEnabled(true);p.setMetronomeMuted(false);p.setMetronomeSolo(false);
+    p.setMetronomeVolume(1);p.setMetronomeGain(1);p.setClickDivision(1);p.setClickDivisionEnabled(true);
+    p.setMetronomeOutputRouting(incoming?5:3,1);
+    auto guide=p.getDynamicGuideSettings();guide.enabled=true;p.setDynamicGuideSettings(guide);
+    p.setDynamicGuideMuted(false);p.setDynamicGuideSolo(false);p.setDynamicGuideVolume(1);p.setDynamicGuideGain(1);
+    p.setDynamicGuideOutputRouting(incoming?6:4,1);
+    SongArrangementSnapshot arrangement;
+    SongArrangementPartSnapshot part;part.id="crossfade-section";part.name="Verse";part.endSec=30;arrangement.parts.push_back(part);
+    const std::vector<double> positions = incoming ? std::vector<double>{0.1}
+        : std::vector<double>{0.3,0.9,1.5,2.1,2.7,3.3,3.9};
+    for(const double position:positions) {
+      SongArrangementCueSnapshot cue;cue.id="count-"+juce::String(position);cue.name="1";cue.partId=part.id;cue.positionSec=cue.offsetSec=position;
+      arrangement.cues.push_back(cue);
+    }
+    p.setSongArrangement(arrangement,false);
+    expect(p.hasDynamicGuideAssets(),"crossfade generated guide uses decoded real WAV assets");
+  };
+  expect(p.loadSongStems({source.getFullPathName()},"virtual-a","Virtual outgoing","C",120),"virtual outgoing loads");configure(false);p.playSong();
+  struct Block {std::array<float,8> peaks{};int phase=0;};std::vector<Block> capture(12000);
+  std::atomic<size_t> count{0};std::atomic<int> phase{0};std::atomic<bool> running{true},failed{false};
+  std::thread render([&]{try{juce::AudioBuffer<float> output(8,64);while(running.load()) {
+    const int currentPhase=phase.load();output.clear();device->render(output);const auto index=count.load();
+    if(index<capture.size()){auto &block=capture[index];block.phase=currentPhase;for(int c=0;c<8;++c)block.peaks[(size_t)c]=output.getMagnitude(c,0,64);count.store(index+1,std::memory_order_release);}juce::Thread::sleep(1);
+  }}catch(...){failed.store(true);}});
+  struct Guard {std::atomic<bool>& running;std::thread& thread;~Guard(){running.store(false);if(thread.joinable())thread.join();}}guard{running,render};
+  const auto wait=[&](const std::function<bool()>& condition){for(int i=0;i<10000&&!condition()&&!failed.load();++i)juce::Thread::sleep(1);expect(!failed.load()&&condition(),"generated crossfade callback advances");};
+  const auto blocks=[&](size_t n){const auto before=count.load();wait([&]{return count.load()>=before+n;});};
+  blocks(600);
+  expect(p.requestSongCrossfade(1.5),"audible dynamic click and guide accept crossfade");
+  bool held=false;phase.store(1);
+  expect(p.loadSongStems({source.getFullPathName()},"virtual-b","Virtual incoming","G",120,[&](double progress){if(!held&&progress>=0.90){held=true;phase.store(10);blocks(900);phase.store(1);}},true),"generated outgoing buses continue through incoming preparation");
+  configure(true);phase.store(2);p.finishPendingSongTransition();wait([&]{return !p.isSongCrossfadeActive();});phase.store(3);blocks(400);
+  const auto published=count.load(std::memory_order_acquire);int holdGuide=0,holdCount=0,overlapGuide=0,newGuide=0,newClick=0,oldClick=0;
+  bool oldClickOn=false,newClickOn=false;
+  std::vector<float> incomingGuideLevels, incomingClickPeaks;
+  float incomingClickPeak=0;
+  std::vector<size_t> oldClickStarts,newClickStarts;
+  bool oldTimelineClickOn=false,newTimelineClickOn=false;
+  for(size_t i=0;i<published;++i){const auto &b=capture[i];
+    if(b.phase==10||b.phase==2) {
+      const bool oldOn=b.peaks[2]>0.002f,newOn=b.peaks[4]>0.002f;
+      if(oldOn&&!oldTimelineClickOn)oldClickStarts.push_back(i);
+      if(newOn&&!newTimelineClickOn)newClickStarts.push_back(i);
+      oldTimelineClickOn=oldOn;newTimelineClickOn=newOn;
+    }
+    if(b.phase==10){++holdCount;if(b.peaks[3]>0.01f)++holdGuide;expect(b.peaks[4]<0.00001f&&b.peaks[5]<0.00001f,"incoming virtual buses do not sound during loader hold");}
+    if(b.phase==2){if(b.peaks[3]>0.001f)++overlapGuide;if(b.peaks[5]>0.001f)++newGuide;
+      if(b.peaks[5]>0.002f) incomingGuideLevels.push_back(b.peaks[5]);
+      const bool oldOn=b.peaks[2]>0.002f,newOn=b.peaks[4]>0.002f;
+      if(oldOn&&!oldClickOn)++oldClick;
+      if(newOn&&!newClickOn)++newClick;
+      if(newOn)incomingClickPeak=juce::jmax(incomingClickPeak,b.peaks[4]);
+      else if(newClickOn){incomingClickPeaks.push_back(incomingClickPeak);incomingClickPeak=0;}
+      oldClickOn=oldOn;newClickOn=newOn;}
+    if(b.phase==3)expect(b.peaks[2]<0.00001f&&b.peaks[3]<0.00001f,"old virtual click and guide fully retire after crossfade");
+    expect(b.peaks[6]<0.00001f&&b.peaks[7]<0.00001f,"virtual mono buses never leak into unassigned outputs");
+  }
+  std::cout<<"Generated crossfade: hold guide="<<holdGuide<<'/'<<holdCount<<", overlap old/new guide="<<overlapGuide<<'/'<<newGuide<<", old/new clicks="<<oldClick<<'/'<<newClick<<'\n';
+  expect(holdCount>=850&&holdGuide>750,"in-flight and future outgoing guide phrases remain audible through prolonged load");
+  expect(overlapGuide>200&&newGuide>200,"both independently scheduled guide buses render during overlap");
+  expect(oldClick>=2&&newClick>=3,"old and new metronomes retain independent tempos during overlap");
+  const auto medianPeriod=[](const std::vector<size_t>& starts) {
+    std::vector<size_t> periods;
+    // The first observed pulse can already be in flight at the observation
+    // boundary, so only compare complete subsequent pulse intervals.
+    for(size_t i=2;i<starts.size();++i)periods.push_back(starts[i]-starts[i-1]);
+    if(periods.empty())return 0.0;
+    std::sort(periods.begin(),periods.end());return static_cast<double>(periods[periods.size()/2]);
+  };
+  expect(std::abs(medianPeriod(oldClickStarts)-375.0)<6.0
+      &&std::abs(medianPeriod(newClickStarts)-250.0)<6.0,
+      "outgoing 120 BPM and incoming 180 BPM clocks keep their own sample-accurate pulse periods");
+  if(incomingClickPeak>0)incomingClickPeaks.push_back(incomingClickPeak);
+  expect(incomingGuideLevels.size()>200&&incomingClickPeaks.size()>=3,
+      "incoming virtual buses provide enough samples to verify their fade envelope");
+  const auto averageEdge=[&](bool last){double sum=0;for(size_t i=0;i<30;++i)
+      sum+=incomingGuideLevels[last?incomingGuideLevels.size()-1-i:i];return sum/30;};
+  expect(averageEdge(true)>averageEdge(false)*1.6,
+      "incoming generated guide follows the crossfade envelope instead of entering at full volume");
+  expect(incomingClickPeaks.back()>incomingClickPeaks.front()*1.4f,
+      "incoming generated click follows the crossfade envelope instead of entering at full volume");
+  running.store(false);render.join();runtime.stop();
+}
+
+void testAdvancedSongCrossfade() {
+  testProcessedSongCrossfade(2,180.0);
+  testProcessedSongCrossfade(8,90.0);
+  testGeneratedBusSongCrossfade();
 }
 
 void testRealProcessorMonoClickAndGuide() {
@@ -912,6 +1339,12 @@ void testRealProcessorLayoutLimits() {
 int main(int argc, char **argv) {
   juce::ScopedJuceInitialiser_GUI initialiseJuce;
   try {
+    if (argc == 2 && juce::String(argv[1]) == "--song-crossfade-only") {
+      testRealProcessorSongCrossfade();
+      testAdvancedSongCrossfade();
+      std::cout << "Song crossfade: actual host callback overlap, mono routes and cancellation passed\n";
+      return 0;
+    }
     if (argc == 2 && juce::String(argv[1]) == "--click-gain-only") {
       testClickDynGainKnobPortableRoundTrip();
       std::cout << "Click Dyn gain: mixer UI and portable-project round trip passed\n";
@@ -926,6 +1359,8 @@ int main(int argc, char **argv) {
     testRealProcessorRuntime(2);
     testRealProcessorRuntime(64);
     testRealProcessorMonoClickAndGuide();
+    testRealProcessorSongCrossfade();
+    testAdvancedSongCrossfade();
     testRealProcessorLayoutLimits();
     testClickDynGainKnobPortableRoundTrip();
     testLinkedInstrumentFadersPortableRoundTrip();

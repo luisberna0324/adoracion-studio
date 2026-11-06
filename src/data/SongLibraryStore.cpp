@@ -578,7 +578,7 @@ bool SongLibraryStore::importPreparedSetlist(SetlistData setlist) {
     if (item.itemId.isEmpty()) item.itemId = juce::Uuid().toString();
     item.updatedMs = now;
   }
-  if (!setlist.items.empty()) setlist.items.back().transitionToNext.autoPlay = false;
+  if (!setlist.items.empty()) setlist.items.back().transitionToNext = {};
   library.setlists.push_back(std::move(setlist));
   return saveLibrary(library);
 }
@@ -677,7 +677,7 @@ bool SongLibraryStore::removeSongFromSetlist(const juce::String &setlistId,
   if (setlist->items.size() == before)
     return false;
   if (!setlist->items.empty())
-    setlist->items.back().transitionToNext.autoPlay = false;
+    setlist->items.back().transitionToNext = {};
   setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
   return saveLibrary(library);
 }
@@ -726,7 +726,7 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
     if (setlist.items.size() != before)
       setlist.updatedMs = now;
     if (!setlist.items.empty())
-      setlist.items.back().transitionToNext.autoPlay = false;
+      setlist.items.back().transitionToNext = {};
   }
 
   if (!saveLibrary(library))
@@ -792,7 +792,7 @@ bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
   setlist->items.erase(setlist->items.begin() + fromIndex);
   setlist->items.insert(setlist->items.begin() + toIndex, item);
   if (!setlist->items.empty())
-    setlist->items.back().transitionToNext.autoPlay = false;
+    setlist->items.back().transitionToNext = {};
   setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
   return saveLibrary(library);
 }
@@ -817,13 +817,29 @@ bool SongLibraryStore::setAutoPlayNextForSetlist(
     return false;
   if (enabled && std::next(it) == setlist->items.end())
     return false;
-  if (it->transitionToNext.autoPlay == enabled)
+  if (it->transitionToNext.autoPlay == enabled && (enabled || !it->transitionToNext.crossfade))
     return true;
 
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
   it->transitionToNext.autoPlay = enabled;
+  if (!enabled) it->transitionToNext.crossfade = false;
   it->updatedMs = now;
   setlist->updatedMs = now;
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::setCrossfadeNextForSetlist(
+    const juce::String &setlistId, const juce::String &songId, bool enabled) {
+  auto library = loadLibrary();
+  auto *setlist = findSetlistById(library, setlistId);
+  if (!setlist) return false;
+  auto item = std::find_if(setlist->items.begin(), setlist->items.end(),
+      [&songId](const SetlistItem &entry) { return entry.songId == songId; });
+  if (item == setlist->items.end() || (enabled && std::next(item) == setlist->items.end())) return false;
+  if (item->transitionToNext.crossfade == enabled && (!enabled || item->transitionToNext.autoPlay)) return true;
+  item->transitionToNext.crossfade = enabled;
+  if (enabled) item->transitionToNext.autoPlay = true;
+  item->updatedMs = setlist->updatedMs = juce::Time::currentTimeMillis();
   return saveLibrary(library);
 }
 
@@ -4048,6 +4064,7 @@ juce::var SongLibraryStore::setlistItemToVar(
   obj->setProperty("songId", item.songId);
   auto *transition = new juce::DynamicObject();
   transition->setProperty("autoPlay", item.transitionToNext.autoPlay);
+  transition->setProperty("crossfade", item.transitionToNext.autoPlay && item.transitionToNext.crossfade);
   obj->setProperty("transitionToNext", transition);
   if (persistLegacySongSettings) {
     obj->setProperty("mix", mixToVar(item.mix));
@@ -4090,6 +4107,7 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
           obj->getProperty("transitionToNext").getDynamicObject()) {
     item.transitionToNext.autoPlay =
         static_cast<bool>(transition->getProperty("autoPlay"));
+    item.transitionToNext.crossfade = item.transitionToNext.autoPlay && static_cast<bool>(transition->getProperty("crossfade"));
   } else if (obj->hasProperty("autoPlayNext")) {
     // v2: la marca ya significaba "al terminar, reproducir siguiente".
     item.transitionToNext.autoPlay =
@@ -4263,7 +4281,7 @@ SetlistData SongLibraryStore::setlistFromVar(
   }
   if (!setlist.items.empty() &&
       setlist.items.back().transitionToNext.autoPlay) {
-    setlist.items.back().transitionToNext.autoPlay = false;
+    setlist.items.back().transitionToNext = {};
     changed = true;
   }
 
