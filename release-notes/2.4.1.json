@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 2,
+  "version": "2.4.1",
+  "status": "released",
+  "publishedAt": "2026-11-06T23:40:30Z",
+  "platforms": [
+    "windows",
+    "macos",
+    "android",
+    "ios"
+  ],
+  "title": "Secciones sugeridas y escritorio más adaptable",
+  "summary": "Prepara las secciones desde la guía, conecta tus letras con Holyrics y adapta los controles al espacio disponible en escritorio.",
+  "highlights": [
+    "Sugerencias de secciones desde guías en español e inglés.",
+    "Holyrics y transiciones suaves entre canciones.",
+    "Interfaz de escritorio con tamaños adaptables."
+  ],
+  "changes": [
+    {
+      "label": "Secciones desde la guía en escritorio",
+      "items": [
+        "La edición de escritorio de descarga directa puede sugerir secciones a partir de la guía en español e inglés. El modelo se descarga con autorización y progreso visible, y el reconocimiento se ejecuta en el dispositivo.",
+        "Revisa las sugerencias sobre la onda, ajusta sus posiciones y agrega secciones faltantes antes de confirmar. Puedes iniciar y detener la reproducción con la espaciadora durante la revisión.",
+        "Las secciones principales se proponen en el compás siguiente al anuncio. Las cuentas y las indicaciones secundarias conservan sus tiempos de voz y se muestran como marcas independientes.",
+        "El reconocimiento aprovecha indicaciones claras que se repiten en la misma guía para recuperar anuncios pendientes y separar una sección de su indicación. Los casos ambiguos se revisan desde el catálogo."
+      ]
+    },
+    {
+      "label": "Letras y reproducción en escritorio",
+      "items": [
+        "Conecta Holyrics en la red local para acompañar las letras de la canción desde PlayWorship.",
+        "Configura transiciones entre canciones que conservan el tono, el tempo y los buses de clic y guía de cada canción durante el fundido."
+      ]
+    },
+    {
+      "label": "Escritorio adaptable",
+      "items": [
+        "Elige Automático, Compacto, Normal o Grande en Tamaño de interfaz. La selección se aplica al momento y se conserva al reabrir la aplicación.",
+        "El mixer ajusta sus filas a la altura y el ancho disponibles, y permite desplazarse para llegar a todos los canales.",
+        "Los formularios para agregar y editar canciones adaptan sus campos, listas y pasos al espacio del panel."
+      ]
+    },
+    {
+      "label": "Creación de canciones en Mac",
+      "items": [
+        "La creación de proyectos intenta convertir los archivos de audio a FLAC con los códecs integrados.",
+        "Cuando necesita el conversor adicional, PlayWorship comprueba su compatibilidad. En Mac Intel reemplaza automáticamente una copia ARM descargada por la variante Intel verificada y permite reintentar la creación."
+      ]
+    }
+  ]
+}

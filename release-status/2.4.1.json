@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "version": "2.4.1",
+  "verifiedOn": "2026-11-06",
+  "distribution": [
+    {
+      "channel": "windows-installer",
+      "status": "unavailable"
+    },
+    {
+      "channel": "macos-installer",
+      "status": "unavailable"
+    },
+    {
+      "channel": "android-apk",
+      "status": "unavailable"
+    },
+    {
+      "channel": "mac-app-store",
+      "status": "unavailable"
+    },
+    {
+      "channel": "ios-app-store",
+      "status": "unavailable"
+    }
+  ]
+}
