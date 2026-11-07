@@ -4537,7 +4537,7 @@ void MTControlsAudioProcessorEditor::beginGuideSectionReview(
   // The guide may stop before the musical tail. The draft ends at the full
   // original source, never at the last spoken announcement or playback tempo.
   const auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
-  guideReviewTranscript->durationSeconds = std::max(transcript.durationSeconds,
+  guideReviewTranscript->durationSeconds = (std::max)(transcript.durationSeconds,
                                                     processorRef.getLoadedSongLengthSeconds());
   guideReviewSongId = currentLoadedSong.id;
   guideReviewNames.clear(); guideReviewDiscarded.clear(); guideReviewSecondaryTimes.clear();
