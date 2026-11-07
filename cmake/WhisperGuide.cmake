@@ -29,6 +29,11 @@ function(_playworship_add_whisper)
     # already produces the static archives needed by the application.
     set(GGML_STATIC OFF)
     set(GGML_NATIVE OFF)
+    # MSVC Win32 cannot link _pdep_u64. ggml already supplies the equivalent
+    # table/shift implementation when BMI2 is disabled.
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set(GGML_BMI2 OFF)
+    endif()
     set(GGML_CPU ON)
     set(GGML_CPU_ALL_VARIANTS OFF)
     set(GGML_CPU_KLEIDIAI OFF)

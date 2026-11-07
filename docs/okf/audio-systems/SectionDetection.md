@@ -96,6 +96,9 @@ sola no acredita alineación con música/click ni porcentaje de precisión.
 
 El backend local usa **whisper.cpp v1.9.5**. Se habilita por CMake en escritorio;
 en iOS/Android permanece deshabilitado por defecto hasta sus builds y QA propios.
+En MSVC Win32, el backend desactiva BMI2 para usar el desempaquetado
+alternativo de ggml, dado que el enlace de 32 bits no resuelve `_pdep_u64`.
+La transcripción local conserva el mismo modelo y contrato de reconocimiento.
 La inferencia CPU se serializa y usa hasta cuatro hilos; prepara audio en ventanas
 de 20 s sin retener el PCM completo de una canción. Conserva límites de entrada
 de 12 horas y 384 kHz y limita inicialmente el archivo de modelo a 256 MiB.
