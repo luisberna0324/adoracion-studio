@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
   "version": "2.4.1",
-  "verifiedOn": "2026-11-06",
+  "verifiedOn": "2026-11-07",
   "distribution": [
     {
       "channel": "windows-installer",
-      "status": "unavailable"
+      "status": "available"
     },
     {
       "channel": "macos-installer",
-      "status": "unavailable"
+      "status": "available"
     },
     {
       "channel": "android-apk",
-      "status": "unavailable"
+      "status": "available"
     },
     {
       "channel": "mac-app-store",

@@ -14,8 +14,9 @@ notas, pero no iniciar nuevos builds nativos ni envios a tiendas.
   este cambio en el worktree `release-notes-2.4.1`, sobre la fuente candidata.
 
 El documento 2.4.1 ya existia en main con `status: released` y una fecha de
-publicacion prevista. Esta revision conserva esos campos y la disponibilidad
-operativa: no usa el valor de status ni publishedAt como prueba de publicacion.
+publicacion prevista. La preparacion inicial conservo esos campos sin usarlos
+como prueba de publicacion. Tras existir la release, la fecha se corrige al
+publishedAt real de GitHub y la disponibilidad se verifica por separado.
 Al iniciar la auditoria, GitHub no tenia Release 2.4.1; el run 42313766244 estaba
 en progreso sobre la fuente candidata. No se despacho, reinicio ni altero ese
 run. Sus artefactos y la aprobacion de tiendas requieren verificacion separada.
@@ -26,6 +27,14 @@ terminado y macOS continuaba. GitHub aun no tenia Release 2.4.1 y el manifiesto
 publico de instaladores seguia en 2.4.0. No crear una tag anticipada ni publicar
 el historial como una release disponible sin resolver ese estado. Un avance
 marcado En preparacion requiere una decision editorial aparte.
+
+Comprobacion posterior del 7 de noviembre de 2026: el run 42318990581 termino
+correctamente sobre `66669fcd4e4ca5644bb0c3010aceee86adf71d84`, despues de los
+ajustes de compilacion Windows de las PR 52 y 53. La tag v2.4.1 conserva ese
+SHA y GitHub publico su release a las 00:54:25 UTC. Los enlaces versionados de
+Windows x64, macOS y Android respondieron HTTP 200. Solo esos tres canales se
+marcan disponibles; no se infiere aprobacion o publicacion de tiendas Apple.
+No se reinicio ningun build para esta actualizacion editorial.
 
 ## Evidencia y limites editoriales
 
@@ -54,8 +63,9 @@ python3 scripts/release_version.py --expect 2.4.1
 python3 tests/test_release_notes.py
 ```
 
-El Markdown generado no es una segunda fuente para editar. No se actualizaron
-los snapshots visibles de landing/ayuda ni el feed publico con estas notas.
+El Markdown generado no es una segunda fuente para editar. La publicacion
+autorizada actualiza el feed y el respaldo generado de la ayuda. La landing
+conserva sus enlaces a ese historial, sin reintroducir un bloque editorial.
 La auditoria inspecciona contratos y codigo; las comprobaciones editoriales no
 certifican audio real, reconocimiento con guias privadas, Holyrics fisico, QA
 movil ni el resultado de los builds de Actions o de la revision de Apple.
